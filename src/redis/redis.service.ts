@@ -1,0 +1,194 @@
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
+import Redis from "ioredis";
+import { env } from "../config/env";
+
+type CachedValue = {
+  expiresAt: number | null;
+  value: string;
+};
+
+@Injectable()
+export class RedisService implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(RedisService.name);
+  private readonly client = new Redis(env.redisUrl, {
+    enableOfflineQueue: false,
+    lazyConnect: true,
+    maxRetriesPerRequest: 1,
+    retryStrategy: () => null,
+  });
+  private readonly fallbackStore = new Map<string, CachedValue>();
+  private fallbackEnabled = false;
+
+  constructor() {
+    this.client.on("error", (error) => {
+      if (this.fallbackEnabled) {
+        return;
+      }
+
+      this.logger.warn(`Redis client error: ${this.describeError(error)}`);
+    });
+  }
+
+  async onModuleInit() {
+    try {
+      await this.client.connect();
+    } catch (error) {
+      if (!this.canUseFallback(error)) {
+        throw error;
+      }
+
+      this.enableFallback(error);
+    }
+  }
+
+  async onModuleDestroy() {
+    if (this.fallbackEnabled) {
+      this.fallbackStore.clear();
+      return;
+    }
+
+    if (this.client.status === "end") {
+      return;
+    }
+
+    await this.client.quit();
+  }
+
+  async ping() {
+    return this.withRedisClient(
+      (client) => client.ping(),
+      async () => "PONG",
+    );
+  }
+
+  async setJson(key: string, value: unknown, ttlSeconds: number) {
+    await this.withRedisClient(
+      async (client) => {
+        await client.set(key, JSON.stringify(value), "EX", ttlSeconds);
+      },
+      async () => {
+        this.fallbackStore.set(key, {
+          expiresAt: Date.now() + ttlSeconds * 1000,
+          value: JSON.stringify(value),
+        });
+      },
+    );
+  }
+
+  async getJson<T>(key: string): Promise<T | null> {
+    const value = await this.withRedisClient(
+      (client) => client.get(key),
+      async () => {
+        const cachedValue = this.getFallbackValue(key);
+        return cachedValue?.value ?? null;
+      },
+    );
+
+    if (!value) {
+      return null;
+    }
+
+    return JSON.parse(value) as T;
+  }
+
+  async delete(key: string) {
+    await this.withRedisClient(
+      async (client) => {
+        await client.del(key);
+      },
+      async () => {
+        this.fallbackStore.delete(key);
+      },
+    );
+  }
+
+  isUsingFallback() {
+    return this.fallbackEnabled;
+  }
+
+  private async withRedisClient<T>(
+    operation: (client: Redis) => Promise<T>,
+    fallbackOperation: () => Promise<T>,
+  ): Promise<T> {
+    if (this.fallbackEnabled) {
+      return fallbackOperation();
+    }
+
+    try {
+      return await operation(this.client);
+    } catch (error) {
+      if (!this.canUseFallback(error)) {
+        throw error;
+      }
+
+      this.enableFallback(error);
+      return fallbackOperation();
+    }
+  }
+
+  private getFallbackValue(key: string) {
+    const cachedValue = this.fallbackStore.get(key);
+
+    if (!cachedValue) {
+      return null;
+    }
+
+    if (cachedValue.expiresAt !== null && cachedValue.expiresAt <= Date.now()) {
+      this.fallbackStore.delete(key);
+      return null;
+    }
+
+    return cachedValue;
+  }
+
+  private enableFallback(error: unknown) {
+    if (this.fallbackEnabled) {
+      return;
+    }
+
+    this.fallbackEnabled = true;
+    this.client.disconnect(false);
+    this.logger.warn(
+      `Redis is unavailable. Falling back to in-memory storage for local development. ${this.describeError(error)}`,
+    );
+  }
+
+  private canUseFallback(error: unknown) {
+    if (env.nodeEnv === "production") {
+      return false;
+    }
+
+    return this.isRedisConnectionError(error);
+  }
+
+  private isRedisConnectionError(error: unknown) {
+    if (!(error instanceof Error)) {
+      return false;
+    }
+
+    const connectionCodes = new Set([
+      "ECONNREFUSED",
+      "ECONNRESET",
+      "EHOSTUNREACH",
+      "ENOTFOUND",
+      "ETIMEDOUT",
+    ]);
+
+    const code = "code" in error ? String(error.code) : null;
+
+    return (
+      (code !== null && connectionCodes.has(code)) ||
+      error.message.includes("Connection is closed") ||
+      error.message.includes("connect ECONNREFUSED") ||
+      error.message.includes("failed to connect")
+    );
+  }
+
+  private describeError(error: unknown) {
+    if (error instanceof Error) {
+      return error.message;
+    }
+
+    return "Unknown Redis error";
+  }
+}

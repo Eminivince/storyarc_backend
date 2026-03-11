@@ -1,0 +1,1299 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  READER
+  CREATOR
+  MODERATOR
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  DELETED
+}
+
+enum StoryStatus {
+  DRAFT
+  PUBLISHED
+  HIATUS
+  COMPLETED
+}
+
+enum ChapterStatus {
+  DRAFT
+  SCHEDULED
+  PUBLISHED
+  ARCHIVED
+}
+
+enum CreatorApplicationStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+}
+
+enum ContractExclusivity {
+  EXCLUSIVE
+  NON_EXCLUSIVE
+}
+
+enum ContractStatus {
+  DRAFT
+  PENDING_SIGNATURE
+  ACTIVE
+  EXPIRED
+  TERMINATED
+}
+
+enum PurchaseKind {
+  COINS
+  SUBSCRIPTION
+}
+
+enum PurchaseStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  EXPIRED
+  CANCELED
+  REFUNDED
+}
+
+enum BillingInterval {
+  MONTHLY
+  ANNUAL
+}
+
+enum SubscriptionStatus {
+  INCOMPLETE
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  EXPIRED
+  TRIALING
+}
+
+enum WalletLedgerEntryType {
+  CREDIT
+  DEBIT
+}
+
+enum WalletLedgerReason {
+  COIN_PURCHASE
+  SUBSCRIPTION_GRANT
+  CHAPTER_UNLOCK
+  AD_UNLOCK
+  GIFT_SENT
+  ADMIN_ADJUSTMENT
+  REFUND
+}
+
+enum ChapterEntitlementSource {
+  COIN_UNLOCK
+  AD_UNLOCK
+}
+
+enum GiftTransactionStatus {
+  COMPLETED
+  FAILED
+}
+
+enum RewardLedgerEntryType {
+  CREDIT
+  DEBIT
+}
+
+enum RewardLedgerReason {
+  DAILY_CHECK_IN
+  MISSION_CLAIM
+  REFERRAL_SHARE
+  REFERRAL_COMPLETION
+  LEADERBOARD_REWARD
+  ADMIN_ADJUSTMENT
+}
+
+enum MissionGroup {
+  READER
+  AUTHOR
+}
+
+enum MissionMetricType {
+  DAILY_CHECK_IN
+  READ_CHAPTERS
+  BOOKMARK_CHAPTERS
+  SHARE_REFERRAL
+  WRITE_WORDS
+  COMPLETE_PROFILE
+}
+
+enum MissionRecurrence {
+  DAILY
+  ONE_TIME
+}
+
+enum ReferralEventStatus {
+  SHARED
+  COMPLETED
+}
+
+enum LeaderboardPeriod {
+  WEEKLY
+  MONTHLY
+  ALL_TIME
+}
+
+enum NotificationType {
+  REWARD
+  MISSION
+  REFERRAL
+  COMMUNITY
+  SYSTEM
+  SECURITY
+}
+
+enum CommunityPostType {
+  ANNOUNCEMENT
+  POLL
+}
+
+enum CommunityPostStatus {
+  LIVE
+  ARCHIVED
+}
+
+enum UserActivityEventType {
+  READ_CHAPTER
+  BOOKMARK_CHAPTER
+  DAILY_CHECK_IN
+  SHARE_REFERRAL
+  WRITE_WORDS
+  COMPLETE_PROFILE
+}
+
+enum ReportTargetType {
+  CHAPTER
+  STORY
+}
+
+enum ReportStatus {
+  OPEN
+  IN_REVIEW
+  RESOLVED
+  TAKEDOWN
+  DISMISSED
+}
+
+enum SupportTicketCategory {
+  ACCOUNT
+  BILLING
+  CONTENT
+  CREATOR
+  TECHNICAL
+  GENERAL
+}
+
+enum SupportTicketPriority {
+  LOW
+  NORMAL
+  HIGH
+  URGENT
+}
+
+enum SupportTicketStatus {
+  OPEN
+  PENDING
+  RESOLVED
+  CLOSED
+}
+
+enum SupportMessageSenderRole {
+  USER
+  ADMIN
+  SYSTEM
+}
+
+enum CreatorPayoutStatus {
+  PENDING
+  IN_REVIEW
+  RELEASED
+}
+
+enum AdminBookVisibilityState {
+  PENDING_APPROVAL
+  LIVE
+  HIDDEN
+}
+
+enum AdminBookReleaseMode {
+  PREMIUM_WINDOW
+  MANUAL
+}
+
+enum AdminSettingKind {
+  BOOLEAN
+  CURRENCY_CENTS
+}
+
+model User {
+  id                  String               @id @default(auto()) @map("_id") @db.ObjectId
+  email               String               @unique
+  role                UserRole             @default(READER)
+  status              UserStatus           @default(ACTIVE)
+  emailVerifiedAt     DateTime?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  profile             Profile?
+  credential          Credential?
+  sessions            Session[]
+  passwordResetTokens PasswordResetToken[]
+  creatorApplication  CreatorApplication?  @relation("CreatorApplicant")
+  reviewedCreatorApplications CreatorApplication[] @relation("CreatorReviewer")
+  authoredStories     Story[]              @relation("StoryAuthor")
+  readingProgress     ReadingProgress[]
+  bookmarks           Bookmark[]
+  wallet              Wallet?
+  purchases           Purchase[]
+  subscriptions       Subscription[]
+  walletLedgerEntries WalletLedgerEntry[]
+  chapterEntitlements ChapterEntitlement[]
+  adUnlockRecords     AdUnlockRecord[]
+  sentGiftTransactions GiftTransaction[]   @relation("GiftSender")
+  receivedGiftTransactions GiftTransaction[] @relation("GiftRecipient")
+  rewardWallet        RewardWallet?
+  rewardLedgerEntries RewardLedgerEntry[]
+  dailyCheckIns       DailyCheckIn[]
+  missionStates       UserMissionState[]
+  referralCode        ReferralCode?
+  sentReferralEvents  ReferralEvent[]      @relation("ReferralInviter")
+  receivedReferralEvents ReferralEvent[]   @relation("ReferralInvitee")
+  leaderboardEntries  LeaderboardEntry[]
+  communityPosts      CommunityPost[]      @relation("CommunityCreator")
+  pollVotes           PollVote[]
+  appNotifications    AppNotification[]
+  notificationPreference NotificationPreference?
+  activityEvents      UserActivityEvent[]
+  submittedReports    ContentReport[]        @relation("ReportReporter")
+  assignedReports     ContentReport[]        @relation("ReportAssignee")
+  supportTickets      SupportTicket[]        @relation("SupportRequester")
+  assignedSupportTickets SupportTicket[]     @relation("SupportAssignee")
+  supportMessages     SupportMessage[]
+  adminAuditLogs      AdminAuditLog[]        @relation("AdminActor")
+  creatorPayouts      CreatorPayout[]
+  reviewedBookControls StoryAdminControl[]   @relation("BookControlReviewer")
+  updatedBookControls StoryAdminControl[]    @relation("BookControlUpdater")
+  chapterOverrideUpdates PublishedChapterAdminOverride[] @relation("ChapterOverrideUpdater")
+  contractTemplatesCreated ContractTemplate[] @relation("ContractTemplateCreator")
+  contractTemplatesUpdated ContractTemplate[] @relation("ContractTemplateUpdater")
+  contractsAsParty    Contract[]            @relation("ContractParty")
+  contractsCreated    Contract[]            @relation("ContractCreator")
+  contractsUpdated    Contract[]            @relation("ContractUpdater")
+
+  @@map("users")
+}
+
+model CreatorApplication {
+  id               String                   @id @default(auto()) @map("_id") @db.ObjectId
+  userId           String                   @unique @db.ObjectId
+  fullName         String
+  email            String
+  primaryGenre     String
+  experience       String
+  portfolioUrl     String?
+  motivation       String
+  status           CreatorApplicationStatus @default(DRAFT)
+  submittedAt      DateTime?
+  reviewedAt       DateTime?
+  reviewNotes      String?
+  reviewedByUserId String?                  @db.ObjectId
+  createdAt        DateTime                 @default(now())
+  updatedAt        DateTime                 @updatedAt
+  user             User                     @relation("CreatorApplicant", fields: [userId], references: [id])
+  reviewedByUser   User?                    @relation("CreatorReviewer", fields: [reviewedByUserId], references: [id])
+
+  @@index([status, updatedAt])
+  @@index([reviewedByUserId])
+  @@map("creator_applications")
+}
+
+model Profile {
+  id                   String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId               String    @unique @db.ObjectId
+  displayName          String
+  avatarUrl            String?
+  bio                  String?
+  location             String?
+  tagline              String?
+  website              String?
+  twitter              String?
+  discord              String?
+  displayLanguage      String?   @default("English (US)")
+  contentFiltering     Boolean   @default(true)
+  privateLibrary       Boolean   @default(true)
+  allowMessages        Boolean   @default(false)
+  showActivity         Boolean   @default(true)
+  selectedGenres       String[]  @default([])
+  readingStyle         String?
+  readingTheme         String?
+  onboardingCompletedAt DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+  user                 User      @relation(fields: [userId], references: [id])
+
+  @@map("profiles")
+}
+
+model Credential {
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId       String   @unique @db.ObjectId
+  passwordHash String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  user         User     @relation(fields: [userId], references: [id])
+
+  @@map("credentials")
+}
+
+model Session {
+  id                    String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId                String   @db.ObjectId
+  refreshTokenHash      String
+  userAgent             String?
+  ipAddress             String?
+  accessTokenExpiresAt  DateTime
+  refreshTokenExpiresAt DateTime
+  revokedAt             DateTime?
+  createdAt             DateTime @default(now())
+  lastUsedAt            DateTime @default(now())
+  user                  User     @relation(fields: [userId], references: [id])
+
+  @@index([userId, revokedAt])
+  @@index([refreshTokenExpiresAt])
+  @@map("sessions")
+}
+
+model AdminSequence {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  key       String   @unique
+  value     Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("admin_sequences")
+}
+
+model ContractTemplate {
+  id                  String              @id @default(auto()) @map("_id") @db.ObjectId
+  templateName        String
+  description         String?
+  companyName         String
+  body                String
+  exclusivity         ContractExclusivity
+  geographicRights    String
+  termMonths          Int
+  revenueSharePercent Int
+  signingBonusCoins   Int
+  advancePaymentCents Int
+  createdByAdminUserId String?            @db.ObjectId
+  updatedByAdminUserId String?            @db.ObjectId
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+  createdByAdminUser  User?               @relation("ContractTemplateCreator", fields: [createdByAdminUserId], references: [id])
+  updatedByAdminUser  User?               @relation("ContractTemplateUpdater", fields: [updatedByAdminUserId], references: [id])
+  contracts           Contract[]
+
+  @@index([templateName, updatedAt])
+  @@map("contract_templates")
+}
+
+model Contract {
+  id                  String              @id @default(auto()) @map("_id") @db.ObjectId
+  displayId           String              @unique
+  userId              String              @db.ObjectId
+  storyId             String              @db.ObjectId
+  templateId          String?             @db.ObjectId
+  partyRole           String
+  status              ContractStatus      @default(DRAFT)
+  contractType        ContractExclusivity
+  templateName        String
+  companyName         String
+  body                String
+  geographicRights    String
+  termMonths          Int
+  revenueSharePercent Int
+  signingBonusCoins   Int
+  advancePaymentCents Int
+  createdByAdminUserId String?            @db.ObjectId
+  updatedByAdminUserId String?            @db.ObjectId
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+  user                User                @relation("ContractParty", fields: [userId], references: [id])
+  story               Story               @relation("StoryContract", fields: [storyId], references: [id])
+  template            ContractTemplate?   @relation(fields: [templateId], references: [id])
+  createdByAdminUser  User?               @relation("ContractCreator", fields: [createdByAdminUserId], references: [id])
+  updatedByAdminUser  User?               @relation("ContractUpdater", fields: [updatedByAdminUserId], references: [id])
+
+  @@index([status, updatedAt])
+  @@index([userId, updatedAt])
+  @@index([storyId, updatedAt])
+  @@map("contracts")
+}
+
+model PasswordResetToken {
+  id         String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId     String    @db.ObjectId
+  email      String
+  codeHash   String
+  expiresAt  DateTime
+  verifiedAt DateTime?
+  usedAt     DateTime?
+  createdAt  DateTime  @default(now())
+  user       User      @relation(fields: [userId], references: [id])
+
+  @@index([userId, expiresAt])
+  @@index([email, createdAt])
+  @@map("password_reset_tokens")
+}
+
+model Genre {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  slug        String   @unique
+  name        String
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("genres")
+}
+
+model Tag {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  slug      String   @unique
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("tags")
+}
+
+model Story {
+  id               String             @id @default(auto()) @map("_id") @db.ObjectId
+  slug             String             @unique
+  title            String
+  shortSynopsis    String
+  synopsis         String
+  authorId         String?            @db.ObjectId
+  authorName       String
+  status           StoryStatus        @default(PUBLISHED)
+  isLive           Boolean            @default(false)
+  liveAt           DateTime?
+  language         String             @default("English")
+  maturityRating   String             @default("16+")
+  targetAudience   String             @default("Young Adult")
+  featured         Boolean            @default(false)
+  genreSlugs       String[]           @default([])
+  tagSlugs         String[]           @default([])
+  totalReads       Int                @default(0)
+  averageRating    Float              @default(0)
+  reviewCount      Int                @default(0)
+  publishedAt      DateTime?
+  latestChapterAt  DateTime?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+  author           User?              @relation("StoryAuthor", fields: [authorId], references: [id])
+  assets           StoryAsset?
+  volumes          StoryVolume[]
+  arcs             StoryArc[]
+  chapters         Chapter[]
+  publishedChapters PublishedChapter[]
+  readingProgress  ReadingProgress[]
+  bookmarks        Bookmark[]
+  chapterEntitlements ChapterEntitlement[]
+  adUnlockRecords  AdUnlockRecord[]
+  giftTransactions GiftTransaction[]
+  walletLedgerEntries WalletLedgerEntry[]
+  communityPosts   CommunityPost[]
+  contentReports   ContentReport[]
+  adminControl     StoryAdminControl?
+  contracts        Contract[]         @relation("StoryContract")
+
+  @@index([featured, status])
+  @@index([genreSlugs])
+  @@index([tagSlugs])
+  @@map("stories")
+}
+
+model StoryAsset {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  storyId        String   @unique @db.ObjectId
+  coverImageUrl  String
+  bannerImageUrl String?
+  cardImageUrl   String?
+  accentColor    String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  story          Story    @relation(fields: [storyId], references: [id])
+
+  @@map("story_assets")
+}
+
+model StoryVolume {
+  id         String     @id @default(auto()) @map("_id") @db.ObjectId
+  storyId    String     @db.ObjectId
+  number     Int
+  title      String
+  sortOrder  Int
+  statusLabel String    @default("Planning")
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+  story      Story      @relation(fields: [storyId], references: [id])
+  arcs       StoryArc[]
+  chapters   Chapter[]
+
+  @@unique([storyId, number])
+  @@index([storyId, sortOrder])
+  @@map("story_volumes")
+}
+
+model StoryArc {
+  id          String      @id @default(auto()) @map("_id") @db.ObjectId
+  storyId     String      @db.ObjectId
+  volumeId    String      @db.ObjectId
+  title       String
+  sortOrder   Int
+  statusLabel String      @default("Planning")
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  story       Story       @relation(fields: [storyId], references: [id])
+  volume      StoryVolume @relation(fields: [volumeId], references: [id])
+  chapters    Chapter[]
+
+  @@index([storyId, volumeId, sortOrder])
+  @@map("story_arcs")
+}
+
+model Chapter {
+  id               String           @id @default(auto()) @map("_id") @db.ObjectId
+  storyId          String           @db.ObjectId
+  volumeId         String?          @db.ObjectId
+  arcId            String?          @db.ObjectId
+  slug             String
+  title            String
+  chapterNumber    Int
+  status           ChapterStatus    @default(PUBLISHED)
+  excerpt          String?
+  wordCount        Int              @default(0)
+  readingMinutes   Int              @default(0)
+  bodyDraft        String           @default("")
+  premiumEnabled   Boolean          @default(false)
+  coinUnlockPrice  Int              @default(50)
+  authorNote       String?
+  contentWarnings  String[]         @default([])
+  scheduledFor     DateTime?
+  lastPublishedAt  DateTime?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  story            Story            @relation(fields: [storyId], references: [id])
+  volume           StoryVolume?     @relation(fields: [volumeId], references: [id])
+  arc              StoryArc?        @relation(fields: [arcId], references: [id])
+  publishedChapter PublishedChapter?
+
+  @@unique([storyId, slug])
+  @@unique([storyId, chapterNumber])
+  @@index([storyId, status, chapterNumber])
+  @@map("chapters")
+}
+
+model PublishedChapter {
+  id               String    @id @default(auto()) @map("_id") @db.ObjectId
+  storyId          String    @db.ObjectId
+  chapterId        String    @unique @db.ObjectId
+  slug             String
+  title            String
+  chapterNumber    Int
+  bodyParagraphs   String[]  @default([])
+  premium          Boolean   @default(false)
+  coinUnlockPrice  Int       @default(50)
+  publishedAt      DateTime  @default(now())
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  story            Story     @relation(fields: [storyId], references: [id])
+  chapter          Chapter   @relation(fields: [chapterId], references: [id])
+  readingProgress  ReadingProgress[]
+  bookmarks        Bookmark[]
+  chapterEntitlements ChapterEntitlement[]
+  adUnlockRecords  AdUnlockRecord[]
+  walletLedgerEntries WalletLedgerEntry[]
+  contentReports   ContentReport[]
+  adminOverride    PublishedChapterAdminOverride?
+
+  @@unique([storyId, slug])
+  @@unique([storyId, chapterNumber])
+  @@index([storyId, publishedAt])
+  @@map("published_chapters")
+}
+
+model StoryAdminControl {
+  id                     String                   @id @default(auto()) @map("_id") @db.ObjectId
+  storyId                String                   @unique @db.ObjectId
+  visibilityState        AdminBookVisibilityState @default(PENDING_APPROVAL)
+  globalCoinCap          Int                      @default(50)
+  defaultPremiumWindowHours Int                   @default(-1)
+  releaseMode            AdminBookReleaseMode     @default(PREMIUM_WINDOW)
+  reviewNotes            String?
+  reviewedByAdminUserId  String?                  @db.ObjectId
+  reviewedAt             DateTime?
+  lastUpdatedByAdminUserId String?                @db.ObjectId
+  createdAt              DateTime                 @default(now())
+  updatedAt              DateTime                 @updatedAt
+  story                  Story                    @relation(fields: [storyId], references: [id])
+  reviewedByAdminUser    User?                    @relation("BookControlReviewer", fields: [reviewedByAdminUserId], references: [id])
+  lastUpdatedByAdminUser User?                    @relation("BookControlUpdater", fields: [lastUpdatedByAdminUserId], references: [id])
+
+  @@index([visibilityState, updatedAt])
+  @@index([reviewedByAdminUserId])
+  @@index([lastUpdatedByAdminUserId])
+  @@map("story_admin_controls")
+}
+
+model PublishedChapterAdminOverride {
+  id                     String   @id @default(auto()) @map("_id") @db.ObjectId
+  publishedChapterId     String   @unique @db.ObjectId
+  overrideEnabled        Boolean  @default(false)
+  lockedOverride         Boolean?
+  coinPriceOverride      Int?
+  premiumWindowHoursOverride Int?
+  updatedByAdminUserId   String?  @db.ObjectId
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+  publishedChapter       PublishedChapter @relation(fields: [publishedChapterId], references: [id])
+  updatedByAdminUser     User?    @relation("ChapterOverrideUpdater", fields: [updatedByAdminUserId], references: [id])
+
+  @@index([updatedByAdminUserId])
+  @@map("published_chapter_admin_overrides")
+}
+
+model BookPlatformPolicy {
+  id                       String               @id @default(auto()) @map("_id") @db.ObjectId
+  key                      String               @unique
+  defaultReleaseMode       AdminBookReleaseMode @default(PREMIUM_WINDOW)
+  defaultPremiumWindowHours Int                 @default(-1)
+  defaultCoinCap           Int                  @default(50)
+  createdAt                DateTime             @default(now())
+  updatedAt                DateTime             @updatedAt
+
+  @@map("book_platform_policies")
+}
+
+model ReadingProgress {
+  id                String           @id @default(auto()) @map("_id") @db.ObjectId
+  userId            String           @db.ObjectId
+  storyId           String           @db.ObjectId
+  publishedChapterId String          @db.ObjectId
+  progressPercent   Int              @default(0)
+  paragraphIndex    Int              @default(0)
+  lastReadAt        DateTime         @default(now())
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  user              User             @relation(fields: [userId], references: [id])
+  story             Story            @relation(fields: [storyId], references: [id])
+  chapter           PublishedChapter @relation(fields: [publishedChapterId], references: [id])
+
+  @@unique([userId, storyId])
+  @@index([userId, lastReadAt])
+  @@map("reading_progress")
+}
+
+model Bookmark {
+  id                String           @id @default(auto()) @map("_id") @db.ObjectId
+  userId            String           @db.ObjectId
+  storyId           String           @db.ObjectId
+  publishedChapterId String          @db.ObjectId
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  user              User             @relation(fields: [userId], references: [id])
+  story             Story            @relation(fields: [storyId], references: [id])
+  chapter           PublishedChapter @relation(fields: [publishedChapterId], references: [id])
+
+  @@unique([userId, publishedChapterId])
+  @@index([userId, createdAt])
+  @@map("bookmarks")
+}
+
+model Plan {
+  id                String         @id @default(auto()) @map("_id") @db.ObjectId
+  code              String         @unique
+  name              String
+  description       String
+  active            Boolean        @default(true)
+  monthlyPriceCents Int
+  yearlyPriceCents  Int?
+  monthlyCoinGrant  Int            @default(0)
+  paystackMonthlyPlanCode String?
+  paystackAnnualPlanCode  String?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  purchases         Purchase[]
+  subscriptions     Subscription[]
+
+  @@map("plans")
+}
+
+model CoinPackage {
+  id            String     @id @default(auto()) @map("_id") @db.ObjectId
+  code          String     @unique
+  name          String
+  description   String
+  active        Boolean    @default(true)
+  coins         Int
+  bonusCoins    Int        @default(0)
+  priceCents    Int
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+  purchases     Purchase[]
+
+  @@map("coin_packages")
+}
+
+model Wallet {
+  id           String             @id @default(auto()) @map("_id") @db.ObjectId
+  userId       String             @unique @db.ObjectId
+  balanceCoins Int                @default(0)
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+  user         User               @relation(fields: [userId], references: [id])
+  ledgerEntries WalletLedgerEntry[]
+
+  @@map("wallets")
+}
+
+model Purchase {
+  id                    String           @id @default(auto()) @map("_id") @db.ObjectId
+  userId                String           @db.ObjectId
+  kind                  PurchaseKind
+  status                PurchaseStatus   @default(PENDING)
+  billingInterval       BillingInterval?
+  amountCents           Int
+  currency              String           @default("usd")
+  paystackReference     String?
+  paystackTransactionId String?
+  paystackSubscriptionCode String?
+  paystackCustomerCode  String?
+  planId                String?          @db.ObjectId
+  coinPackageId         String?          @db.ObjectId
+  returnTo              String?
+  idempotencyKey        String           @unique
+  completedAt           DateTime?
+  failedAt              DateTime?
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @updatedAt
+  user                  User             @relation(fields: [userId], references: [id])
+  plan                  Plan?            @relation(fields: [planId], references: [id])
+  coinPackage           CoinPackage?     @relation(fields: [coinPackageId], references: [id])
+  walletLedgerEntries   WalletLedgerEntry[]
+  chapterEntitlements   ChapterEntitlement[]
+
+  @@index([userId, createdAt])
+  @@index([paystackReference])
+  @@index([paystackTransactionId])
+  @@index([paystackSubscriptionCode])
+  @@map("purchases")
+}
+
+model Subscription {
+  id                 String             @id @default(auto()) @map("_id") @db.ObjectId
+  userId             String             @db.ObjectId
+  planId             String             @db.ObjectId
+  status             SubscriptionStatus @default(INCOMPLETE)
+  billingInterval    BillingInterval
+  paystackCustomerCode String?
+  paystackSubscriptionCode String?
+  paystackPlanCode   String?
+  currentPeriodStart DateTime?
+  currentPeriodEnd   DateTime?
+  cancelAtPeriodEnd  Boolean            @default(false)
+  lastCoinGrantAt    DateTime?
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+  user               User               @relation(fields: [userId], references: [id])
+  plan               Plan               @relation(fields: [planId], references: [id])
+
+  @@index([userId, status])
+  @@index([paystackSubscriptionCode])
+  @@map("subscriptions")
+}
+
+model WalletLedgerEntry {
+  id                String                @id @default(auto()) @map("_id") @db.ObjectId
+  walletId          String                @db.ObjectId
+  userId            String                @db.ObjectId
+  entryType         WalletLedgerEntryType
+  reason            WalletLedgerReason
+  deltaCoins        Int
+  balanceAfter      Int
+  purchaseId        String?               @db.ObjectId
+  storyId           String?               @db.ObjectId
+  publishedChapterId String?              @db.ObjectId
+  giftTransactionId String?               @db.ObjectId
+  idempotencyKey    String                @unique
+  note              String?
+  createdAt         DateTime              @default(now())
+  wallet            Wallet                @relation(fields: [walletId], references: [id])
+  user              User                  @relation(fields: [userId], references: [id])
+  purchase          Purchase?             @relation(fields: [purchaseId], references: [id])
+  story             Story?                @relation(fields: [storyId], references: [id])
+  chapter           PublishedChapter?     @relation(fields: [publishedChapterId], references: [id])
+  giftTransaction   GiftTransaction?      @relation(fields: [giftTransactionId], references: [id])
+
+  @@index([userId, createdAt])
+  @@index([walletId, createdAt])
+  @@map("wallet_ledger_entries")
+}
+
+model ChapterEntitlement {
+  id                String                   @id @default(auto()) @map("_id") @db.ObjectId
+  userId            String                   @db.ObjectId
+  storyId           String                   @db.ObjectId
+  publishedChapterId String                  @db.ObjectId
+  source            ChapterEntitlementSource
+  purchaseId        String?                  @db.ObjectId
+  adUnlockRecordId  String?                  @unique @db.ObjectId
+  expiresAt         DateTime?
+  createdAt         DateTime                 @default(now())
+  updatedAt         DateTime                 @updatedAt
+  user              User                     @relation(fields: [userId], references: [id])
+  story             Story                    @relation(fields: [storyId], references: [id])
+  chapter           PublishedChapter         @relation(fields: [publishedChapterId], references: [id])
+  purchase          Purchase?                @relation(fields: [purchaseId], references: [id])
+  adUnlockRecord    AdUnlockRecord?          @relation(fields: [adUnlockRecordId], references: [id])
+
+  @@unique([userId, publishedChapterId])
+  @@index([userId, createdAt])
+  @@map("chapter_entitlements")
+}
+
+model AdUnlockRecord {
+  id                String               @id @default(auto()) @map("_id") @db.ObjectId
+  userId            String               @db.ObjectId
+  storyId           String               @db.ObjectId
+  publishedChapterId String              @db.ObjectId
+  provider          String               @default("internal")
+  idempotencyKey    String               @unique
+  createdAt         DateTime             @default(now())
+  user              User                 @relation(fields: [userId], references: [id])
+  story             Story                @relation(fields: [storyId], references: [id])
+  chapter           PublishedChapter     @relation(fields: [publishedChapterId], references: [id])
+  chapterEntitlement ChapterEntitlement?
+
+  @@unique([userId, publishedChapterId])
+  @@map("ad_unlock_records")
+}
+
+model GiftTransaction {
+  id                String                @id @default(auto()) @map("_id") @db.ObjectId
+  senderUserId      String                @db.ObjectId
+  storyId           String                @db.ObjectId
+  recipientAuthorId String?               @db.ObjectId
+  recipientAuthorName String
+  giftCode          String
+  giftName          String
+  message           String?
+  costCoins         Int
+  status            GiftTransactionStatus @default(COMPLETED)
+  idempotencyKey    String                @unique
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+  sender            User                  @relation("GiftSender", fields: [senderUserId], references: [id])
+  story             Story                 @relation(fields: [storyId], references: [id])
+  recipientAuthor   User?                 @relation("GiftRecipient", fields: [recipientAuthorId], references: [id])
+  walletLedgerEntries WalletLedgerEntry[]
+
+  @@index([senderUserId, createdAt])
+  @@map("gift_transactions")
+}
+
+model RewardWallet {
+  id           String             @id @default(auto()) @map("_id") @db.ObjectId
+  userId       String             @unique @db.ObjectId
+  balancePoints Int               @default(0)
+  streakDays   Int                @default(0)
+  lastCheckInAt DateTime?
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+  user         User               @relation(fields: [userId], references: [id])
+  ledgerEntries RewardLedgerEntry[]
+
+  @@map("reward_wallets")
+}
+
+model RewardLedgerEntry {
+  id                String                @id @default(auto()) @map("_id") @db.ObjectId
+  rewardWalletId    String                @db.ObjectId
+  userId            String                @db.ObjectId
+  entryType         RewardLedgerEntryType
+  reason            RewardLedgerReason
+  deltaPoints       Int
+  balanceAfter      Int
+  missionDefinitionId String?             @db.ObjectId
+  referralEventId   String?               @db.ObjectId
+  idempotencyKey    String                @unique
+  note              String?
+  createdAt         DateTime              @default(now())
+  rewardWallet      RewardWallet          @relation(fields: [rewardWalletId], references: [id])
+  user              User                  @relation(fields: [userId], references: [id])
+  missionDefinition MissionDefinition?    @relation(fields: [missionDefinitionId], references: [id])
+  referralEvent     ReferralEvent?        @relation(fields: [referralEventId], references: [id])
+
+  @@index([userId, createdAt])
+  @@map("reward_ledger_entries")
+}
+
+model DailyCheckIn {
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId     String   @db.ObjectId
+  checkedInAt DateTime @default(now())
+  rewardPoints Int    @default(50)
+  createdAt  DateTime @default(now())
+  user       User     @relation(fields: [userId], references: [id])
+
+  @@index([userId, checkedInAt])
+  @@map("daily_check_ins")
+}
+
+model MissionDefinition {
+  id           String            @id @default(auto()) @map("_id") @db.ObjectId
+  key          String            @unique
+  title        String
+  description  String
+  group        MissionGroup
+  metricType   MissionMetricType
+  recurrence   MissionRecurrence
+  targetValue  Int
+  rewardPoints Int
+  icon         String
+  actionLabel  String
+  actionHref   String?
+  active       Boolean           @default(true)
+  sortOrder    Int               @default(0)
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+  states       UserMissionState[]
+  rewardLedgerEntries RewardLedgerEntry[]
+
+  @@index([group, recurrence, sortOrder])
+  @@map("mission_definitions")
+}
+
+model UserMissionState {
+  id                String            @id @default(auto()) @map("_id") @db.ObjectId
+  userId            String            @db.ObjectId
+  missionDefinitionId String          @db.ObjectId
+  currentValue      Int               @default(0)
+  completedAt       DateTime?
+  claimedAt         DateTime?
+  lastProgressAt    DateTime?
+  cycleKey          String            @default("lifetime")
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+  user              User              @relation(fields: [userId], references: [id])
+  missionDefinition MissionDefinition @relation(fields: [missionDefinitionId], references: [id])
+
+  @@unique([userId, missionDefinitionId, cycleKey])
+  @@index([userId, updatedAt])
+  @@map("user_mission_states")
+}
+
+model ReferralCode {
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId     String   @unique @db.ObjectId
+  code       String   @unique
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  user       User     @relation(fields: [userId], references: [id])
+  events     ReferralEvent[]
+
+  @@map("referral_codes")
+}
+
+model ReferralEvent {
+  id                String               @id @default(auto()) @map("_id") @db.ObjectId
+  referralCodeId    String               @db.ObjectId
+  inviterUserId     String               @db.ObjectId
+  inviteeUserId     String?              @db.ObjectId
+  status            ReferralEventStatus  @default(SHARED)
+  channel           String
+  inviteeEmail      String?
+  rewardPoints      Int                  @default(20)
+  completedAt       DateTime?
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+  referralCode      ReferralCode         @relation(fields: [referralCodeId], references: [id])
+  inviter           User                 @relation("ReferralInviter", fields: [inviterUserId], references: [id])
+  invitee           User?                @relation("ReferralInvitee", fields: [inviteeUserId], references: [id])
+  rewardLedgerEntries RewardLedgerEntry[]
+
+  @@index([inviterUserId, createdAt])
+  @@index([inviteeUserId])
+  @@map("referral_events")
+}
+
+model LeaderboardSnapshot {
+  id         String            @id @default(auto()) @map("_id") @db.ObjectId
+  period     LeaderboardPeriod
+  title      String
+  startsAt   DateTime
+  endsAt     DateTime
+  createdAt  DateTime          @default(now())
+  entries    LeaderboardEntry[]
+
+  @@index([period, endsAt])
+  @@map("leaderboard_snapshots")
+}
+
+model LeaderboardEntry {
+  id                  String              @id @default(auto()) @map("_id") @db.ObjectId
+  leaderboardSnapshotId String            @db.ObjectId
+  userId              String              @db.ObjectId
+  rank                Int
+  points              Int
+  badge               String?
+  createdAt           DateTime            @default(now())
+  leaderboardSnapshot LeaderboardSnapshot @relation(fields: [leaderboardSnapshotId], references: [id])
+  user                User                @relation(fields: [userId], references: [id])
+
+  @@unique([leaderboardSnapshotId, userId])
+  @@index([userId, createdAt])
+  @@map("leaderboard_entries")
+}
+
+model CommunityPost {
+  id                String              @id @default(auto()) @map("_id") @db.ObjectId
+  creatorUserId     String              @db.ObjectId
+  storyId           String?             @db.ObjectId
+  type              CommunityPostType
+  status            CommunityPostStatus @default(LIVE)
+  title             String
+  body              String
+  imageUrl          String?
+  publishedAt       DateTime            @default(now())
+  archivedAt        DateTime?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  creator           User                @relation("CommunityCreator", fields: [creatorUserId], references: [id])
+  story             Story?              @relation(fields: [storyId], references: [id])
+  pollOptions       PollOption[]
+  pollVotes         PollVote[]
+
+  @@index([creatorUserId, publishedAt])
+  @@index([storyId, publishedAt])
+  @@map("community_posts")
+}
+
+model PollOption {
+  id              String      @id @default(auto()) @map("_id") @db.ObjectId
+  communityPostId String      @db.ObjectId
+  label           String
+  imageUrl        String?
+  sortOrder       Int         @default(0)
+  createdAt       DateTime    @default(now())
+  communityPost   CommunityPost @relation(fields: [communityPostId], references: [id])
+  votes           PollVote[]
+
+  @@index([communityPostId, sortOrder])
+  @@map("poll_options")
+}
+
+model PollVote {
+  id           String     @id @default(auto()) @map("_id") @db.ObjectId
+  communityPostId String  @db.ObjectId
+  pollOptionId String     @db.ObjectId
+  userId       String     @db.ObjectId
+  createdAt    DateTime   @default(now())
+  communityPost CommunityPost @relation(fields: [communityPostId], references: [id])
+  pollOption   PollOption @relation(fields: [pollOptionId], references: [id])
+  user         User       @relation(fields: [userId], references: [id])
+
+  @@unique([communityPostId, userId])
+  @@index([pollOptionId])
+  @@map("poll_votes")
+}
+
+model NotificationPreference {
+  id                  String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId              String   @unique @db.ObjectId
+  emailNewComments    Boolean  @default(true)
+  emailWeeklyDigest   Boolean  @default(true)
+  emailSecurityAlerts Boolean  @default(true)
+  emailMarketing      Boolean  @default(false)
+  pushNewStories      Boolean  @default(true)
+  pushDirectMessages  Boolean  @default(false)
+  pushStoryComments   Boolean  @default(true)
+  pushCommentReplies  Boolean  @default(true)
+  appAchievements     Boolean  @default(true)
+  appSystemUpdates    Boolean  @default(true)
+  appStreakAlerts     Boolean  @default(true)
+  appMaintenance      Boolean  @default(true)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  user                User     @relation(fields: [userId], references: [id])
+
+  @@map("notification_preferences")
+}
+
+model AppNotification {
+  id          String           @id @default(auto()) @map("_id") @db.ObjectId
+  userId      String           @db.ObjectId
+  type        NotificationType
+  title       String
+  body        String
+  ctaLabel    String?
+  ctaHref     String?
+  readAt      DateTime?
+  emailedAt   DateTime?
+  createdAt   DateTime         @default(now())
+  user        User             @relation(fields: [userId], references: [id])
+
+  @@index([userId, createdAt])
+  @@map("app_notifications")
+}
+
+model UserActivityEvent {
+  id           String                @id @default(auto()) @map("_id") @db.ObjectId
+  userId       String                @db.ObjectId
+  type         UserActivityEventType
+  referenceId  String?
+  numericValue Int                   @default(1)
+  happenedAt   DateTime              @default(now())
+  createdAt    DateTime              @default(now())
+  user         User                  @relation(fields: [userId], references: [id])
+
+  @@index([userId, type, happenedAt])
+  @@map("user_activity_events")
+}
+
+model ContentReport {
+  id                String           @id @default(auto()) @map("_id") @db.ObjectId
+  reporterUserId    String           @db.ObjectId
+  targetType        ReportTargetType
+  storyId           String?          @db.ObjectId
+  publishedChapterId String?         @db.ObjectId
+  storySlug         String?
+  chapterSlug       String?
+  title             String
+  reason            String
+  details           String?
+  status            ReportStatus     @default(OPEN)
+  resolutionNotes   String?
+  assignedAdminId   String?          @db.ObjectId
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  reporter          User             @relation("ReportReporter", fields: [reporterUserId], references: [id])
+  assignedAdmin     User?            @relation("ReportAssignee", fields: [assignedAdminId], references: [id])
+  story             Story?           @relation(fields: [storyId], references: [id])
+  chapter           PublishedChapter? @relation(fields: [publishedChapterId], references: [id])
+
+  @@index([status, createdAt])
+  @@index([reporterUserId, createdAt])
+  @@map("content_reports")
+}
+
+model SupportTicket {
+  id                String                @id @default(auto()) @map("_id") @db.ObjectId
+  requesterUserId   String                @db.ObjectId
+  assignedAdminId   String?               @db.ObjectId
+  category          SupportTicketCategory
+  priority          SupportTicketPriority @default(NORMAL)
+  status            SupportTicketStatus   @default(OPEN)
+  subject           String
+  latestPreview     String?
+  createdAt         DateTime              @default(now())
+  updatedAt         DateTime              @updatedAt
+  requester         User                  @relation("SupportRequester", fields: [requesterUserId], references: [id])
+  assignedAdmin     User?                 @relation("SupportAssignee", fields: [assignedAdminId], references: [id])
+  messages          SupportMessage[]
+
+  @@index([status, updatedAt])
+  @@index([requesterUserId, updatedAt])
+  @@map("support_tickets")
+}
+
+model SupportMessage {
+  id             String                   @id @default(auto()) @map("_id") @db.ObjectId
+  ticketId       String                   @db.ObjectId
+  senderUserId   String?                  @db.ObjectId
+  senderRole     SupportMessageSenderRole
+  body           String
+  createdAt      DateTime                 @default(now())
+  ticket         SupportTicket            @relation(fields: [ticketId], references: [id])
+  senderUser     User?                    @relation(fields: [senderUserId], references: [id])
+
+  @@index([ticketId, createdAt])
+  @@map("support_messages")
+}
+
+model CreatorPayout {
+  id            String              @id @default(auto()) @map("_id") @db.ObjectId
+  creatorUserId String              @db.ObjectId
+  periodLabel   String
+  amountCents   Int
+  status        CreatorPayoutStatus @default(PENDING)
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+  creator       User                @relation(fields: [creatorUserId], references: [id])
+
+  @@index([status, updatedAt])
+  @@index([creatorUserId, updatedAt])
+  @@map("creator_payouts")
+}
+
+model AdminSetting {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  key         String   @unique
+  kind        AdminSettingKind @default(BOOLEAN)
+  group       String
+  title       String
+  description String
+  enabled     Boolean  @default(false)
+  valueCents  Int?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([group])
+  @@map("admin_settings")
+}
+
+model AdminAuditLog {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  adminUserId String?  @db.ObjectId
+  action      String
+  targetType  String
+  targetId    String?
+  summary     String
+  detail      String
+  tone        String   @default("primary")
+  icon        String   @default("bolt")
+  createdAt   DateTime @default(now())
+  adminUser   User?    @relation("AdminActor", fields: [adminUserId], references: [id])
+
+  @@index([createdAt])
+  @@index([adminUserId, createdAt])
+  @@map("admin_audit_logs")
+}
+
+model PaystackWebhookEvent {
+  id           String   @id @default(auto()) @map("_id") @db.ObjectId
+  paystackEventKey String  @unique
+  eventType    String
+  processedAt  DateTime
+  createdAt    DateTime @default(now())
+
+  @@map("paystack_webhook_events")
+}

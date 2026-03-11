@@ -1,0 +1,1171 @@
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from "@nestjs/common";
+import { AdminBookVisibilityState, Prisma, StoryStatus } from "@prisma/client";
+import { PrismaService } from "../database/prisma.service";
+import {
+  defaultBookPlatformPolicy,
+  formatVisibilityLabel,
+  getStoryVisibilityState,
+} from "../utils/book-admin";
+import {
+  StudioChapterDraftInput,
+  StudioCoverUploadInput,
+  StudioPublishInput,
+  StudioStoryInput,
+  StudioStructureInput,
+} from "./studio.types";
+
+type StudioStoryRecord = Prisma.StoryGetPayload<{
+  include: {
+    adminControl: true;
+    assets: true;
+    chapters: {
+      include: {
+        publishedChapter: true;
+      };
+      orderBy: {
+        chapterNumber: "asc";
+      };
+    };
+    publishedChapters: {
+      orderBy: {
+        publishedAt: "desc";
+      };
+    };
+    volumes: {
+      include: {
+        arcs: {
+          include: {
+            chapters: {
+              orderBy: {
+                chapterNumber: "asc";
+              };
+            };
+          };
+          orderBy: {
+            sortOrder: "asc";
+          };
+        };
+      };
+      orderBy: {
+        sortOrder: "asc";
+      };
+    };
+  };
+}>;
+
+type StudioChapterRecord = Prisma.ChapterGetPayload<{
+  include: {
+    arc: true;
+    publishedChapter: true;
+    story: {
+      include: {
+        assets: true;
+        adminControl: true;
+      };
+    };
+    volume: true;
+  };
+}>;
+
+@Injectable()
+export class StudioService {
+  constructor(private readonly prisma: PrismaService) {}
+
+  async listStories(userId: string) {
+    const stories = await this.prisma.story.findMany({
+      where: {
+        authorId: userId,
+      },
+      include: {
+        adminControl: true,
+        assets: true,
+        chapters: {
+          include: {
+            publishedChapter: true,
+          },
+          orderBy: {
+            chapterNumber: "asc",
+          },
+        },
+        publishedChapters: {
+          orderBy: {
+            publishedAt: "desc",
+          },
+        },
+        volumes: {
+          include: {
+            arcs: {
+              include: {
+                chapters: {
+                  orderBy: {
+                    chapterNumber: "asc",
+                  },
+                },
+              },
+              orderBy: {
+                sortOrder: "asc",
+              },
+            },
+          },
+          orderBy: {
+            sortOrder: "asc",
+          },
+        },
+      },
+      orderBy: {
+        updatedAt: "desc",
+      },
+    });
+
+    return {
+      stories: stories.map((story) => this.mapStudioStory(story)),
+    };
+  }
+
+  async getStory(userId: string, storySlug: string) {
+    const story = await this.getStoryRecord(userId, storySlug);
+
+    return {
+      story: this.mapStudioStory(story),
+    };
+  }
+
+  async createStory(userId: string, input: StudioStoryInput) {
+    const author = await this.prisma.user.findUnique({
+      where: {
+        id: userId,
+      },
+      include: {
+        profile: true,
+      },
+    });
+
+    if (!author) {
+      throw new NotFoundException("Creator account not found.");
+    }
+
+    const slug = await this.createUniqueStorySlug(input.title);
+    const shortSynopsis = this.createShortSynopsis(input.synopsis);
+
+    const story = await this.prisma.story.create({
+      data: {
+        authorId: userId,
+        authorName: author.profile?.displayName ?? "StoryArc Creator",
+        genreSlugs: [this.toSlug(input.genre)],
+        shortSynopsis,
+        slug,
+        status: StoryStatus.DRAFT,
+        synopsis: input.synopsis,
+        tagSlugs: input.tags.map((tag) => this.toSlug(tag)),
+        targetAudience: input.audience,
+        title: input.title,
+        assets: {
+          create: {
+            bannerImageUrl: input.coverImage,
+            cardImageUrl: input.coverImage,
+            coverImageUrl: input.coverImage,
+          },
+        },
+        volumes: {
+          create: {
+            number: 1,
+            sortOrder: 0,
+            statusLabel: "Planning",
+            title: "Volume 1: Opening Arc",
+          },
+        },
+      },
+      include: {
+        adminControl: true,
+        assets: true,
+        chapters: {
+          include: {
+            publishedChapter: true,
+          },
+          orderBy: {
+            chapterNumber: "asc",
+          },
+        },
+        publishedChapters: {
+          orderBy: {
+            publishedAt: "desc",
+          },
+        },
+        volumes: {
+          include: {
+            arcs: {
+              include: {
+                chapters: {
+                  orderBy: {
+                    chapterNumber: "asc",
+                  },
+                },
+              },
+              orderBy: {
+                sortOrder: "asc",
+              },
+            },
+          },
+          orderBy: {
+            sortOrder: "asc",
+          },
+        },
+      },
+    });
+
+    const openingVolume = story.volumes[0];
+
+    if (openingVolume) {
+      await this.prisma.storyArc.create({
+        data: {
+          sortOrder: 0,
+          statusLabel: "Planning",
+          storyId: story.id,
+          title: "Arc I: Genesis",
+          volumeId: openingVolume.id,
+        },
+      });
+    }
+
+    const refreshedStory = await this.getStoryRecord(userId, story.slug);
+
+    return {
+      story: this.mapStudioStory(refreshedStory),
+    };
+  }
+
+  async updateStory(userId: string, storySlug: string, input: StudioStoryInput) {
+    const story = await this.getStoryRecord(userId, storySlug);
+
+    const updatedStory = await this.prisma.story.update({
+      where: {
+        id: story.id,
+      },
+      data: {
+        genreSlugs: [this.toSlug(input.genre)],
+        shortSynopsis: this.createShortSynopsis(input.synopsis),
+        synopsis: input.synopsis,
+        tagSlugs: input.tags.map((tag) => this.toSlug(tag)),
+        targetAudience: input.audience,
+        title: input.title,
+        assets: story.assets
+          ? {
+              update: {
+                bannerImageUrl: input.coverImage,
+                cardImageUrl: input.coverImage,
+                coverImageUrl: input.coverImage,
+              },
+            }
+          : {
+              create: {
+                bannerImageUrl: input.coverImage,
+                cardImageUrl: input.coverImage,
+                coverImageUrl: input.coverImage,
+              },
+            },
+      },
+      include: {
+        adminControl: true,
+        assets: true,
+        chapters: {
+          include: {
+            publishedChapter: true,
+          },
+          orderBy: {
+            chapterNumber: "asc",
+          },
+        },
+        publishedChapters: {
+          orderBy: {
+            publishedAt: "desc",
+          },
+        },
+        volumes: {
+          include: {
+            arcs: {
+              include: {
+                chapters: {
+                  orderBy: {
+                    chapterNumber: "asc",
+                  },
+                },
+              },
+              orderBy: {
+                sortOrder: "asc",
+              },
+            },
+          },
+          orderBy: {
+            sortOrder: "asc",
+          },
+        },
+      },
+    });
+
+    return {
+      story: this.mapStudioStory(updatedStory),
+    };
+  }
+
+  async getChapterDraft(userId: string, storySlug: string, chapterId: string) {
+    const chapter = await this.prisma.chapter.findFirst({
+      where: {
+        id: chapterId,
+        story: {
+          authorId: userId,
+          slug: storySlug,
+        },
+      },
+      include: {
+        arc: true,
+        publishedChapter: true,
+        story: {
+          include: {
+            adminControl: true,
+            assets: true,
+          },
+        },
+        volume: true,
+      },
+    });
+
+    if (!chapter) {
+      throw new NotFoundException("Chapter draft not found.");
+    }
+
+    return {
+      chapterDraft: this.mapChapterDraft(chapter),
+    };
+  }
+
+  async saveChapterDraft(
+    userId: string,
+    storySlug: string,
+    input: StudioChapterDraftInput,
+  ) {
+    const story = await this.getStoryRecord(userId, storySlug);
+    const chapterNumber = this.parseChapterNumber(input.number);
+    const existingChapter = input.chapterId
+      ? await this.prisma.chapter.findFirst({
+          where: {
+            id: input.chapterId,
+            storyId: story.id,
+          },
+        })
+      : await this.prisma.chapter.findFirst({
+          where: {
+            chapterNumber,
+            storyId: story.id,
+          },
+        });
+
+    const chapterSlug =
+      existingChapter?.slug ??
+      (await this.createUniqueChapterSlug(story.id, input.title, chapterNumber));
+    const scheduledFor =
+      input.publishType === "scheduled" && input.scheduledFor
+        ? this.parseOptionalDate(input.scheduledFor, "scheduledFor")
+        : null;
+
+    const chapter = existingChapter
+      ? await this.prisma.chapter.update({
+          where: {
+            id: existingChapter.id,
+          },
+          data: {
+            arcId: this.normalizeObjectId(input.arcId),
+            authorNote: input.authorsNote || null,
+            bodyDraft: input.body,
+            chapterNumber,
+            coinUnlockPrice: input.premiumEnabled
+              ? Math.max(1, input.coinUnlockPrice)
+              : 0,
+            contentWarnings: input.warnings,
+            excerpt: this.createExcerpt(input.body),
+            readingMinutes: this.estimateReadingMinutes(input.body),
+            premiumEnabled: input.premiumEnabled,
+            scheduledFor,
+            slug: chapterSlug,
+            status: existingChapter.status === "PUBLISHED" ? "PUBLISHED" : "DRAFT",
+            title: input.title,
+            volumeId: this.normalizeObjectId(input.volumeId),
+            wordCount: this.getWordCount(input.body),
+          },
+          include: {
+            arc: true,
+            publishedChapter: true,
+            story: {
+              include: {
+                adminControl: true,
+                assets: true,
+              },
+            },
+            volume: true,
+          },
+        })
+      : await this.prisma.chapter.create({
+          data: {
+            arcId: this.normalizeObjectId(input.arcId),
+            authorNote: input.authorsNote || null,
+            bodyDraft: input.body,
+            chapterNumber,
+            coinUnlockPrice: input.premiumEnabled
+              ? Math.max(1, input.coinUnlockPrice)
+              : 0,
+            contentWarnings: input.warnings,
+            excerpt: this.createExcerpt(input.body),
+            readingMinutes: this.estimateReadingMinutes(input.body),
+            premiumEnabled: input.premiumEnabled,
+            scheduledFor,
+            slug: chapterSlug,
+            status: "DRAFT",
+            storyId: story.id,
+            title: input.title,
+            volumeId: this.normalizeObjectId(input.volumeId),
+            wordCount: this.getWordCount(input.body),
+          },
+          include: {
+            arc: true,
+            publishedChapter: true,
+            story: {
+              include: {
+                adminControl: true,
+                assets: true,
+              },
+            },
+            volume: true,
+          },
+        });
+
+    const refreshedStory = await this.getStoryRecord(userId, storySlug);
+
+    return {
+      chapterDraft: this.mapChapterDraft(chapter),
+      message: "Chapter draft saved.",
+      story: this.mapStudioStory(refreshedStory),
+    };
+  }
+
+  async publishChapter(userId: string, chapterId: string, input: StudioPublishInput) {
+    const chapter = await this.prisma.chapter.findFirst({
+      where: {
+        id: chapterId,
+        story: {
+          authorId: userId,
+        },
+      },
+      include: {
+        arc: true,
+        publishedChapter: true,
+        story: {
+          include: {
+            adminControl: true,
+            assets: true,
+          },
+        },
+        volume: true,
+      },
+    });
+
+    if (!chapter) {
+      throw new NotFoundException("Chapter draft not found.");
+    }
+
+    if (!chapter.title.trim()) {
+      throw new BadRequestException("A chapter title is required before publishing.");
+    }
+
+    if (!chapter.bodyDraft.trim()) {
+      throw new BadRequestException("Chapter body cannot be empty.");
+    }
+
+    if (input.mode === "scheduled") {
+      const scheduledFor = this.parseOptionalDate(input.scheduledFor, "scheduledFor");
+
+      if (!scheduledFor) {
+        throw new BadRequestException("scheduledFor is required for scheduled publishing.");
+      }
+
+      await this.prisma.chapter.update({
+        where: {
+          id: chapter.id,
+        },
+        data: {
+          scheduledFor,
+          status: "SCHEDULED",
+        },
+      });
+
+      const refreshedStory = await this.getStoryRecord(userId, chapter.story.slug);
+
+      return {
+        chapterDraft: this.mapChapterDraft({
+          ...chapter,
+          scheduledFor,
+          status: "SCHEDULED",
+        }),
+        message: "Chapter added to the release queue.",
+        story: this.mapStudioStory(refreshedStory),
+      };
+    }
+
+    const publishedAt = new Date();
+    const paragraphs = this.splitParagraphs(chapter.bodyDraft);
+    const bookPolicy = await this.prisma.bookPlatformPolicy.upsert({
+      where: {
+        key: defaultBookPlatformPolicy.key,
+      },
+      create: {
+        defaultCoinCap: defaultBookPlatformPolicy.defaultCoinCap,
+        defaultPremiumWindowHours:
+          defaultBookPlatformPolicy.defaultPremiumWindowHours,
+        defaultReleaseMode: defaultBookPlatformPolicy.defaultReleaseMode,
+        key: defaultBookPlatformPolicy.key,
+      },
+      update: {},
+    });
+
+    if (paragraphs.length === 0) {
+      throw new BadRequestException("Chapter body cannot be empty.");
+    }
+
+    await this.prisma.$transaction(async (transaction) => {
+      if (!chapter.publishedChapter) {
+        await transaction.publishedChapter.create({
+          data: {
+            bodyParagraphs: paragraphs,
+            chapterId: chapter.id,
+            chapterNumber: chapter.chapterNumber,
+            coinUnlockPrice: chapter.premiumEnabled ? chapter.coinUnlockPrice : 0,
+            premium: chapter.premiumEnabled,
+            publishedAt,
+            slug: chapter.slug,
+            storyId: chapter.storyId,
+            title: chapter.title,
+          },
+        });
+      } else {
+        await transaction.publishedChapter.update({
+          where: {
+            id: chapter.publishedChapter.id,
+          },
+          data: {
+            bodyParagraphs: paragraphs,
+            coinUnlockPrice: chapter.premiumEnabled ? chapter.coinUnlockPrice : 0,
+            premium: chapter.premiumEnabled,
+            publishedAt,
+            title: chapter.title,
+          },
+        });
+      }
+
+      await transaction.chapter.update({
+        where: {
+          id: chapter.id,
+        },
+        data: {
+          lastPublishedAt: publishedAt,
+          scheduledFor: null,
+          status: "PUBLISHED",
+        },
+      });
+
+      await transaction.story.update({
+        where: {
+          id: chapter.storyId,
+        },
+        data: {
+          latestChapterAt: publishedAt,
+          publishedAt: chapter.story.publishedAt ?? publishedAt,
+          status:
+            chapter.story.status === StoryStatus.DRAFT
+              ? StoryStatus.PUBLISHED
+              : chapter.story.status,
+        },
+      });
+
+      await transaction.storyAdminControl.upsert({
+        where: {
+          storyId: chapter.storyId,
+        },
+        create: {
+          defaultPremiumWindowHours: bookPolicy.defaultPremiumWindowHours,
+          globalCoinCap: bookPolicy.defaultCoinCap,
+          releaseMode: bookPolicy.defaultReleaseMode,
+          reviewedAt:
+            chapter.story.adminControl?.visibilityState ===
+            AdminBookVisibilityState.LIVE
+              ? publishedAt
+              : null,
+          storyId: chapter.storyId,
+          visibilityState:
+            chapter.story.adminControl?.visibilityState ??
+            (chapter.story.isLive
+              ? AdminBookVisibilityState.LIVE
+              : AdminBookVisibilityState.PENDING_APPROVAL),
+        },
+        update:
+          chapter.story.adminControl?.visibilityState ===
+            AdminBookVisibilityState.HIDDEN ||
+          chapter.story.adminControl?.visibilityState ===
+            AdminBookVisibilityState.LIVE
+            ? {}
+            : {
+                visibilityState: AdminBookVisibilityState.PENDING_APPROVAL,
+              },
+      });
+    });
+
+    const refreshedStory = await this.getStoryRecord(userId, chapter.story.slug);
+
+    return {
+      message: "Chapter published to readers.",
+      story: this.mapStudioStory(refreshedStory),
+    };
+  }
+
+  async saveStructure(
+    userId: string,
+    storySlug: string,
+    input: StudioStructureInput,
+  ) {
+    const story = await this.getStoryRecord(userId, storySlug);
+
+    for (const volumeInput of input.volumes) {
+      const volumeId = this.normalizeObjectId(volumeInput.id);
+      const volume =
+        volumeId &&
+        (await this.prisma.storyVolume.findFirst({
+          where: {
+            id: volumeId,
+            storyId: story.id,
+          },
+        }));
+      const persistedVolume = volume
+        ? await this.prisma.storyVolume.update({
+            where: {
+              id: volume.id,
+            },
+            data: {
+              number: volumeInput.number,
+              sortOrder: volumeInput.sortOrder,
+              statusLabel: volumeInput.status,
+              title: volumeInput.title,
+            },
+          })
+        : await this.prisma.storyVolume.create({
+            data: {
+              number: volumeInput.number,
+              sortOrder: volumeInput.sortOrder,
+              statusLabel: volumeInput.status,
+              storyId: story.id,
+              title: volumeInput.title,
+            },
+          });
+
+      for (const arcInput of volumeInput.arcs) {
+        const arcId = this.normalizeObjectId(arcInput.id);
+        const arc =
+          arcId &&
+          (await this.prisma.storyArc.findFirst({
+            where: {
+              id: arcId,
+              storyId: story.id,
+              volumeId: persistedVolume.id,
+            },
+          }));
+
+        if (arc) {
+          await this.prisma.storyArc.update({
+            where: {
+              id: arc.id,
+            },
+            data: {
+              sortOrder: arcInput.sortOrder,
+              statusLabel: arcInput.status,
+              title: arcInput.title,
+            },
+          });
+          continue;
+        }
+
+        await this.prisma.storyArc.create({
+          data: {
+            sortOrder: arcInput.sortOrder,
+            statusLabel: arcInput.status,
+            storyId: story.id,
+            title: arcInput.title,
+            volumeId: persistedVolume.id,
+          },
+        });
+      }
+    }
+
+    const refreshedStory = await this.getStoryRecord(userId, storySlug);
+
+    return {
+      message: "Volume and arc structure saved.",
+      story: this.mapStudioStory(refreshedStory),
+    };
+  }
+
+  async uploadCover(input: StudioCoverUploadInput) {
+    const contentType = input.contentType.trim().toLowerCase();
+
+    if (!contentType.startsWith("image/")) {
+      throw new BadRequestException("contentType must be an image MIME type.");
+    }
+
+    const sanitizedBase64 = input.base64.replace(/\s+/g, "");
+    const approximateSize = Buffer.byteLength(sanitizedBase64, "base64");
+
+    if (approximateSize > 5 * 1024 * 1024) {
+      throw new BadRequestException("Cover uploads must be 5 MB or smaller.");
+    }
+
+    return {
+      coverImageUrl: `data:${contentType};base64,${sanitizedBase64}`,
+      filename: input.filename,
+    };
+  }
+
+  private async getStoryRecord(userId: string, storySlug: string) {
+    const story = await this.prisma.story.findFirst({
+      where: {
+        authorId: userId,
+        slug: storySlug,
+      },
+      include: {
+        adminControl: true,
+        assets: true,
+        chapters: {
+          include: {
+            publishedChapter: true,
+          },
+          orderBy: {
+            chapterNumber: "asc",
+          },
+        },
+        publishedChapters: {
+          orderBy: {
+            publishedAt: "desc",
+          },
+        },
+        volumes: {
+          include: {
+            arcs: {
+              include: {
+                chapters: {
+                  orderBy: {
+                    chapterNumber: "asc",
+                  },
+                },
+              },
+              orderBy: {
+                sortOrder: "asc",
+              },
+            },
+          },
+          orderBy: {
+            sortOrder: "asc",
+          },
+        },
+      },
+    });
+
+    if (!story) {
+      throw new NotFoundException("Story not found.");
+    }
+
+    return story;
+  }
+
+  private mapStudioStory(story: StudioStoryRecord) {
+    const coverImage =
+      story.assets?.coverImageUrl ??
+      story.assets?.cardImageUrl ??
+      story.assets?.bannerImageUrl ??
+      "";
+    const visibilityState = getStoryVisibilityState(story);
+    const genreLabel = this.slugToLabel(story.genreSlugs[0] ?? "story");
+    const chapterCount = story.chapters.length;
+    const publishedCount = story.publishedChapters.length;
+    const latestPublishedChapter = [...story.publishedChapters].sort(
+      (left, right) => right.chapterNumber - left.chapterNumber,
+    )[0];
+    const recentChapters = [...story.chapters]
+      .sort((left, right) => {
+        const leftTime = left.lastPublishedAt?.getTime() ?? left.updatedAt.getTime();
+        const rightTime = right.lastPublishedAt?.getTime() ?? right.updatedAt.getTime();
+
+        return rightTime - leftTime;
+      })
+      .slice(0, 5)
+      .map((chapter) => ({
+        chapterId: chapter.id,
+        detail: this.getRecentChapterDetail(chapter),
+        id: chapter.id,
+        number: String(chapter.chapterNumber).padStart(2, "0"),
+        status: this.mapChapterStatusLabel(chapter.status),
+        title: chapter.title,
+        views:
+          chapter.publishedChapter && story.totalReads > 0
+            ? this.formatCompactNumber(story.totalReads)
+            : "0",
+      }));
+    const scheduledChapters = [...story.chapters]
+      .filter((chapter) => chapter.status === "SCHEDULED" && chapter.scheduledFor)
+      .sort(
+        (left, right) =>
+          (left.scheduledFor?.getTime() ?? 0) - (right.scheduledFor?.getTime() ?? 0),
+      )
+      .map((chapter) => ({
+        chapterId: chapter.id,
+        chapterTitle: `Chapter ${chapter.chapterNumber}: ${chapter.title}`,
+        coverImage,
+        id: chapter.id,
+        scheduledDate: this.formatDateLabel(chapter.scheduledFor!),
+        scheduledTime: `${this.formatTimeLabel(chapter.scheduledFor!)} (Local)`,
+        status: "Queued",
+        storySeries: story.title,
+        wordCount: `${chapter.wordCount.toLocaleString()} words`,
+      }));
+    const publishedChapters = [...story.publishedChapters]
+      .sort((left, right) => right.chapterNumber - left.chapterNumber)
+      .map((chapter) => ({
+        chapterId: chapter.chapterId,
+        comments: "0",
+        coverImage,
+        id: chapter.id,
+        likes: "0",
+        number: String(chapter.chapterNumber).padStart(2, "0"),
+        publishedAt: `Published ${this.formatDateLabel(chapter.publishedAt)}`,
+        reads: this.formatCompactNumber(story.totalReads),
+        status:
+          visibilityState === AdminBookVisibilityState.PENDING_APPROVAL
+            ? "Pending Review"
+            : formatVisibilityLabel(visibilityState),
+        title: `Chapter ${chapter.chapterNumber}: ${chapter.title}`,
+      }));
+    const progress =
+      chapterCount === 0
+        ? 4
+        : Math.min(96, Math.max(8, publishedCount * 18 + (chapterCount - publishedCount) * 6));
+
+    return {
+      accent:
+        visibilityState === AdminBookVisibilityState.LIVE
+          ? "emerald"
+          : visibilityState === AdminBookVisibilityState.HIDDEN
+            ? "amber"
+            : "primary",
+      audience: story.targetAudience,
+      chapterLabel:
+        visibilityState === AdminBookVisibilityState.PENDING_APPROVAL &&
+        publishedCount > 0
+          ? "Waiting for admin review"
+          : latestPublishedChapter
+          ? `Chapter ${latestPublishedChapter.chapterNumber} live`
+          : chapterCount > 0
+            ? `${chapterCount} chapter drafts in progress`
+            : "Chapter 1 in planning",
+      dashboardStatus:
+        visibilityState === AdminBookVisibilityState.PENDING_APPROVAL
+          ? "Pending Review"
+          : formatVisibilityLabel(visibilityState),
+      genre: genreLabel,
+      heroStatus:
+        visibilityState === AdminBookVisibilityState.PENDING_APPROVAL
+          ? "Pending Review"
+          : this.mapStoryHeroStatus(story.status),
+      image: coverImage,
+      progress,
+      publishedChapters,
+      recentChapters,
+      scheduledChapters,
+      slug: story.slug,
+      stats: {
+        chapters: String(chapterCount),
+        completion: `${progress}%`,
+        followers: "0",
+        reads: this.formatCompactNumber(story.totalReads),
+        reviews: String(story.reviewCount),
+        stars: story.averageRating > 0 ? story.averageRating.toFixed(1) : "0.0",
+      },
+      subtitle: `${genreLabel} • ${story.targetAudience} • ${
+        visibilityState === AdminBookVisibilityState.PENDING_APPROVAL
+          ? "Pending Review"
+          : this.mapStoryHeroStatus(story.status)
+      }`,
+      synopsis: story.synopsis,
+      tags: story.tagSlugs.map((tag) => this.slugToLabel(tag)),
+      title: story.title,
+      visibilityState,
+      volumes: story.volumes.map((volume) => ({
+        arcCount: volume.arcs.length,
+        arcs: volume.arcs.map((arc) => ({
+          chapterCount: arc.chapters.length,
+          chapters: arc.chapters.map((chapter) => ({
+            chapterId: chapter.id,
+            number: String(chapter.chapterNumber).padStart(2, "0"),
+            title: chapter.title,
+          })),
+          id: arc.id,
+          sortOrder: arc.sortOrder,
+          status: arc.statusLabel,
+          title: arc.title,
+        })),
+        chapterCount: volume.arcs.reduce(
+          (count, arc) => count + arc.chapters.length,
+          0,
+        ),
+        id: volume.id,
+        number: volume.number,
+        sortOrder: volume.sortOrder,
+        status: volume.statusLabel,
+        title: volume.title,
+      })),
+    };
+  }
+
+  private mapChapterDraft(chapter: StudioChapterRecord) {
+    return {
+      arcId: chapter.arcId ?? null,
+      authorsNote: chapter.authorNote ?? "",
+      body: chapter.bodyDraft,
+      chapterId: chapter.id,
+      coinUnlockPrice: chapter.premiumEnabled
+        ? Math.max(1, chapter.coinUnlockPrice)
+        : 50,
+      lastSavedAt: this.formatLastSaved(chapter.updatedAt),
+      number: `Chapter ${chapter.chapterNumber}`,
+      publishType:
+        chapter.status === "SCHEDULED" || chapter.scheduledFor ? "scheduled" : "now",
+      premiumEnabled: chapter.premiumEnabled,
+      scheduledFor: chapter.scheduledFor
+        ? this.formatDateTimeLocalValue(chapter.scheduledFor)
+        : "",
+      storyTitle: chapter.story.title,
+      title: chapter.title,
+      volumeId: chapter.volumeId ?? null,
+      warnings: chapter.contentWarnings,
+    };
+  }
+
+  private parseChapterNumber(value: string) {
+    const match = value.match(/(\d+)/);
+
+    if (!match) {
+      throw new BadRequestException("number must contain a chapter number.");
+    }
+
+    const parsed = Number(match[1]);
+
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      throw new BadRequestException("number must contain a valid chapter number.");
+    }
+
+    return Math.trunc(parsed);
+  }
+
+  private async createUniqueStorySlug(title: string) {
+    const baseSlug = this.toSlug(title) || "untitled-story";
+    let nextSlug = baseSlug;
+    let counter = 2;
+
+    while (
+      await this.prisma.story.findUnique({
+        where: {
+          slug: nextSlug,
+        },
+        select: {
+          id: true,
+        },
+      })
+    ) {
+      nextSlug = `${baseSlug}-${counter}`;
+      counter += 1;
+    }
+
+    return nextSlug;
+  }
+
+  private async createUniqueChapterSlug(
+    storyId: string,
+    title: string,
+    chapterNumber: number,
+  ) {
+    const baseSlug = this.toSlug(title) || `chapter-${chapterNumber}`;
+    let nextSlug = baseSlug;
+    let counter = 2;
+
+    while (
+      await this.prisma.chapter.findUnique({
+        where: {
+          storyId_slug: {
+            slug: nextSlug,
+            storyId,
+          },
+        },
+        select: {
+          id: true,
+        },
+      })
+    ) {
+      nextSlug = `${baseSlug}-${counter}`;
+      counter += 1;
+    }
+
+    return nextSlug;
+  }
+
+  private normalizeObjectId(value: string | null) {
+    return value && /^[a-f0-9]{24}$/i.test(value) ? value : null;
+  }
+
+  private toSlug(value: string) {
+    return value
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+  }
+
+  private slugToLabel(value: string) {
+    return value
+      .split("-")
+      .filter(Boolean)
+      .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+      .join(" ");
+  }
+
+  private createShortSynopsis(synopsis: string) {
+    return synopsis.trim().slice(0, 180);
+  }
+
+  private createExcerpt(body: string) {
+    return body.trim().slice(0, 180) || null;
+  }
+
+  private getWordCount(body: string) {
+    return body.trim().split(/\s+/).filter(Boolean).length;
+  }
+
+  private estimateReadingMinutes(body: string) {
+    return Math.max(1, Math.ceil(this.getWordCount(body) / 225));
+  }
+
+  private splitParagraphs(body: string) {
+    return body
+      .split(/\n{2,}/)
+      .map((paragraph) => paragraph.trim())
+      .filter(Boolean);
+  }
+
+  private mapStoryHeroStatus(status: StoryStatus) {
+    if (status === StoryStatus.PUBLISHED) {
+      return "Ongoing Series";
+    }
+
+    if (status === StoryStatus.COMPLETED) {
+      return "Completed Series";
+    }
+
+    if (status === StoryStatus.HIATUS) {
+      return "Hiatus";
+    }
+
+    return "Draft in Studio";
+  }
+
+  private mapChapterStatusLabel(status: string) {
+    if (status === "PUBLISHED") {
+      return "Published";
+    }
+
+    if (status === "SCHEDULED") {
+      return "Scheduled";
+    }
+
+    if (status === "ARCHIVED") {
+      return "Archived";
+    }
+
+    return "Draft";
+  }
+
+  private getRecentChapterDetail(chapter: {
+    lastPublishedAt: Date | null;
+    scheduledFor: Date | null;
+    status: string;
+    updatedAt: Date;
+  }) {
+    if (chapter.status === "PUBLISHED" && chapter.lastPublishedAt) {
+      return `Published ${this.formatDateLabel(chapter.lastPublishedAt)}`;
+    }
+
+    if (chapter.status === "SCHEDULED" && chapter.scheduledFor) {
+      return `Queued • ${this.formatDateLabel(chapter.scheduledFor)}`;
+    }
+
+    return `Draft • Updated ${this.formatDateLabel(chapter.updatedAt)}`;
+  }
+
+  private formatCompactNumber(value: number) {
+    return new Intl.NumberFormat("en-US", {
+      maximumFractionDigits: 1,
+      notation: "compact",
+    }).format(value);
+  }
+
+  private formatDateLabel(date: Date) {
+    return new Intl.DateTimeFormat("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    }).format(date);
+  }
+
+  private formatTimeLabel(date: Date) {
+    return new Intl.DateTimeFormat("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(date);
+  }
+
+  private formatLastSaved(date: Date) {
+    return `Saved ${new Intl.DateTimeFormat("en-US", {
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(date)}`;
+  }
+
+  private formatDateTimeLocalValue(date: Date) {
+    const year = date.getFullYear();
+    const month = `${date.getMonth() + 1}`.padStart(2, "0");
+    const day = `${date.getDate()}`.padStart(2, "0");
+    const hours = `${date.getHours()}`.padStart(2, "0");
+    const minutes = `${date.getMinutes()}`.padStart(2, "0");
+
+    return `${year}-${month}-${day}T${hours}:${minutes}`;
+  }
+
+  private parseOptionalDate(value: string | null, fieldName: string) {
+    if (!value) {
+      return null;
+    }
+
+    const date = new Date(value);
+
+    if (Number.isNaN(date.getTime())) {
+      throw new BadRequestException(`${fieldName} must be a valid datetime.`);
+    }
+
+    return date;
+  }
+}

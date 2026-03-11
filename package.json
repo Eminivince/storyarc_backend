@@ -1,0 +1,46 @@
+{
+  "name": "backend",
+  "version": "0.1.0",
+  "description": "StoryArc backend base",
+  "private": true,
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node --env-file=.env dist/main.js",
+    "start:dev": "nodemon --watch src --ext ts,json --exec \"node --env-file=.env -r ts-node/register/transpile-only -r tsconfig-paths/register src/main.ts\"",
+    "start:debug": "node --inspect --env-file=.env -r ts-node/register/transpile-only -r tsconfig-paths/register src/main.ts",
+    "lint": "tsc --noEmit",
+    "prisma:generate": "prisma generate",
+    "prisma:push": "prisma db push",
+    "prisma:seed": "node --env-file=.env -r ts-node/register/transpile-only prisma/seed.ts"
+  },
+  "keywords": [
+    "nestjs",
+    "prisma",
+    "mongodb",
+    "redis"
+  ],
+  "author": "",
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@nestjs/common": "^11.1.16",
+    "@nestjs/config": "^4.0.3",
+    "@nestjs/core": "^11.1.16",
+    "@nestjs/jwt": "^11.0.2",
+    "@nestjs/platform-fastify": "^11.1.16",
+    "@prisma/client": "^6.19.0",
+    "bcryptjs": "^3.0.3",
+    "ioredis": "^5.10.0",
+    "reflect-metadata": "^0.2.2",
+    "resend": "^6.9.3",
+    "rxjs": "7.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "^25.4.0",
+    "nodemon": "^3.1.14",
+    "prisma": "^6.19.0",
+    "ts-node": "^10.9.2",
+    "tsconfig-paths": "^4.2.0",
+    "typescript": "^5.9.3"
+  }
+}
