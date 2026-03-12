@@ -1,6 +1,7 @@
 import { BadRequestException } from "@nestjs/common";
 import {
   CreateBookmarkInput,
+  UpdateStoryRatingInput,
   UpdateReadingProgressInput,
 } from "./reader.types";
 
@@ -103,6 +104,19 @@ export function parseCreateBookmarkBody(body: unknown): CreateBookmarkInput {
     storySlug: getTrimmedString(record, "storySlug", {
       minLength: 2,
       maxLength: 120,
+    }),
+  };
+}
+
+export function parseUpdateStoryRatingBody(
+  body: unknown,
+): UpdateStoryRatingInput {
+  const record = getObjectBody(body);
+
+  return {
+    rating: getNumberValue(record, "rating", {
+      min: 1,
+      max: 5,
     }),
   };
 }

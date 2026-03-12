@@ -9,3 +9,7 @@ export type CreateBookmarkInput = {
   chapterSlug: string;
   storySlug: string;
 };
+
+export type UpdateStoryRatingInput = {
+  rating: number;
+};

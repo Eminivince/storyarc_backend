@@ -14,6 +14,7 @@ import { AccessTokenGuard } from "../common/guards/access-token.guard";
 import { AuthenticatedRequest } from "../common/types/request-with-auth.type";
 import {
   parseCreateBookmarkBody,
+  parseUpdateStoryRatingBody,
   parseUpdateReadingProgressBody,
 } from "./reader.schemas";
 import { ReaderService } from "./reader.service";
@@ -50,6 +51,19 @@ export class ReaderController {
     @Req() request: AuthenticatedRequest,
   ) {
     return this.readerService.getStoryDetails(request.auth!.userId, storySlug);
+  }
+
+  @Put("stories/:storySlug/rating")
+  async updateStoryRating(
+    @Param("storySlug") storySlug: string,
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.readerService.updateStoryRating(
+      request.auth!.userId,
+      storySlug,
+      parseUpdateStoryRatingBody(body),
+    );
   }
 
   @Get("stories/:storySlug/chapters/:chapterSlug")

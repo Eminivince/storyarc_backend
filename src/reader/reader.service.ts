@@ -20,6 +20,7 @@ import {
 } from "../utils/book-admin";
 import {
   CreateBookmarkInput,
+  UpdateStoryRatingInput,
   UpdateReadingProgressInput,
 } from "./reader.types";
 
@@ -47,6 +48,13 @@ type ProgressWithRelations = Prisma.ReadingProgressGetPayload<{
     };
   };
 }>;
+
+type StoryRatingEligibility = {
+  canRate: boolean;
+  hasCompletedStory: boolean;
+  hasUnlockedAllChapters: boolean;
+  ratingEligibilityMessage: string | null;
+};
 
 const homeCreatorBenefits = [
   {
@@ -242,79 +250,43 @@ export class ReaderService {
   }
 
   async getStoryDetails(userId: string, storySlug: string) {
-    const story = await this.prisma.story.findUnique({
-      where: { slug: storySlug },
-      include: {
-        adminControl: true,
-        assets: true,
-        publishedChapters: {
-          include: {
-            adminOverride: true,
-            chapter: true,
-          },
-          orderBy: { chapterNumber: "asc" },
-        },
-      },
-    });
-
-    if (!story || !this.isReadableStatus(story.status) || !isStoryLive(story)) {
-      throw new NotFoundException("Story not found.");
-    }
-
-    const chapterIds = story.publishedChapters.map((chapter) => chapter.id);
-    const [progress, bookmarks, hasPremiumSubscription, entitlements] = await Promise.all([
-      this.prisma.readingProgress.findUnique({
-        where: {
-          userId_storyId: {
+    const story = await this.getReadableStoryBySlug(storySlug);
+    const [{ chapterAccessMap, progress }, bookmarks, storyRating] =
+      await Promise.all([
+        this.getStoryReaderAccessContext(userId, story),
+        this.prisma.bookmark.findMany({
+          where: {
             storyId: story.id,
             userId,
           },
-        },
-        include: {
-          chapter: true,
-        },
-      }),
-      this.prisma.bookmark.findMany({
-        where: {
-          storyId: story.id,
-          userId,
-        },
-        select: {
-          publishedChapterId: true,
-        },
-      }),
-      this.monetizationService.hasActiveSubscriptionAccess(userId),
-      this.prisma.chapterEntitlement.findMany({
-        where: {
-          publishedChapterId: {
-            in: chapterIds,
+          select: {
+            publishedChapterId: true,
           },
-          userId,
-          OR: [
-            { expiresAt: null },
-            {
-              expiresAt: {
-                gt: new Date(),
-              },
+        }),
+        this.prisma.storyRating.findUnique({
+          where: {
+            userId_storyId: {
+              storyId: story.id,
+              userId,
             },
-          ],
-        },
-        select: {
-          publishedChapterId: true,
-        },
-      }),
-    ]);
+          },
+          select: {
+            rating: true,
+          },
+        }),
+      ]);
 
     const bookmarkedChapterIds = new Set(
-      bookmarks.map((bookmark) => bookmark.publishedChapterId),
+      bookmarks.map(
+        (bookmark: { publishedChapterId: string }) => bookmark.publishedChapterId,
+      ),
     );
     const firstChapter = story.publishedChapters[0] ?? null;
     const storyControl = this.getStoryControl(story);
-    const chapterAccessMap = this.buildStoryChapterAccessMap({
+    const ratingEligibility = this.getStoryRatingEligibility({
+      chapterAccessMap,
       chapters: story.publishedChapters,
-      entitlements,
-      hasPremiumSubscription,
-      storyControl,
+      progress,
     });
 
     return {
@@ -354,10 +326,14 @@ export class ReaderService {
           story.assets?.cardImageUrl ??
           story.assets?.bannerImageUrl ??
           "",
+        canRate: ratingEligibility.canRate,
         firstChapterSlug: firstChapter?.slug ?? null,
         genres: story.genreSlugs.map((genreSlug) => this.slugToLabel(genreSlug)),
+        hasCompletedStory: ratingEligibility.hasCompletedStory,
+        hasUnlockedAllChapters: ratingEligibility.hasUnlockedAllChapters,
         maturityRating: story.maturityRating,
         rating: Number(story.averageRating.toFixed(1)),
+        ratingEligibilityMessage: ratingEligibility.ratingEligibilityMessage,
         readsCount: story.totalReads,
         readsLabel: this.formatCompactNumber(story.totalReads),
         reviewCount: story.reviewCount,
@@ -367,6 +343,98 @@ export class ReaderService {
         synopsis: story.synopsis,
         tagLabels: story.tagSlugs.map((tagSlug) => this.slugToLabel(tagSlug)),
         title: story.title,
+        userRating: storyRating?.rating ?? null,
+      },
+    };
+  }
+
+  async updateStoryRating(
+    userId: string,
+    storySlug: string,
+    input: UpdateStoryRatingInput,
+  ) {
+    const story = await this.getReadableStoryBySlug(storySlug);
+    const [{ progress, chapterAccessMap }, existingRating] = await Promise.all([
+      this.getStoryReaderAccessContext(userId, story),
+      this.prisma.storyRating.findUnique({
+        where: {
+          userId_storyId: {
+            storyId: story.id,
+            userId,
+          },
+        },
+        select: {
+          id: true,
+          rating: true,
+        },
+      }),
+    ]);
+    const ratingEligibility = this.getStoryRatingEligibility({
+      chapterAccessMap,
+      chapters: story.publishedChapters,
+      progress,
+    });
+
+    if (!ratingEligibility.canRate) {
+      throw new ForbiddenException(
+        ratingEligibility.ratingEligibilityMessage ??
+          "Finish reading and unlock every published chapter before rating this book.",
+      );
+    }
+
+    const currentReviewCount = Math.max(
+      story.reviewCount,
+      existingRating ? 1 : 0,
+    );
+    const currentWeightedRating = story.averageRating * currentReviewCount;
+    const nextReviewCount = existingRating
+      ? currentReviewCount
+      : currentReviewCount + 1;
+    const nextAverageRating =
+      nextReviewCount > 0
+        ? Number(
+            (
+              (currentWeightedRating - (existingRating?.rating ?? 0) + input.rating) /
+              nextReviewCount
+            ).toFixed(4),
+          )
+        : 0;
+
+    if (existingRating) {
+      await this.prisma.storyRating.update({
+        where: { id: existingRating.id },
+        data: {
+          rating: input.rating,
+        },
+      });
+    } else {
+      await this.prisma.storyRating.create({
+        data: {
+          rating: input.rating,
+          storyId: story.id,
+          userId,
+        },
+      });
+    }
+
+    await this.prisma.story.update({
+      where: { id: story.id },
+      data: {
+        averageRating: nextAverageRating,
+        reviewCount: nextReviewCount,
+      },
+    });
+
+    return {
+      story: {
+        canRate: true,
+        hasCompletedStory: ratingEligibility.hasCompletedStory,
+        hasUnlockedAllChapters: ratingEligibility.hasUnlockedAllChapters,
+        rating: Number(nextAverageRating.toFixed(1)),
+        ratingEligibilityMessage: null,
+        reviewCount: nextReviewCount,
+        slug: story.slug,
+        userRating: input.rating,
       },
     };
   }
@@ -885,6 +953,151 @@ export class ReaderService {
     });
 
     return stories.filter((story) => isStoryLive(story));
+  }
+
+  private async getReadableStoryBySlug(storySlug: string) {
+    const story = await this.prisma.story.findUnique({
+      where: { slug: storySlug },
+      include: {
+        adminControl: true,
+        assets: true,
+        publishedChapters: {
+          include: {
+            adminOverride: true,
+            chapter: true,
+          },
+          orderBy: { chapterNumber: "asc" },
+        },
+      },
+    });
+
+    if (!story || !this.isReadableStatus(story.status) || !isStoryLive(story)) {
+      throw new NotFoundException("Story not found.");
+    }
+
+    return story;
+  }
+
+  private async getStoryReaderAccessContext(
+    userId: string,
+    story: StoryWithReaderRelations,
+  ) {
+    const chapterIds = story.publishedChapters.map((chapter) => chapter.id);
+    const [progress, hasPremiumSubscription, entitlements] = await Promise.all([
+      this.prisma.readingProgress.findUnique({
+        where: {
+          userId_storyId: {
+            storyId: story.id,
+            userId,
+          },
+        },
+        include: {
+          chapter: true,
+        },
+      }),
+      this.monetizationService.hasActiveSubscriptionAccess(userId),
+      chapterIds.length === 0
+        ? Promise.resolve([])
+        : this.prisma.chapterEntitlement.findMany({
+            where: {
+              publishedChapterId: {
+                in: chapterIds,
+              },
+              userId,
+              OR: [
+                { expiresAt: null },
+                {
+                  expiresAt: {
+                    gt: new Date(),
+                  },
+                },
+              ],
+            },
+            select: {
+              publishedChapterId: true,
+            },
+          }),
+    ]);
+
+    return {
+      chapterAccessMap: this.buildStoryChapterAccessMap({
+        chapters: story.publishedChapters,
+        entitlements,
+        hasPremiumSubscription,
+        storyControl: this.getStoryControl(story),
+      }),
+      progress,
+    };
+  }
+
+  private getStoryRatingEligibility(input: {
+    chapterAccessMap: Map<
+      string,
+      {
+        accessState: ChapterAccessState;
+        requiredPreviousChapter: RequiredPreviousChapter;
+      }
+    >;
+    chapters: StoryWithReaderRelations["publishedChapters"];
+    progress:
+      | Prisma.ReadingProgressGetPayload<{
+          include: {
+            chapter: true;
+          };
+        }>
+      | null;
+  }): StoryRatingEligibility {
+    const lastChapter = input.chapters.at(-1) ?? null;
+    const hasUnlockedAllChapters =
+      input.chapters.length > 0 &&
+      input.chapters.every(
+        (chapter) =>
+          (input.chapterAccessMap.get(chapter.id)?.accessState ?? "READABLE") ===
+          "READABLE",
+      );
+    const hasCompletedStory = Boolean(
+      lastChapter &&
+        input.progress?.publishedChapterId === lastChapter.id &&
+        input.progress.progressPercent >= 100,
+    );
+
+    if (input.chapters.length === 0) {
+      return {
+        canRate: false,
+        hasCompletedStory: false,
+        hasUnlockedAllChapters: false,
+        ratingEligibilityMessage:
+          "This book has no published chapters available for rating yet.",
+      };
+    }
+
+    if (!hasUnlockedAllChapters) {
+      return {
+        canRate: false,
+        hasCompletedStory,
+        hasUnlockedAllChapters,
+        ratingEligibilityMessage:
+          "Unlock access to every published chapter before rating this book.",
+      };
+    }
+
+    if (!hasCompletedStory) {
+      return {
+        canRate: false,
+        hasCompletedStory,
+        hasUnlockedAllChapters,
+        ratingEligibilityMessage: lastChapter
+          ? `Finish Chapter ${lastChapter.chapterNumber}: ${lastChapter.title} before rating this book.`
+          : "Finish reading this book before rating it.",
+      };
+    }
+
+    return {
+      canRate: true,
+      hasCompletedStory: true,
+      hasUnlockedAllChapters: true,
+      ratingEligibilityMessage: null,
+    };
   }
 
   private filterStories(
