@@ -15,9 +15,12 @@ import {
   AppUserRole,
   CreatorApplicationSnapshot,
   ForgotPasswordInput,
+  GoogleAuthCallbackInput,
+  GoogleAuthStartInput,
   LoginInput,
   OnboardingStep,
   PendingRegistrationPayload,
+  PendingGoogleAuthPayload,
   RefreshInput,
   RegisterInput,
   RequestMeta,
@@ -31,6 +34,10 @@ import {
 import { ResendEmailService } from "./resend-email.service";
 
 const HASH_ROUNDS = 12;
+const GOOGLE_OAUTH_STATE_TTL_SECONDS = 10 * 60;
+const GOOGLE_AUTHORIZATION_URL = "https://accounts.google.com/o/oauth2/v2/auth";
+const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
+const GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo";
 
 type AuthUserSnapshot = {
   id: string;
@@ -38,6 +45,14 @@ type AuthUserSnapshot = {
   role: AppUserRole;
   profile: UserProfileSnapshot | null;
   creatorApplication?: CreatorApplicationSnapshot | null;
+};
+
+type GoogleUserInfo = {
+  email?: string;
+  email_verified?: boolean;
+  name?: string;
+  picture?: string;
+  sub?: string;
 };
 
 @Injectable()
@@ -48,6 +63,99 @@ export class AuthService {
     private readonly redis: RedisService,
     private readonly resendEmailService: ResendEmailService,
   ) {}
+
+  async startGoogleAuth(input: GoogleAuthStartInput) {
+    if (!this.isGoogleAuthConfigured()) {
+      return {
+        url: this.buildGoogleCallbackErrorUrl("google_not_configured"),
+      };
+    }
+
+    const state = this.generateOpaqueToken();
+
+    await this.redis.setJson(
+      this.getGoogleAuthStateKey(state),
+      {
+        nextPath: input.nextPath,
+      } satisfies PendingGoogleAuthPayload,
+      GOOGLE_OAUTH_STATE_TTL_SECONDS,
+    );
+
+    const params = new URLSearchParams({
+      client_id: env.googleClientId!,
+      prompt: "select_account",
+      redirect_uri: env.googleRedirectUri!,
+      response_type: "code",
+      scope: "openid email profile",
+      state,
+    });
+
+    return {
+      url: `${GOOGLE_AUTHORIZATION_URL}?${params.toString()}`,
+    };
+  }
+
+  async handleGoogleCallback(
+    input: GoogleAuthCallbackInput,
+    requestMeta: RequestMeta,
+  ) {
+    if (!this.isGoogleAuthConfigured()) {
+      return {
+        url: this.buildGoogleCallbackErrorUrl("google_not_configured"),
+      };
+    }
+
+    if (input.error) {
+      return {
+        url: this.buildGoogleCallbackErrorUrl(
+          input.error === "access_denied"
+            ? "google_access_denied"
+            : "google_auth_failed",
+        ),
+      };
+    }
+
+    if (!input.code || !input.state) {
+      return {
+        url: this.buildGoogleCallbackErrorUrl("google_auth_failed"),
+      };
+    }
+
+    const redisKey = this.getGoogleAuthStateKey(input.state);
+    const pendingGoogleAuth = await this.redis.getJson<PendingGoogleAuthPayload>(
+      redisKey,
+    );
+
+    await this.redis.delete(redisKey);
+
+    if (!pendingGoogleAuth) {
+      return {
+        url: this.buildGoogleCallbackErrorUrl("google_state_invalid"),
+      };
+    }
+
+    try {
+      const googleTokens = await this.exchangeGoogleCodeForTokens(input.code);
+      const googleProfile = await this.fetchGoogleUserInfo(googleTokens.accessToken);
+      const authResponse = await this.completeGoogleAuth(
+        googleProfile,
+        requestMeta,
+      );
+
+      return {
+        url: this.buildGoogleCallbackSuccessUrl({
+          nextPath: pendingGoogleAuth.nextPath,
+          tokens: authResponse.tokens,
+        }),
+      };
+    } catch (error) {
+      return {
+        url: this.buildGoogleCallbackErrorUrl(
+          this.getGoogleCallbackErrorCode(error),
+        ),
+      };
+    }
+  }
 
   async register(input: RegisterInput) {
     const email = this.normalizeEmail(input.email);
@@ -701,6 +809,338 @@ export class AuthService {
     return {
       message: "Session revoked.",
     };
+  }
+
+  private async exchangeGoogleCodeForTokens(code: string) {
+    const response = await fetch(GOOGLE_TOKEN_URL, {
+      body: new URLSearchParams({
+        client_id: env.googleClientId!,
+        client_secret: env.googleClientSecret!,
+        code,
+        grant_type: "authorization_code",
+        redirect_uri: env.googleRedirectUri!,
+      }),
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      method: "POST",
+    });
+    const payload = (await response.json().catch(() => null)) as
+      | {
+          access_token?: string;
+        }
+      | null;
+
+    if (!response.ok || typeof payload?.access_token !== "string") {
+      throw new BadRequestException("Google token exchange failed.");
+    }
+
+    return {
+      accessToken: payload.access_token,
+    };
+  }
+
+  private async fetchGoogleUserInfo(accessToken: string) {
+    const response = await fetch(GOOGLE_USERINFO_URL, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+      method: "GET",
+    });
+    const payload = (await response.json().catch(() => null)) as GoogleUserInfo | null;
+
+    if (!response.ok || !payload) {
+      throw new BadRequestException("Google profile lookup failed.");
+    }
+
+    return payload;
+  }
+
+  private async completeGoogleAuth(
+    googleProfile: GoogleUserInfo,
+    requestMeta: RequestMeta,
+  ) {
+    const providerUserId = googleProfile.sub?.trim() ?? "";
+    const email = googleProfile.email
+      ? this.normalizeEmail(googleProfile.email)
+      : null;
+
+    if (!providerUserId || !email || googleProfile.email_verified !== true) {
+      throw new UnauthorizedException(
+        "Google account did not include a verified email address.",
+      );
+    }
+
+    const [existingIdentity, existingUserByEmail] = await Promise.all([
+      this.prisma.authIdentity.findUnique({
+        where: {
+          provider_providerUserId: {
+            provider: "GOOGLE",
+            providerUserId,
+          },
+        },
+        select: {
+          id: true,
+          userId: true,
+        },
+      }),
+      this.prisma.user.findUnique({
+        where: { email },
+        include: {
+          creatorApplication: {
+            select: {
+              reviewNotes: true,
+              reviewedAt: true,
+              status: true,
+              submittedAt: true,
+            },
+          },
+          profile: true,
+        },
+      }),
+    ]);
+    const existingUserByIdentity = existingIdentity
+      ? await this.prisma.user.findUnique({
+          where: { id: existingIdentity.userId },
+          include: {
+            creatorApplication: {
+              select: {
+                reviewNotes: true,
+                reviewedAt: true,
+                status: true,
+                submittedAt: true,
+              },
+            },
+            profile: true,
+          },
+        })
+      : null;
+
+    if (existingIdentity && !existingUserByIdentity) {
+      throw new ConflictException(
+        "This Google account is already linked to a different StoryArc user.",
+      );
+    }
+
+    if (
+      existingUserByIdentity &&
+      existingUserByEmail &&
+      existingUserByIdentity.id !== existingUserByEmail.id
+    ) {
+      throw new ConflictException(
+        "This Google account is already linked to a different StoryArc user.",
+      );
+    }
+
+    const existingUser = existingUserByIdentity ?? existingUserByEmail;
+
+    if (existingUser && existingUser.status !== "ACTIVE") {
+      throw new UnauthorizedException("This account is currently unavailable.");
+    }
+
+    const displayName = this.getGoogleDisplayName(googleProfile, email);
+    const now = new Date();
+
+    if (!existingUser) {
+      const createdUser = await this.prisma.user.create({
+        data: {
+          email,
+          emailVerifiedAt: now,
+          role: "READER",
+          authIdentities: {
+            create: {
+              provider: "GOOGLE",
+              providerEmail: email,
+              providerUserId,
+            },
+          },
+          profile: {
+            create: {
+              avatarUrl: googleProfile.picture ?? null,
+              displayName,
+            },
+          },
+        },
+        include: {
+          creatorApplication: {
+            select: {
+              reviewNotes: true,
+              reviewedAt: true,
+              status: true,
+              submittedAt: true,
+            },
+          },
+          profile: true,
+        },
+      });
+
+      await this.redis.delete(this.getPendingRegistrationKey(email));
+
+      return this.createSessionResponse(
+        {
+          id: createdUser.id,
+          creatorApplication: createdUser.creatorApplication,
+          email: createdUser.email,
+          role: createdUser.role,
+          profile: createdUser.profile,
+        },
+        requestMeta,
+      );
+    }
+
+    const profileUpdate = {
+      ...(!existingUser.profile?.avatarUrl && googleProfile.picture
+        ? { avatarUrl: googleProfile.picture }
+        : {}),
+      ...(!existingUser.profile?.displayName ? { displayName } : {}),
+    };
+    const shouldSyncProfile =
+      !existingUser.profile || Object.keys(profileUpdate).length > 0;
+    const shouldVerifyEmail = !existingUser.emailVerifiedAt;
+    const shouldLinkIdentity = !existingIdentity;
+
+    const syncedUser =
+      shouldSyncProfile || shouldVerifyEmail || shouldLinkIdentity
+        ? await this.prisma.user.update({
+            where: { id: existingUser.id },
+            data: {
+              ...(shouldVerifyEmail ? { emailVerifiedAt: now } : {}),
+              ...(shouldLinkIdentity
+                ? {
+                    authIdentities: {
+                      create: {
+                        provider: "GOOGLE",
+                        providerEmail: email,
+                        providerUserId,
+                      },
+                    },
+                  }
+                : {}),
+              ...(shouldSyncProfile
+                ? {
+                    profile: {
+                      upsert: {
+                        create: {
+                          avatarUrl: googleProfile.picture ?? null,
+                          displayName,
+                        },
+                        update: profileUpdate,
+                      },
+                    },
+                  }
+                : {}),
+            },
+            include: {
+              creatorApplication: {
+                select: {
+                  reviewNotes: true,
+                  reviewedAt: true,
+                  status: true,
+                  submittedAt: true,
+                },
+              },
+              profile: true,
+            },
+          })
+        : existingUser;
+
+    await this.redis.delete(this.getPendingRegistrationKey(email));
+
+    return this.createSessionResponse(
+      {
+        id: syncedUser.id,
+        creatorApplication: syncedUser.creatorApplication,
+        email: syncedUser.email,
+        role: syncedUser.role,
+        profile: syncedUser.profile,
+      },
+      requestMeta,
+    );
+  }
+
+  private getGoogleCallbackErrorCode(error: unknown) {
+    if (error instanceof ConflictException) {
+      return "google_account_conflict";
+    }
+
+    if (error instanceof UnauthorizedException) {
+      if (error.message.includes("verified email")) {
+        return "google_email_unverified";
+      }
+
+      if (error.message.includes("unavailable")) {
+        return "google_account_unavailable";
+      }
+    }
+
+    if (error instanceof BadRequestException) {
+      if (error.message.includes("token exchange")) {
+        return "google_token_exchange_failed";
+      }
+
+      if (error.message.includes("profile lookup")) {
+        return "google_profile_fetch_failed";
+      }
+    }
+
+    return "google_auth_failed";
+  }
+
+  private isGoogleAuthConfigured() {
+    return Boolean(
+      env.googleClientId &&
+        env.googleClientSecret &&
+        env.googleRedirectUri,
+    );
+  }
+
+  private getGoogleDisplayName(googleProfile: GoogleUserInfo, email: string) {
+    const displayName = googleProfile.name?.trim();
+
+    if (displayName) {
+      return displayName;
+    }
+
+    return this.getDerivedUsername(email);
+  }
+
+  private getGoogleAuthStateKey(state: string) {
+    return `auth:google:state:${state}`;
+  }
+
+  private getGoogleFrontendCallbackBaseUrl() {
+    const frontendBase = env.frontendAppUrl?.replace(/\/+$/, "") ?? "";
+
+    return `${frontendBase}/auth/google/callback`;
+  }
+
+  private buildGoogleCallbackErrorUrl(errorCode: string) {
+    const params = new URLSearchParams({
+      error: errorCode,
+    });
+
+    return `${this.getGoogleFrontendCallbackBaseUrl()}?${params.toString()}`;
+  }
+
+  private buildGoogleCallbackSuccessUrl(input: {
+    nextPath: string | null;
+    tokens: {
+      accessToken: string;
+      expiresInSeconds: number;
+      refreshToken: string;
+      tokenType: string;
+    };
+  }) {
+    const hash = new URLSearchParams({
+      accessToken: input.tokens.accessToken,
+      refreshToken: input.tokens.refreshToken,
+    });
+
+    if (input.nextPath) {
+      hash.set("next", input.nextPath);
+    }
+
+    return `${this.getGoogleFrontendCallbackBaseUrl()}#${hash.toString()}`;
   }
 
   private async createSessionResponse(

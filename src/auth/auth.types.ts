@@ -62,6 +62,21 @@ export type LoginInput = {
   password: string;
 };
 
+export type GoogleAuthStartInput = {
+  nextPath: string | null;
+};
+
+export type GoogleAuthCallbackInput = {
+  code: string | null;
+  error: string | null;
+  errorDescription: string | null;
+  state: string | null;
+};
+
+export type PendingGoogleAuthPayload = {
+  nextPath: string | null;
+};
+
 export type RefreshInput = {
   refreshToken: string;
 };

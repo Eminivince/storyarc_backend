@@ -28,6 +28,9 @@ export type AppEnv = {
   cloudinaryApiKey: string | null;
   cloudinaryApiSecret: string | null;
   cloudinaryProfileImageFolder: string | null;
+  googleClientId: string | null;
+  googleClientSecret: string | null;
+  googleRedirectUri: string | null;
 };
 
 function getStringEnv(name: string, fallback?: string): string {
@@ -110,6 +113,9 @@ function parseEnv(): AppEnv {
     cloudinaryProfileImageFolder: getOptionalStringEnv(
       "CLOUDINARY_PROFILE_IMAGE_FOLDER",
     ),
+    googleClientId: getOptionalStringEnv("GOOGLE_CLIENT_ID"),
+    googleClientSecret: getOptionalStringEnv("GOOGLE_CLIENT_SECRET"),
+    googleRedirectUri: getOptionalStringEnv("GOOGLE_REDIRECT_URI"),
   };
 }
 

@@ -5,6 +5,8 @@ import {
   Get,
   Param,
   Post,
+  Query,
+  Redirect,
   Req,
   UseGuards,
 } from "@nestjs/common";
@@ -12,6 +14,8 @@ import { AccessTokenGuard } from "../common/guards/access-token.guard";
 import { AuthenticatedRequest } from "../common/types/request-with-auth.type";
 import {
   parseForgotPasswordBody,
+  parseGoogleAuthCallbackQuery,
+  parseGoogleAuthStartQuery,
   parseLoginBody,
   parseRefreshBody,
   parseRegisterBody,
@@ -49,6 +53,24 @@ function getRequestMeta(request: AuthenticatedRequest) {
 @Controller("auth")
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
+
+  @Get("google/start")
+  @Redirect()
+  async startGoogleAuth(@Query() query: unknown) {
+    return this.authService.startGoogleAuth(parseGoogleAuthStartQuery(query));
+  }
+
+  @Get("google/callback")
+  @Redirect()
+  async handleGoogleCallback(
+    @Query() query: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.authService.handleGoogleCallback(
+      parseGoogleAuthCallbackQuery(query),
+      getRequestMeta(request),
+    );
+  }
 
   @Post("register")
   async register(@Body() body: unknown) {

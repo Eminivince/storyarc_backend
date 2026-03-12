@@ -1,6 +1,8 @@
 import { BadRequestException } from "@nestjs/common";
 import {
   ForgotPasswordInput,
+  GoogleAuthCallbackInput,
+  GoogleAuthStartInput,
   LoginInput,
   RefreshInput,
   RegisterInput,
@@ -112,6 +114,67 @@ function getBoolean(record: RawRecord, fieldName: string) {
   return value;
 }
 
+function getOptionalQueryString(
+  record: RawRecord,
+  fieldName: string,
+  options: { maxLength?: number } = {},
+) {
+  const value = record[fieldName];
+
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      return null;
+    }
+
+    if (typeof value[0] !== "string") {
+      throw new BadRequestException(`${fieldName} must be a string.`);
+    }
+
+    return getOptionalQueryString(
+      {
+        [fieldName]: value[0],
+      },
+      fieldName,
+      options,
+    );
+  }
+
+  if (typeof value !== "string") {
+    throw new BadRequestException(`${fieldName} must be a string.`);
+  }
+
+  const trimmed = value.trim();
+  const maxLength = options.maxLength ?? 2048;
+
+  if (!trimmed) {
+    return null;
+  }
+
+  if (trimmed.length > maxLength) {
+    throw new BadRequestException(
+      `${fieldName} must be ${maxLength} characters or fewer.`,
+    );
+  }
+
+  return trimmed;
+}
+
+function normalizeNextPath(value: string | null) {
+  if (!value) {
+    return null;
+  }
+
+  if (!value.startsWith("/") || value.startsWith("//")) {
+    return null;
+  }
+
+  return value;
+}
+
 export function parseRegisterBody(body: unknown): RegisterInput {
   const record = getObjectBody(body);
 
@@ -131,6 +194,41 @@ export function parseLoginBody(body: unknown): LoginInput {
   return {
     email: getEmail(record),
     password: getPassword(record),
+  };
+}
+
+export function parseGoogleAuthStartQuery(
+  query: unknown,
+): GoogleAuthStartInput {
+  const record = getObjectBody(query);
+
+  return {
+    nextPath: normalizeNextPath(
+      getOptionalQueryString(record, "next", {
+        maxLength: 2048,
+      }),
+    ),
+  };
+}
+
+export function parseGoogleAuthCallbackQuery(
+  query: unknown,
+): GoogleAuthCallbackInput {
+  const record = getObjectBody(query);
+
+  return {
+    code: getOptionalQueryString(record, "code", {
+      maxLength: 4096,
+    }),
+    error: getOptionalQueryString(record, "error", {
+      maxLength: 120,
+    }),
+    errorDescription: getOptionalQueryString(record, "error_description", {
+      maxLength: 500,
+    }),
+    state: getOptionalQueryString(record, "state", {
+      maxLength: 500,
+    }),
   };
 }
 
