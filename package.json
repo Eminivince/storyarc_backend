@@ -12,7 +12,8 @@
     "lint": "tsc --noEmit",
     "prisma:generate": "prisma generate",
     "prisma:push": "prisma db push",
-    "prisma:seed": "node --env-file=.env -r ts-node/register/transpile-only prisma/seed.ts"
+    "prisma:seed": "node --env-file=.env -r ts-node/register/transpile-only prisma/seed.ts",
+    "postinstall": "prisma generate"
   },
   "keywords": [
     "nestjs",
