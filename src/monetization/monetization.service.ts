@@ -32,6 +32,7 @@ import {
   resolveEffectiveChapterAccess,
 } from "../utils/book-admin";
 import {
+  ChapterUnlockBatchInput,
   ChapterUnlockInput,
   ConfirmCheckoutSessionInput,
   CreateCheckoutSessionInput,
@@ -48,6 +49,21 @@ type PurchaseWithRelations = Prisma.PurchaseGetPayload<{
   include: {
     coinPackage: true;
     plan: true;
+  };
+}>;
+
+type PurchaseHistoryRecord = Prisma.PurchaseGetPayload<{
+  include: {
+    coinPackage: {
+      select: {
+        name: true;
+      };
+    };
+    plan: {
+      select: {
+        name: true;
+      };
+    };
   };
 }>;
 
@@ -148,10 +164,42 @@ type ChapterAccessResolution = {
   requiredPreviousChapter: RequiredPreviousChapter;
 };
 
+type BatchUnlockCandidate = {
+  chapter: ChapterAccessTarget;
+  effectiveCoinPrice: number;
+  isCurrentlyPremium: boolean;
+};
+
+type BatchUnlockOption = {
+  chapters: BatchUnlockCandidate[];
+  discountPercent: number;
+  finalTotalCoins: number;
+  label: string;
+  mode: "all" | "next";
+  originalTotalCoins: number;
+  savingsCoins: number;
+};
+
+type BatchUnlockStoryContext = StoryAccessContext & {
+  id: string;
+  publishedChapters: ChapterAccessTarget[];
+};
+
 const ACTIVE_SUBSCRIPTION_STATUSES = new Set<SubscriptionStatus>([
   SubscriptionStatus.ACTIVE,
   SubscriptionStatus.TRIALING,
 ]);
+const BATCH_UNLOCK_NEXT_CHAPTER_COUNT = 3;
+const BATCH_UNLOCK_DISCOUNT_TIERS = [
+  {
+    minCount: 4,
+    percent: 10,
+  },
+  {
+    minCount: 2,
+    percent: 5,
+  },
+] as const;
 
 const PAYSTACK_MINIMUM_AMOUNT_BY_CURRENCY: Record<string, number> = {
   GHS: 10,
@@ -283,6 +331,43 @@ export class MonetizationService implements OnModuleInit {
             status: subscription.status,
           }
         : null,
+    };
+  }
+
+  async getPurchases(userId: string) {
+    const purchases = await this.prisma.purchase.findMany({
+      where: {
+        userId,
+      },
+      include: {
+        coinPackage: {
+          select: {
+            name: true,
+          },
+        },
+        plan: {
+          select: {
+            name: true,
+          },
+        },
+      },
+      orderBy: {
+        createdAt: "desc",
+      },
+      take: 50,
+    });
+
+    return {
+      purchases: purchases.map((purchase) => ({
+        amountCents: purchase.amountCents,
+        currency: purchase.currency.toUpperCase(),
+        description: this.getPurchaseHistoryDescription(purchase),
+        id: purchase.id,
+        kind: purchase.kind === PurchaseKind.COINS ? "coins" : "subscription",
+        occurredAt:
+          purchase.completedAt ?? purchase.failedAt ?? purchase.createdAt,
+        status: purchase.status,
+      })),
     };
   }
 
@@ -542,6 +627,252 @@ export class MonetizationService implements OnModuleInit {
       chapterKey: this.toChapterKey(input.storySlug, input.chapterSlug),
       message: `Chapter unlocked with ${effectiveChapter.effectiveCoinPrice} coins.`,
       status: await this.getStatus(userId),
+    };
+  }
+
+  async getChapterBatchUnlockOptions(
+    userId: string,
+    input: { chapterSlug: string; storySlug: string },
+  ) {
+    const context = await this.getBatchUnlockContext(userId, input);
+    const options = this.buildBatchUnlockOptions(context.eligibleCandidates);
+
+    return {
+      chapterKey: this.toChapterKey(input.storySlug, input.chapterSlug),
+      coinBalance: context.wallet.balanceCoins,
+      currentChapter: {
+        chapterNumber: context.chapter.chapterNumber,
+        chapterSlug: context.chapter.slug,
+        title: context.chapter.title,
+      },
+      hasPremiumSubscription: context.hasPremiumSubscription,
+      options: options.map((option) => this.mapBatchUnlockOption(option)),
+    };
+  }
+
+  async unlockChapterBatchWithCoins(
+    userId: string,
+    input: ChapterUnlockBatchInput,
+  ) {
+    const context = await this.getBatchUnlockContext(userId, input);
+
+    if (context.hasPremiumSubscription) {
+      return {
+        chapterKey: this.toChapterKey(input.storySlug, input.chapterSlug),
+        message: "Premium access is already active for these chapters.",
+        status: await this.getStatus(userId),
+        unlockedChapterCount: 0,
+      };
+    }
+
+    const option = this.resolveBatchUnlockOption(context.eligibleCandidates, input.mode);
+
+    if (!option || option.chapters.length === 0) {
+      return {
+        chapterKey: this.toChapterKey(input.storySlug, input.chapterSlug),
+        message: "No premium chapters remain to unlock in this batch.",
+        status: await this.getStatus(userId),
+        unlockedChapterCount: 0,
+      };
+    }
+
+    const childKeys = option.chapters.map((candidate) =>
+      this.getBatchUnlockChildIdempotencyKey(input.idempotencyKey, candidate.chapter.id),
+    );
+    const existingBatchLedgerEntries = await this.prisma.walletLedgerEntry.findMany({
+      where: {
+        idempotencyKey: {
+          in: childKeys,
+        },
+      },
+      select: {
+        entryType: true,
+        idempotencyKey: true,
+        publishedChapterId: true,
+        reason: true,
+        storyId: true,
+        userId: true,
+      },
+    });
+
+    if (existingBatchLedgerEntries.length > 0) {
+      const replayResolved = await this.tryResolveBatchCoinUnlockReplay({
+        chapters: option.chapters.map((candidate) => candidate.chapter),
+        idempotencyKey: input.idempotencyKey,
+        ledgerEntries: existingBatchLedgerEntries,
+        userId,
+      });
+
+      if (replayResolved) {
+        return {
+          chapterKey: this.toChapterKey(input.storySlug, input.chapterSlug),
+          message: this.getBatchUnlockMessage(option),
+          status: await this.getStatus(userId),
+          unlockedChapterCount: option.chapters.length,
+        };
+      }
+    }
+
+    let executedOption: BatchUnlockOption | null = null;
+
+    try {
+      executedOption = await this.prisma.$transaction(async (tx) => {
+        const existingEntitlements = await tx.chapterEntitlement.findMany({
+          where: {
+            publishedChapterId: {
+              in: option.chapters.map((candidate) => candidate.chapter.id),
+            },
+            userId,
+            OR: [
+              { expiresAt: null },
+              {
+                expiresAt: {
+                  gt: new Date(),
+                },
+              },
+            ],
+          },
+          select: {
+            publishedChapterId: true,
+          },
+        });
+        const existingEntitlementIds = new Set(
+          existingEntitlements.map((item) => item.publishedChapterId),
+        );
+        const chaptersToUnlock = option.chapters.filter(
+          (candidate) => !existingEntitlementIds.has(candidate.chapter.id),
+        );
+
+        if (chaptersToUnlock.length === 0) {
+          return null;
+        }
+
+        const currentOption = this.buildBatchUnlockOption(
+          chaptersToUnlock,
+          option.mode,
+        );
+        const allocations = this.allocateBatchUnlockCoins(
+          currentOption,
+          input.idempotencyKey,
+        );
+
+        const wallet = await this.getOrCreateWalletTx(tx, userId);
+
+        if (wallet.balanceCoins < currentOption.finalTotalCoins) {
+          throw new BadRequestException(
+            `Not enough coins to unlock this batch. ${currentOption.finalTotalCoins} coins are required.`,
+          );
+        }
+
+        let runningBalance = wallet.balanceCoins;
+
+        for (const allocation of allocations) {
+          runningBalance -= allocation.allocatedCoins;
+
+          await tx.walletLedgerEntry.create({
+            data: {
+              balanceAfter: runningBalance,
+              chapter: {
+                connect: {
+                  id: allocation.chapter.id,
+                },
+              },
+              deltaCoins: -allocation.allocatedCoins,
+              entryType: WalletLedgerEntryType.DEBIT,
+              idempotencyKey: allocation.idempotencyKey,
+              note:
+                currentOption.mode === "all"
+                  ? `Batch unlock (${currentOption.chapters.length} chapters)`
+                  : `Batch unlock next ${currentOption.chapters.length} chapters`,
+              reason: WalletLedgerReason.CHAPTER_UNLOCK,
+              story: {
+                connect: {
+                  id: allocation.chapter.storyId,
+                },
+              },
+              user: {
+                connect: {
+                  id: userId,
+                },
+              },
+              wallet: {
+                connect: {
+                  id: wallet.id,
+                },
+              },
+            },
+          });
+
+          await tx.chapterEntitlement.create({
+            data: {
+              chapter: {
+                connect: {
+                  id: allocation.chapter.id,
+                },
+              },
+              source: ChapterEntitlementSource.COIN_UNLOCK,
+              story: {
+                connect: {
+                  id: allocation.chapter.storyId,
+                },
+              },
+              user: {
+                connect: {
+                  id: userId,
+                },
+              },
+            },
+          });
+        }
+
+        await tx.wallet.update({
+          where: {
+            id: wallet.id,
+          },
+          data: {
+            balanceCoins: runningBalance,
+          },
+        });
+
+        return currentOption;
+      });
+    } catch (error) {
+      if (!this.isUniqueConstraintError(error)) {
+        throw error;
+      }
+
+      this.logger.warn(
+        `Batch coin unlock unique conflict story=${input.storySlug} chapter=${input.chapterSlug} user=${userId} key=${input.idempotencyKey} target=${this.getUniqueConstraintTarget(error)}`,
+      );
+
+      const replayResolved = await this.tryResolveBatchCoinUnlockReplay({
+        chapters: option.chapters.map((candidate) => candidate.chapter),
+        idempotencyKey: input.idempotencyKey,
+        ledgerEntries: [],
+        userId,
+      });
+
+      if (!replayResolved) {
+        throw new ConflictException(
+          "This batch unlock is still being processed. Please try again.",
+        );
+      }
+    }
+
+    if (!executedOption) {
+      return {
+        chapterKey: this.toChapterKey(input.storySlug, input.chapterSlug),
+        message: "Selected chapters are already unlocked.",
+        status: await this.getStatus(userId),
+        unlockedChapterCount: 0,
+      };
+    }
+
+    return {
+      chapterKey: this.toChapterKey(input.storySlug, input.chapterSlug),
+      message: this.getBatchUnlockMessage(executedOption),
+      status: await this.getStatus(userId),
+      unlockedChapterCount: executedOption.chapters.length,
     };
   }
 
@@ -1822,6 +2153,59 @@ export class MonetizationService implements OnModuleInit {
     };
   }
 
+  private async getPublishedStoryWithChaptersBySlugs(
+    storySlug: string,
+    chapterSlug: string,
+  ) {
+    const story = await this.prisma.story.findUnique({
+      where: {
+        slug: storySlug,
+      },
+      select: {
+        adminControl: {
+          select: {
+            defaultPremiumWindowHours: true,
+            globalCoinCap: true,
+            lastUpdatedByAdminUserId: true,
+          },
+        },
+        id: true,
+        isLive: true,
+        liveAt: true,
+        publishedChapters: {
+          include: {
+            adminOverride: true,
+            chapter: {
+              select: {
+                coinUnlockPrice: true,
+                premiumEnabled: true,
+              },
+            },
+          },
+          orderBy: {
+            chapterNumber: "asc",
+          },
+        },
+      },
+    });
+
+    if (!story || !isStoryLive(story)) {
+      throw new NotFoundException("Story not found.");
+    }
+
+    const chapter =
+      story.publishedChapters.find((item) => item.slug === chapterSlug) ?? null;
+
+    if (!chapter) {
+      throw new NotFoundException("Chapter not found.");
+    }
+
+    return {
+      chapter,
+      story,
+    };
+  }
+
   private getStoryControl(story: {
     adminControl?: {
       defaultPremiumWindowHours: number;
@@ -1857,6 +2241,270 @@ export class MonetizationService implements OnModuleInit {
       publishedAt: chapter.publishedAt,
       storyLiveAt: storyControl.liveAt,
     });
+  }
+
+  private async getBatchUnlockContext(
+    userId: string,
+    input: { chapterSlug: string; storySlug: string },
+  ) {
+    const { chapter, story } = await this.getPublishedStoryWithChaptersBySlugs(
+      input.storySlug,
+      input.chapterSlug,
+    );
+    const [wallet, hasPremiumSubscription, entitlements] = await Promise.all([
+      this.getOrCreateWallet(userId),
+      this.hasActiveSubscriptionAccess(userId),
+      story.publishedChapters.length === 0
+        ? Promise.resolve([])
+        : this.prisma.chapterEntitlement.findMany({
+            where: {
+              publishedChapterId: {
+                in: story.publishedChapters.map((item) => item.id),
+              },
+              userId,
+              OR: [
+                { expiresAt: null },
+                {
+                  expiresAt: {
+                    gt: new Date(),
+                  },
+                },
+              ],
+            },
+            select: {
+              publishedChapterId: true,
+            },
+          }),
+    ]);
+    const currentChapterAccess = await this.getChapterAccessDecision(userId, {
+      chapter,
+      isChapterPremium: this.resolveEffectiveChapter(chapter, story)
+        .isCurrentlyPremium,
+      story,
+    });
+
+    if (currentChapterAccess.accessState === "SEQUENCE_BLOCKED") {
+      throw new BadRequestException(
+        this.getSequentialAccessMessage(
+          currentChapterAccess.requiredPreviousChapter,
+        ),
+      );
+    }
+
+    const entitledChapterIds = new Set(
+      entitlements.map((item) => item.publishedChapterId),
+    );
+    const currentChapterIndex = story.publishedChapters.findIndex(
+      (item) => item.id === chapter.id,
+    );
+    const candidateChapters = story.publishedChapters.slice(currentChapterIndex);
+    const eligibleCandidates = hasPremiumSubscription
+      ? []
+      : candidateChapters.reduce<BatchUnlockCandidate[]>((list, item) => {
+          const effectiveChapter = this.resolveEffectiveChapter(item, story);
+
+          if (
+            !effectiveChapter.isCurrentlyPremium ||
+            entitledChapterIds.has(item.id)
+          ) {
+            return list;
+          }
+
+          list.push({
+            chapter: item,
+            effectiveCoinPrice: effectiveChapter.effectiveCoinPrice,
+            isCurrentlyPremium: effectiveChapter.isCurrentlyPremium,
+          });
+          return list;
+        }, []);
+
+    return {
+      chapter,
+      eligibleCandidates,
+      hasPremiumSubscription,
+      story,
+      wallet,
+    };
+  }
+
+  private buildBatchUnlockOptions(candidates: BatchUnlockCandidate[]) {
+    if (candidates.length <= 1) {
+      return candidates.length === 1
+        ? [this.buildBatchUnlockOption(candidates, "all")]
+        : [];
+    }
+
+    const options: BatchUnlockOption[] = [];
+    const nextCount = Math.min(BATCH_UNLOCK_NEXT_CHAPTER_COUNT, candidates.length);
+
+    if (candidates.length > nextCount) {
+      options.push(this.buildBatchUnlockOption(candidates.slice(0, nextCount), "next"));
+    }
+
+    options.push(this.buildBatchUnlockOption(candidates, "all"));
+
+    return options;
+  }
+
+  private resolveBatchUnlockOption(
+    candidates: BatchUnlockCandidate[],
+    mode: "all" | "next",
+  ) {
+    if (candidates.length === 0) {
+      return null;
+    }
+
+    if (mode === "next") {
+      return this.buildBatchUnlockOption(
+        candidates.slice(0, Math.min(BATCH_UNLOCK_NEXT_CHAPTER_COUNT, candidates.length)),
+        "next",
+      );
+    }
+
+    return this.buildBatchUnlockOption(candidates, "all");
+  }
+
+  private buildBatchUnlockOption(
+    chapters: BatchUnlockCandidate[],
+    mode: "all" | "next",
+  ): BatchUnlockOption {
+    const originalTotalCoins = chapters.reduce(
+      (sum, item) => sum + item.effectiveCoinPrice,
+      0,
+    );
+    const discountPercent = this.getBatchUnlockDiscountPercent(chapters.length);
+    const savingsCoins =
+      chapters.length <= 1
+        ? 0
+        : Math.round((originalTotalCoins * discountPercent) / 100);
+    const finalTotalCoins = Math.max(0, originalTotalCoins - savingsCoins);
+
+    return {
+      chapters,
+      discountPercent,
+      finalTotalCoins,
+      label:
+        mode === "all"
+          ? `Unlock All Remaining (${chapters.length})`
+          : `Unlock Next ${chapters.length}`,
+      mode,
+      originalTotalCoins,
+      savingsCoins,
+    };
+  }
+
+  private mapBatchUnlockOption(option: BatchUnlockOption) {
+    const firstChapter = option.chapters[0]?.chapter ?? null;
+    const lastChapter = option.chapters.at(-1)?.chapter ?? null;
+
+    return {
+      chapterCount: option.chapters.length,
+      chapters: option.chapters.map((item) => ({
+        chapterNumber: item.chapter.chapterNumber,
+        chapterSlug: item.chapter.slug,
+        title: item.chapter.title,
+        unlockPriceCoins: item.effectiveCoinPrice,
+      })),
+      description: firstChapter && lastChapter
+        ? option.mode === "all"
+          ? `Unlock ${option.chapters.length} remaining premium chapters through Chapter ${lastChapter.chapterNumber}.`
+          : `Unlock the next ${option.chapters.length} premium chapters from Chapter ${firstChapter.chapterNumber} to Chapter ${lastChapter.chapterNumber}.`
+        : "Unlock premium chapters in one purchase.",
+      discountPercent: option.discountPercent,
+      label: option.label,
+      mode: option.mode,
+      originalTotalCoins: option.originalTotalCoins,
+      savingsCoins: option.savingsCoins,
+      totalCoins: option.finalTotalCoins,
+    };
+  }
+
+  private getBatchUnlockDiscountPercent(chapterCount: number) {
+    for (const tier of BATCH_UNLOCK_DISCOUNT_TIERS) {
+      if (chapterCount >= tier.minCount) {
+        return tier.percent;
+      }
+    }
+
+    return 0;
+  }
+
+  private allocateBatchUnlockCoins(
+    option: BatchUnlockOption,
+    batchIdempotencyKey: string,
+  ) {
+    if (option.chapters.length === 1 || option.originalTotalCoins === option.finalTotalCoins) {
+      return option.chapters.map((candidate) => ({
+        allocatedCoins: candidate.effectiveCoinPrice,
+        chapter: candidate.chapter,
+        idempotencyKey: this.getBatchUnlockChildIdempotencyKey(
+          batchIdempotencyKey,
+          candidate.chapter.id,
+        ),
+      }));
+    }
+
+    const rawAllocations = option.chapters.map((candidate, index) => {
+      const exactCoins =
+        (candidate.effectiveCoinPrice * option.finalTotalCoins) /
+        option.originalTotalCoins;
+      const flooredCoins = Math.floor(exactCoins);
+
+      return {
+        chapter: candidate.chapter,
+        exactCoins,
+        flooredCoins,
+        fractionalCoins: exactCoins - flooredCoins,
+        index,
+      };
+    });
+    const allocatedCoins = rawAllocations.reduce(
+      (sum, item) => sum + item.flooredCoins,
+      0,
+    );
+    let remainder = option.finalTotalCoins - allocatedCoins;
+
+    rawAllocations
+      .slice()
+      .sort((left, right) => {
+        if (right.fractionalCoins === left.fractionalCoins) {
+          return left.index - right.index;
+        }
+
+        return right.fractionalCoins - left.fractionalCoins;
+      })
+      .forEach((item) => {
+        if (remainder <= 0) {
+          return;
+        }
+
+        item.flooredCoins += 1;
+        remainder -= 1;
+      });
+
+    return rawAllocations.map((item) => ({
+      allocatedCoins: item.flooredCoins,
+      chapter: item.chapter,
+      idempotencyKey: this.getBatchUnlockChildIdempotencyKey(
+        batchIdempotencyKey,
+        item.chapter.id,
+      ),
+    }));
+  }
+
+  private getBatchUnlockMessage(option: BatchUnlockOption) {
+    const savingsSuffix =
+      option.savingsCoins > 0
+        ? ` You saved ${option.savingsCoins} coins.`
+        : "";
+
+    return option.mode === "all"
+      ? `Unlocked all ${option.chapters.length} remaining premium chapters for ${option.finalTotalCoins} coins.${savingsSuffix}`
+      : `Unlocked the next ${option.chapters.length} premium chapters for ${option.finalTotalCoins} coins.${savingsSuffix}`;
+  }
+
+  private getBatchUnlockChildIdempotencyKey(batchKey: string, chapterId: string) {
+    return `${batchKey}:${chapterId}`;
   }
 
   private async getPreviousPublishedChapter(chapter: ChapterAccessTarget) {
@@ -1970,6 +2618,108 @@ export class MonetizationService implements OnModuleInit {
     }
 
     return false;
+  }
+
+  private async tryResolveBatchCoinUnlockReplay(input: {
+    chapters: ChapterAccessTarget[];
+    idempotencyKey: string;
+    ledgerEntries: Array<{
+      entryType: WalletLedgerEntryType;
+      idempotencyKey: string;
+      publishedChapterId: string | null;
+      reason: WalletLedgerReason;
+      storyId: string | null;
+      userId: string;
+    }>;
+    userId: string;
+  }) {
+    if (input.chapters.length === 0) {
+      return true;
+    }
+
+    const childKeys = input.chapters.map((chapter) =>
+      this.getBatchUnlockChildIdempotencyKey(input.idempotencyKey, chapter.id),
+    );
+    const chapterIds = new Set(input.chapters.map((chapter) => chapter.id));
+    const chapterById = new Map(
+      input.chapters.map((chapter) => [chapter.id, chapter]),
+    );
+    const ledgerEntries =
+      input.ledgerEntries.length > 0
+        ? input.ledgerEntries
+        : await this.prisma.walletLedgerEntry.findMany({
+            where: {
+              idempotencyKey: {
+                in: childKeys,
+              },
+            },
+            select: {
+              entryType: true,
+              idempotencyKey: true,
+              publishedChapterId: true,
+              reason: true,
+              storyId: true,
+              userId: true,
+            },
+          });
+
+    if (ledgerEntries.length !== input.chapters.length) {
+      return false;
+    }
+
+    for (const ledgerEntry of ledgerEntries) {
+      if (!childKeys.includes(ledgerEntry.idempotencyKey)) {
+        throw new BadRequestException(
+          "This unlock request key is already tied to another transaction.",
+        );
+      }
+
+      const chapterId = ledgerEntry.publishedChapterId;
+      const chapter =
+        chapterId && chapterIds.has(chapterId)
+          ? chapterById.get(chapterId) ?? null
+          : null;
+
+      if (
+        !chapter ||
+        !this.isMatchingCoinUnlockLedgerEntry(ledgerEntry, input.userId, chapter)
+      ) {
+        throw new BadRequestException(
+          "This unlock request key is already tied to another transaction.",
+        );
+      }
+    }
+
+    await Promise.all(
+      ledgerEntries.map((ledgerEntry) =>
+        this.ensureCoinUnlockEntitlement(
+          input.userId,
+          chapterById.get(ledgerEntry.publishedChapterId!)!,
+        ),
+      ),
+    );
+
+    const entitlements = await this.prisma.chapterEntitlement.findMany({
+      where: {
+        publishedChapterId: {
+          in: input.chapters.map((chapter) => chapter.id),
+        },
+        userId: input.userId,
+        OR: [
+          { expiresAt: null },
+          {
+            expiresAt: {
+              gt: new Date(),
+            },
+          },
+        ],
+      },
+      select: {
+        publishedChapterId: true,
+      },
+    });
+
+    return entitlements.length === input.chapters.length;
   }
 
   private isMatchingCoinUnlockLedgerEntry(
@@ -2164,6 +2914,21 @@ export class MonetizationService implements OnModuleInit {
 
   private toFrontendBillingInterval(value: BillingInterval) {
     return value === BillingInterval.ANNUAL ? "annual" : "monthly";
+  }
+
+  private getPurchaseHistoryDescription(purchase: PurchaseHistoryRecord) {
+    if (purchase.kind === PurchaseKind.SUBSCRIPTION) {
+      const planName = purchase.plan?.name?.trim() || "";
+      const membershipLabel = planName ? `${planName} Membership` : "Membership";
+      const intervalLabel =
+        purchase.billingInterval === BillingInterval.ANNUAL
+          ? "Annual"
+          : "Monthly";
+
+      return `${membershipLabel} ${intervalLabel}`;
+    }
+
+    return purchase.coinPackage?.name?.trim() || "Coin Package";
   }
 
   private toBillingIntervalFromPaystackPlanCode(

@@ -1,8 +1,10 @@
 import { BadRequestException } from "@nestjs/common";
+import { ContractExclusivity } from "@prisma/client";
 import {
   CREATOR_APPLICATION_STATUSES,
   CreatorApplicationInput,
   CreatorApplicationStatus,
+  CreatorWithdrawalRequestInput,
   ReviewCreatorApplicationInput,
 } from "./creator.types";
 
@@ -104,6 +106,70 @@ function getEmailValue(
   return trimmed.toLowerCase();
 }
 
+function getBooleanValue(record: RawRecord, fieldName: string) {
+  const value = record[fieldName];
+
+  if (typeof value !== "boolean") {
+    throw new BadRequestException(`${fieldName} must be a boolean.`);
+  }
+
+  return value;
+}
+
+function getOptionalEnumValue<T extends string>(
+  record: RawRecord,
+  fieldName: string,
+  allowedValues: readonly T[],
+) {
+  const value = record[fieldName];
+
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  if (typeof value !== "string") {
+    throw new BadRequestException(`${fieldName} must be a string.`);
+  }
+
+  const normalized = value.trim().toUpperCase();
+
+  if (!allowedValues.includes(normalized as T)) {
+    throw new BadRequestException(
+      `${fieldName} must be one of: ${allowedValues.join(", ")}.`,
+    );
+  }
+
+  return normalized as T;
+}
+
+function getNumberValue(
+  record: RawRecord,
+  fieldName: string,
+  options: {
+    max?: number;
+    min?: number;
+  } = {},
+) {
+  const value = record[fieldName];
+
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new BadRequestException(`${fieldName} must be a number.`);
+  }
+
+  const min = options.min ?? 0;
+  const max = options.max ?? Number.MAX_SAFE_INTEGER;
+
+  if (value < min) {
+    throw new BadRequestException(`${fieldName} must be at least ${min}.`);
+  }
+
+  if (value > max) {
+    throw new BadRequestException(`${fieldName} must be at most ${max}.`);
+  }
+
+  return Math.trunc(value);
+}
+
 export function parseCreatorApplicationDraftBody(
   body: unknown,
 ): CreatorApplicationInput {
@@ -130,6 +196,12 @@ export function parseCreatorApplicationDraftBody(
       allowEmpty: true,
       maxLength: 4_000,
     }),
+    wantsContract: getBooleanValue(record, "wantsContract"),
+    requestedContractType: getOptionalEnumValue(
+      record,
+      "requestedContractType",
+      ["EXCLUSIVE", "NON_EXCLUSIVE"] satisfies ContractExclusivity[],
+    ),
   };
 }
 
@@ -166,7 +238,26 @@ export function parseSubmitCreatorApplicationBody(
     );
   }
 
+  if (draft.wantsContract && !draft.requestedContractType) {
+    throw new BadRequestException(
+      "requestedContractType is required when wantsContract is true.",
+    );
+  }
+
   return draft;
+}
+
+export function parseCreatorWithdrawalRequestBody(
+  body: unknown,
+): CreatorWithdrawalRequestInput {
+  const record = getObjectBody(body);
+
+  return {
+    amountCents: getNumberValue(record, "amountCents", {
+      max: 10_000_000,
+      min: 100,
+    }),
+  };
 }
 
 export function parseReviewCreatorApplicationBody(

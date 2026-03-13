@@ -160,6 +160,11 @@ enum NotificationType {
   SECURITY
 }
 
+enum FollowTargetType {
+  AUTHOR
+  STORY
+}
+
 enum CommunityPostType {
   ANNOUNCEMENT
   POLL
@@ -190,6 +195,30 @@ enum ReportStatus {
   RESOLVED
   TAKEDOWN
   DISMISSED
+}
+
+enum CommentStatus {
+  VISIBLE
+  HIDDEN
+  DELETED
+}
+
+enum ReviewStatus {
+  VISIBLE
+  HIDDEN
+  DELETED
+}
+
+enum ReadingListVisibility {
+  PRIVATE
+  PUBLIC
+}
+
+enum StoryRankingKind {
+  TRENDING
+  POPULAR
+  TOP_RATED
+  RISING
 }
 
 enum SupportTicketCategory {
@@ -241,6 +270,7 @@ enum AdminBookReleaseMode {
 enum AdminSettingKind {
   BOOLEAN
   CURRENCY_CENTS
+  PERCENTAGE
 }
 
 enum AuthIdentityProvider {
@@ -264,8 +294,10 @@ model User {
   authoredStories     Story[]              @relation("StoryAuthor")
   authIdentities      AuthIdentity[]
   storyRatings        StoryRating[]
+  reviews             Review[]             @relation("StoryReviewer")
   readingProgress     ReadingProgress[]
   bookmarks           Bookmark[]
+  readingLists        ReadingList[]
   wallet              Wallet?
   purchases           Purchase[]
   subscriptions       Subscription[]
@@ -302,6 +334,12 @@ model User {
   contractsAsParty    Contract[]            @relation("ContractParty")
   contractsCreated    Contract[]            @relation("ContractCreator")
   contractsUpdated    Contract[]            @relation("ContractUpdater")
+  follows             Follow[]              @relation("FollowerUser")
+  authorFollowers     Follow[]              @relation("FollowedAuthor")
+  comments            Comment[]             @relation("CommentAuthor")
+  moderatedComments   Comment[]             @relation("CommentModerator")
+  moderatedReviews    Review[]              @relation("ReviewModerator")
+  chapterReadEvents   ChapterReadEvent[]
 
   @@map("users")
 }
@@ -330,6 +368,8 @@ model CreatorApplication {
   experience       String
   portfolioUrl     String?
   motivation       String
+  wantsContract    Boolean                  @default(false)
+  requestedContractType ContractExclusivity?
   status           CreatorApplicationStatus @default(DRAFT)
   submittedAt      DateTime?
   reviewedAt       DateTime?
@@ -452,6 +492,8 @@ model Contract {
   revenueSharePercent Int
   signingBonusCoins   Int
   advancePaymentCents Int
+  activatedAt         DateTime?
+  endedAt             DateTime?
   createdByAdminUserId String?            @db.ObjectId
   updatedByAdminUserId String?            @db.ObjectId
   createdAt           DateTime            @default(now())
@@ -537,6 +579,7 @@ model Story {
   publishedChapters PublishedChapter[]
   readingProgress  ReadingProgress[]
   bookmarks        Bookmark[]
+  readingListItems ReadingListItem[]
   chapterEntitlements ChapterEntitlement[]
   adUnlockRecords  AdUnlockRecord[]
   giftTransactions GiftTransaction[]
@@ -546,6 +589,13 @@ model Story {
   contentReports   ContentReport[]
   adminControl     StoryAdminControl?
   contracts        Contract[]         @relation("StoryContract")
+  followers        Follow[]
+  comments         Comment[]
+  reviews          Review[]
+  rankingEntries   StoryRankingEntry[]
+  chapterReadEvents ChapterReadEvent[]
+  analyticsDaily   StoryAnalyticsDaily[]
+  chapterAnalyticsDaily ChapterAnalyticsDaily[]
 
   @@index([featured, status])
   @@index([genreSlugs])
@@ -656,6 +706,9 @@ model PublishedChapter {
   walletLedgerEntries WalletLedgerEntry[]
   contentReports   ContentReport[]
   adminOverride    PublishedChapterAdminOverride?
+  comments         Comment[]
+  chapterReadEvents ChapterReadEvent[]
+  analyticsDaily   ChapterAnalyticsDaily[]
 
   @@unique([storyId, slug])
   @@unique([storyId, chapterNumber])
@@ -750,6 +803,38 @@ model Bookmark {
   @@map("bookmarks")
 }
 
+model ReadingList {
+  id          String                @id @default(auto()) @map("_id") @db.ObjectId
+  userId      String                @db.ObjectId
+  name        String
+  description String?
+  visibility  ReadingListVisibility @default(PRIVATE)
+  shareSlug   String                @unique
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+  user        User                  @relation(fields: [userId], references: [id])
+  items       ReadingListItem[]
+
+  @@index([userId, updatedAt])
+  @@map("reading_lists")
+}
+
+model ReadingListItem {
+  id            String      @id @default(auto()) @map("_id") @db.ObjectId
+  readingListId String      @db.ObjectId
+  storyId       String      @db.ObjectId
+  addedAt       DateTime    @default(now())
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  readingList   ReadingList @relation(fields: [readingListId], references: [id])
+  story         Story       @relation(fields: [storyId], references: [id])
+
+  @@unique([readingListId, storyId])
+  @@index([readingListId, addedAt])
+  @@index([storyId])
+  @@map("reading_list_items")
+}
+
 model StoryRating {
   id        String   @id @default(auto()) @map("_id") @db.ObjectId
   userId    String   @db.ObjectId
@@ -763,6 +848,101 @@ model StoryRating {
   @@unique([userId, storyId])
   @@index([storyId, updatedAt])
   @@map("story_ratings")
+}
+
+model Review {
+  id                     String       @id @default(auto()) @map("_id") @db.ObjectId
+  userId                 String       @db.ObjectId
+  storyId                String       @db.ObjectId
+  rating                 Int
+  title                  String?
+  body                   String
+  containsSpoilers       Boolean      @default(false)
+  status                 ReviewStatus @default(VISIBLE)
+  editedAt               DateTime?
+  moderationNotes        String?
+  moderatedByAdminUserId String?      @db.ObjectId
+  moderatedAt            DateTime?
+  createdAt              DateTime     @default(now())
+  updatedAt              DateTime     @updatedAt
+  user                   User         @relation("StoryReviewer", fields: [userId], references: [id])
+  story                  Story        @relation(fields: [storyId], references: [id])
+  moderatedByAdminUser   User?        @relation("ReviewModerator", fields: [moderatedByAdminUserId], references: [id])
+
+  @@unique([userId, storyId])
+  @@index([storyId, status, createdAt])
+  @@index([userId, createdAt])
+  @@index([rating, createdAt])
+  @@index([moderatedByAdminUserId, moderatedAt])
+  @@map("reviews")
+}
+
+model ChapterReadEvent {
+  id                String           @id @default(auto()) @map("_id") @db.ObjectId
+  userId            String           @db.ObjectId
+  storyId           String           @db.ObjectId
+  publishedChapterId String          @db.ObjectId
+  readDate          DateTime
+  paragraphIndex    Int              @default(0)
+  maxProgressPercent Int             @default(0)
+  completed         Boolean          @default(false)
+  firstReadAt       DateTime         @default(now())
+  lastReadAt        DateTime         @default(now())
+  completedAt       DateTime?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  user              User             @relation(fields: [userId], references: [id])
+  story             Story            @relation(fields: [storyId], references: [id])
+  chapter           PublishedChapter @relation(fields: [publishedChapterId], references: [id])
+
+  @@unique([userId, publishedChapterId, readDate])
+  @@index([storyId, readDate])
+  @@index([publishedChapterId, readDate])
+  @@index([userId, readDate])
+  @@map("chapter_read_events")
+}
+
+model StoryAnalyticsDaily {
+  id                    String   @id @default(auto()) @map("_id") @db.ObjectId
+  storyId               String   @db.ObjectId
+  date                  DateTime
+  viewCount             Int      @default(0)
+  uniqueReaders         Int      @default(0)
+  completedReaders      Int      @default(0)
+  averageProgressPercent Float   @default(0)
+  revenueCents          Int      @default(0)
+  unlockRevenueCents    Int      @default(0)
+  giftRevenueCents      Int      @default(0)
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  story                 Story    @relation(fields: [storyId], references: [id])
+
+  @@unique([storyId, date])
+  @@index([date])
+  @@map("story_analytics_daily")
+}
+
+model ChapterAnalyticsDaily {
+  id                    String           @id @default(auto()) @map("_id") @db.ObjectId
+  storyId               String           @db.ObjectId
+  publishedChapterId    String           @db.ObjectId
+  date                  DateTime
+  chapterNumber         Int
+  viewCount             Int              @default(0)
+  uniqueReaders         Int              @default(0)
+  completedReaders      Int              @default(0)
+  averageProgressPercent Float           @default(0)
+  completionRate        Float            @default(0)
+  revenueCents          Int              @default(0)
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @updatedAt
+  story                 Story            @relation(fields: [storyId], references: [id])
+  chapter               PublishedChapter @relation(fields: [publishedChapterId], references: [id])
+
+  @@unique([publishedChapterId, date])
+  @@index([storyId, date])
+  @@index([date])
+  @@map("chapter_analytics_daily")
 }
 
 model Plan {
@@ -1111,6 +1291,48 @@ model LeaderboardEntry {
   @@map("leaderboard_entries")
 }
 
+model StoryRankingSnapshot {
+  id         String            @id @default(auto()) @map("_id") @db.ObjectId
+  kind       StoryRankingKind
+  title      String
+  windowDays Int               @default(0)
+  startsAt   DateTime
+  endsAt     DateTime
+  createdAt  DateTime          @default(now())
+  updatedAt  DateTime          @updatedAt
+  entries    StoryRankingEntry[]
+
+  @@unique([kind, startsAt, endsAt])
+  @@index([kind, endsAt])
+  @@map("story_ranking_snapshots")
+}
+
+model StoryRankingEntry {
+  id                     String               @id @default(auto()) @map("_id") @db.ObjectId
+  storyRankingSnapshotId String               @db.ObjectId
+  storyId                String               @db.ObjectId
+  rank                   Int
+  score                  Float
+  totalReads             Int                  @default(0)
+  averageRating          Float                @default(0)
+  ratingCount            Int                  @default(0)
+  writtenReviewCount     Int                  @default(0)
+  totalFollowers         Int                  @default(0)
+  recentChapterCount     Int                  @default(0)
+  recentReviewCount      Int                  @default(0)
+  recentCommentCount     Int                  @default(0)
+  recentBookmarkCount    Int                  @default(0)
+  recentFollowCount      Int                  @default(0)
+  recentRatingCount      Int                  @default(0)
+  createdAt              DateTime             @default(now())
+  snapshot               StoryRankingSnapshot @relation(fields: [storyRankingSnapshotId], references: [id])
+  story                  Story                @relation(fields: [storyId], references: [id])
+
+  @@unique([storyRankingSnapshotId, storyId])
+  @@index([storyId, createdAt])
+  @@map("story_ranking_entries")
+}
+
 model CommunityPost {
   id                String              @id @default(auto()) @map("_id") @db.ObjectId
   creatorUserId     String              @db.ObjectId
@@ -1183,6 +1405,56 @@ model NotificationPreference {
   user                User     @relation(fields: [userId], references: [id])
 
   @@map("notification_preferences")
+}
+
+model Follow {
+  id           String           @id @default(auto()) @map("_id") @db.ObjectId
+  userId       String           @db.ObjectId
+  targetType   FollowTargetType
+  subjectKey   String
+  targetUserId String?          @db.ObjectId
+  storyId      String?          @db.ObjectId
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+  user         User             @relation("FollowerUser", fields: [userId], references: [id])
+  targetUser   User?            @relation("FollowedAuthor", fields: [targetUserId], references: [id])
+  story        Story?           @relation(fields: [storyId], references: [id])
+
+  @@unique([userId, subjectKey])
+  @@index([userId, createdAt])
+  @@index([targetType, targetUserId, createdAt])
+  @@index([targetType, storyId, createdAt])
+  @@map("follows")
+}
+
+model Comment {
+  id                     String        @id @default(auto()) @map("_id") @db.ObjectId
+  userId                 String        @db.ObjectId
+  storyId                String        @db.ObjectId
+  publishedChapterId     String        @db.ObjectId
+  parentCommentId        String?       @db.ObjectId
+  body                   String
+  status                 CommentStatus @default(VISIBLE)
+  depth                  Int           @default(0)
+  editedAt               DateTime?
+  moderationNotes        String?
+  moderatedByAdminUserId String?       @db.ObjectId
+  moderatedAt            DateTime?
+  createdAt              DateTime      @default(now())
+  updatedAt              DateTime      @updatedAt
+  user                   User          @relation("CommentAuthor", fields: [userId], references: [id])
+  story                  Story         @relation(fields: [storyId], references: [id])
+  chapter                PublishedChapter @relation(fields: [publishedChapterId], references: [id])
+  parent                 Comment?      @relation("CommentReplies", fields: [parentCommentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  replies                Comment[]     @relation("CommentReplies")
+  moderatedByAdminUser   User?         @relation("CommentModerator", fields: [moderatedByAdminUserId], references: [id])
+
+  @@index([publishedChapterId, status, createdAt])
+  @@index([parentCommentId, createdAt])
+  @@index([storyId, createdAt])
+  @@index([userId, createdAt])
+  @@index([moderatedByAdminUserId, moderatedAt])
+  @@map("comments")
 }
 
 model AppNotification {

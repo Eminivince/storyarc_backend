@@ -48,3 +48,8 @@ export type StudioCoverUploadInput = {
   contentType: string;
   filename: string;
 };
+
+export type StudioAnalyticsQueryInput = {
+  days: number;
+  storySlug: string | null;
+};

@@ -5,7 +5,13 @@ import {
   NotFoundException,
   UnauthorizedException,
 } from "@nestjs/common";
+import { ContractExclusivity } from "@prisma/client";
 import { PrismaService } from "../database/prisma.service";
+import {
+  creatorExclusiveRevenueShareSettingKey,
+  creatorNonExclusiveRevenueShareSettingKey,
+  getDefaultCreatorRevenueSharePercent,
+} from "./creator-finance.constants";
 import {
   CreatorApplicationInput,
   CreatorApplicationStatus,
@@ -19,21 +25,25 @@ export class CreatorService {
   async getCurrentUserApplication(userId: string) {
     await this.getActiveUser(userId);
 
-    const application = await this.prisma.creatorApplication.findUnique({
-      where: {
-        userId,
-      },
-      include: {
-        reviewedByUser: {
-          include: {
-            profile: true,
+    const [application, contractTerms] = await Promise.all([
+      this.prisma.creatorApplication.findUnique({
+        where: {
+          userId,
+        },
+        include: {
+          reviewedByUser: {
+            include: {
+              profile: true,
+            },
           },
         },
-      },
-    });
+      }),
+      this.getCreatorContractTerms(),
+    ]);
 
     return {
       application: application ? this.mapApplication(application) : null,
+      contractTerms,
     };
   }
 
@@ -70,6 +80,10 @@ export class CreatorService {
         experience: input.experience,
         portfolioUrl: input.portfolioUrl,
         motivation: input.motivation,
+        wantsContract: input.wantsContract,
+        requestedContractType: input.wantsContract
+          ? input.requestedContractType
+          : null,
         reviewedAt: null,
         reviewedByUserId: null,
         reviewNotes: null,
@@ -83,6 +97,10 @@ export class CreatorService {
         experience: input.experience,
         portfolioUrl: input.portfolioUrl,
         motivation: input.motivation,
+        wantsContract: input.wantsContract,
+        requestedContractType: input.wantsContract
+          ? input.requestedContractType
+          : null,
         reviewedAt: null,
         reviewedByUserId: null,
         reviewNotes: null,
@@ -100,6 +118,7 @@ export class CreatorService {
 
     return {
       application: this.mapApplication(application),
+      contractTerms: await this.getCreatorContractTerms(),
       message: "Creator application draft saved.",
     };
   }
@@ -129,6 +148,7 @@ export class CreatorService {
     if (existingApplication?.status === "SUBMITTED") {
       return {
         application: this.mapApplication(existingApplication),
+        contractTerms: await this.getCreatorContractTerms(),
         message: "Creator application is already under review.",
       };
     }
@@ -146,6 +166,10 @@ export class CreatorService {
         experience: input.experience,
         portfolioUrl: input.portfolioUrl,
         motivation: input.motivation,
+        wantsContract: input.wantsContract,
+        requestedContractType: input.wantsContract
+          ? input.requestedContractType
+          : null,
         reviewedAt: null,
         reviewedByUserId: null,
         reviewNotes: null,
@@ -159,6 +183,10 @@ export class CreatorService {
         experience: input.experience,
         portfolioUrl: input.portfolioUrl,
         motivation: input.motivation,
+        wantsContract: input.wantsContract,
+        requestedContractType: input.wantsContract
+          ? input.requestedContractType
+          : null,
         reviewedAt: null,
         reviewedByUserId: null,
         reviewNotes: null,
@@ -176,6 +204,7 @@ export class CreatorService {
 
     return {
       application: this.mapApplication(application),
+      contractTerms: await this.getCreatorContractTerms(),
       message: "Creator application submitted for review.",
     };
   }
@@ -482,6 +511,7 @@ export class CreatorService {
       motivation: string;
       portfolioUrl: string | null;
       primaryGenre: string;
+      requestedContractType: ContractExclusivity | null;
       reviewedAt: Date | null;
       reviewedByUser?: {
         profile: {
@@ -492,6 +522,7 @@ export class CreatorService {
       status: CreatorApplicationStatus;
       submittedAt: Date | null;
       updatedAt: Date;
+      wantsContract: boolean;
       user?: {
         email: string;
         id: string;
@@ -512,12 +543,16 @@ export class CreatorService {
       experience: application.experience,
       portfolioUrl: application.portfolioUrl,
       motivation: application.motivation,
+      requestedContractType: application.wantsContract
+        ? application.requestedContractType
+        : null,
       status: application.status,
       submittedAt: application.submittedAt,
       reviewedAt: application.reviewedAt,
       reviewNotes: application.reviewNotes,
       createdAt: application.createdAt,
       updatedAt: application.updatedAt,
+      wantsContract: application.wantsContract,
       reviewedBy: application.reviewedAt
         ? application.reviewedByUser?.profile?.displayName ?? "StoryArc Admin"
         : null,
@@ -539,6 +574,40 @@ export class CreatorService {
                 },
           }
         : {}),
+    };
+  }
+
+  private async getCreatorContractTerms() {
+    const settings = await this.prisma.adminSetting.findMany({
+      where: {
+        key: {
+          in: [
+            creatorExclusiveRevenueShareSettingKey,
+            creatorNonExclusiveRevenueShareSettingKey,
+          ],
+        },
+      },
+    });
+
+    const settingsByKey = new Map(settings.map((setting) => [setting.key, setting]));
+    const exclusivePercent =
+      settingsByKey.get(creatorExclusiveRevenueShareSettingKey)?.valueCents ??
+      getDefaultCreatorRevenueSharePercent(ContractExclusivity.EXCLUSIVE);
+    const nonExclusivePercent =
+      settingsByKey.get(creatorNonExclusiveRevenueShareSettingKey)?.valueCents ??
+      getDefaultCreatorRevenueSharePercent(ContractExclusivity.NON_EXCLUSIVE);
+
+    return {
+      exclusive: {
+        contractType: ContractExclusivity.EXCLUSIVE,
+        label: "Exclusive",
+        revenueSharePercent: exclusivePercent,
+      },
+      nonExclusive: {
+        contractType: ContractExclusivity.NON_EXCLUSIVE,
+        label: "Non-Exclusive",
+        revenueSharePercent: nonExclusivePercent,
+      },
     };
   }
 }

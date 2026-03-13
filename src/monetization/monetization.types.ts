@@ -1,5 +1,6 @@
 export const CHECKOUT_KINDS = ["coins", "plan"] as const;
 export const CHECKOUT_BILLING_INTERVALS = ["monthly", "annual"] as const;
+export const CHAPTER_UNLOCK_BATCH_MODES = ["next", "all"] as const;
 
 export type CheckoutKind = (typeof CHECKOUT_KINDS)[number];
 export type CheckoutBillingInterval =
@@ -20,6 +21,16 @@ export type ConfirmCheckoutSessionInput = {
 export type ChapterUnlockInput = {
   chapterSlug: string;
   idempotencyKey: string;
+  storySlug: string;
+};
+
+export type ChapterUnlockBatchMode =
+  (typeof CHAPTER_UNLOCK_BATCH_MODES)[number];
+
+export type ChapterUnlockBatchInput = {
+  chapterSlug: string;
+  idempotencyKey: string;
+  mode: ChapterUnlockBatchMode;
   storySlug: string;
 };
 

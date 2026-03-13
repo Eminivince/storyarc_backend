@@ -2,10 +2,12 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from "@nestjs/common";
 import {
   CommunityPostType,
+  FollowTargetType,
   LeaderboardPeriod,
   MissionMetricType,
   MissionRecurrence,
@@ -160,6 +162,8 @@ type ActiveUserWithProfile = Prisma.UserGetPayload<{
 
 @Injectable()
 export class EngagementService {
+  private readonly logger = new Logger(EngagementService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly resendEmailService: ResendEmailService,
@@ -1002,6 +1006,237 @@ export class EngagementService {
     return {
       message: "All notifications marked as read.",
     };
+  }
+
+  async notifyFollowersOfPublishedChapter(input: {
+    authorId: string | null;
+    authorName: string;
+    chapterNumber: number;
+    chapterSlug: string;
+    chapterTitle: string;
+    storyId: string;
+    storySlug: string;
+    storyTitle: string;
+  }) {
+    const followTargets: Prisma.FollowWhereInput[] = [
+      {
+        storyId: input.storyId,
+        targetType: FollowTargetType.STORY,
+      },
+    ];
+
+    if (input.authorId) {
+      followTargets.push({
+        targetType: FollowTargetType.AUTHOR,
+        targetUserId: input.authorId,
+      });
+    }
+
+    const follows = await this.prisma.follow.findMany({
+      where: {
+        OR: followTargets,
+      },
+      select: {
+        userId: true,
+      },
+    });
+    const recipientIds = Array.from(
+      new Set(
+        follows
+          .map((follow) => follow.userId)
+          .filter((userId) => userId && userId !== input.authorId),
+      ),
+    );
+
+    if (!recipientIds.length) {
+      return;
+    }
+
+    const recipients = await this.prisma.user.findMany({
+      where: {
+        id: {
+          in: recipientIds,
+        },
+        status: UserStatus.ACTIVE,
+      },
+      include: {
+        notificationPreference: true,
+        profile: true,
+      },
+    });
+    const title = input.authorName.trim()
+      ? `New chapter from ${input.authorName}`
+      : `New chapter in ${input.storyTitle}`;
+    const body = `${input.storyTitle} just published Chapter ${input.chapterNumber}: ${input.chapterTitle}.`;
+    const ctaHref = `/read/${input.storySlug}/${input.chapterSlug}`;
+
+    await Promise.all(
+      recipients
+        .filter((user) => user.notificationPreference?.pushNewStories ?? true)
+        .map(async (user) => {
+          await this.prisma.appNotification.create({
+            data: {
+              body,
+              ctaHref,
+              ctaLabel: "Read Chapter",
+              title,
+              type: "COMMUNITY",
+              userId: user.id,
+            },
+          });
+
+          if (user.notificationPreference?.emailNewComments ?? true) {
+            await this.resendEmailService
+              .sendNotificationEmail({
+                email: user.email,
+                preview: `${body} Tap below to start reading.`,
+                subject: title,
+                title,
+                userName:
+                  user.profile?.displayName?.trim()
+                    ? user.profile.displayName
+                    : user.email.split("@")[0] || "StoryArc Reader",
+              })
+              .catch((error: unknown) => {
+                const message =
+                  error instanceof Error ? error.message : "unknown email error";
+
+                this.logger.warn(
+                  `Could not send new chapter email to ${user.id}: ${message}`,
+                );
+              });
+          }
+        }),
+    );
+  }
+
+  async notifyUsersOfChapterComment(input: {
+    actorDisplayName: string;
+    actorUserId: string;
+    chapterNumber: number;
+    chapterSlug: string;
+    chapterTitle: string;
+    commentBody: string;
+    parentCommentAuthorId: string | null;
+    storyAuthorId: string | null;
+    storySlug: string;
+    storyTitle: string;
+  }) {
+    const recipientReasons = new Map<
+      string,
+      {
+        reply: boolean;
+        story: boolean;
+      }
+    >();
+
+    if (
+      input.storyAuthorId &&
+      input.storyAuthorId !== input.actorUserId
+    ) {
+      recipientReasons.set(input.storyAuthorId, {
+        reply: false,
+        story: true,
+      });
+    }
+
+    if (
+      input.parentCommentAuthorId &&
+      input.parentCommentAuthorId !== input.actorUserId
+    ) {
+      const existing = recipientReasons.get(input.parentCommentAuthorId);
+      recipientReasons.set(input.parentCommentAuthorId, {
+        reply: true,
+        story: existing?.story ?? false,
+      });
+    }
+
+    const recipientIds = Array.from(recipientReasons.keys());
+
+    if (!recipientIds.length) {
+      return;
+    }
+
+    const recipients = await this.prisma.user.findMany({
+      where: {
+        id: {
+          in: recipientIds,
+        },
+        status: UserStatus.ACTIVE,
+      },
+      include: {
+        notificationPreference: true,
+        profile: true,
+      },
+    });
+    const ctaHref = `/read/${input.storySlug}/${input.chapterSlug}`;
+    const preview = this.truncateCopy(input.commentBody, 160);
+
+    await Promise.all(
+      recipients.map(async (recipient) => {
+        const reasons = recipientReasons.get(recipient.id);
+
+        if (!reasons) {
+          return;
+        }
+
+        const preferences = recipient.notificationPreference;
+        const notificationKind = reasons.reply ? "reply" : "story";
+        const pushReason =
+          reasons.reply && (preferences?.pushCommentReplies ?? true)
+            ? "reply"
+            : reasons.story && (preferences?.pushStoryComments ?? true)
+              ? "story"
+              : null;
+        const notificationTitle =
+          notificationKind === "reply"
+            ? `${input.actorDisplayName} replied to your comment`
+            : `${input.actorDisplayName} commented on ${input.storyTitle}`;
+        const notificationBody =
+          notificationKind === "reply"
+            ? `In Chapter ${input.chapterNumber}: ${preview}`
+            : `${input.chapterTitle} now has a new reader comment: ${preview}`;
+
+        if (pushReason) {
+          await this.prisma.appNotification.create({
+            data: {
+              body: notificationBody,
+              ctaHref,
+              ctaLabel: "Open Comments",
+              title: notificationTitle,
+              type: NotificationType.COMMUNITY,
+              userId: recipient.id,
+            },
+          });
+        }
+
+        if (preferences?.emailNewComments ?? true) {
+          const emailTitle =
+            reasons.reply
+              ? `${input.actorDisplayName} replied to your StoryArc comment`
+              : `${input.actorDisplayName} commented on ${input.storyTitle}`;
+
+          await this.resendEmailService
+            .sendNotificationEmail({
+              email: recipient.email,
+              preview: `${notificationBody} Open the chapter to join the discussion.`,
+              subject: emailTitle,
+              title: emailTitle,
+              userName: recipient.profile?.displayName?.trim()
+                ? recipient.profile.displayName
+                : recipient.email.split("@")[0] || "StoryArc Reader",
+            })
+            .catch((error: unknown) => {
+              const message =
+                error instanceof Error ? error.message : "unknown email error";
+
+              this.logger.warn(
+                `Could not send comment notification email to ${recipient.id}: ${message}`,
+              );
+            });
+        }
+      }),
+    );
   }
 
   private async ensureDefaults(
@@ -2257,6 +2492,16 @@ export class EngagementService {
     }
 
     return referralCode;
+  }
+
+  private truncateCopy(value: string, maxLength: number) {
+    const trimmed = value.trim();
+
+    if (trimmed.length <= maxLength) {
+      return trimmed;
+    }
+
+    return `${trimmed.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
   }
 
   private generateReferralCode(

@@ -5,6 +5,8 @@ export type AppEnv = {
   port: number;
   databaseUrl: string;
   redisUrl: string;
+  scheduledPublishIntervalSeconds: number;
+  scheduledPublishBatchSize: number;
   frontendAppUrl: string | null;
   registrationCodeSecret: string;
   registrationCodeTtlMinutes: number;
@@ -85,6 +87,11 @@ function parseEnv(): AppEnv {
     port: getNumberEnv("PORT", 4000),
     databaseUrl: getStringEnv("DATABASE_URL"),
     redisUrl: getStringEnv("REDIS_URL"),
+    scheduledPublishIntervalSeconds: getNumberEnv(
+      "SCHEDULED_PUBLISH_INTERVAL_SECONDS",
+      30,
+    ),
+    scheduledPublishBatchSize: getNumberEnv("SCHEDULED_PUBLISH_BATCH_SIZE", 10),
     frontendAppUrl: getOptionalStringEnv("FRONTEND_APP_URL"),
     registrationCodeSecret: getStringEnv(
       "REGISTRATION_CODE_SECRET",

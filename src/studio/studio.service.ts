@@ -2,15 +2,27 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
 } from "@nestjs/common";
-import { AdminBookVisibilityState, Prisma, StoryStatus } from "@prisma/client";
+import {
+  AdminBookVisibilityState,
+  ChapterStatus,
+  Prisma,
+  StoryStatus,
+} from "@prisma/client";
 import { PrismaService } from "../database/prisma.service";
+import { EngagementService } from "../engagement/engagement.service";
 import {
   defaultBookPlatformPolicy,
   formatVisibilityLabel,
   getStoryVisibilityState,
 } from "../utils/book-admin";
+import {
+  normalizeRichTextDocument,
+  richTextToBlocks,
+  richTextToPlainText,
+} from "../utils/rich-text";
 import {
   StudioChapterDraftInput,
   StudioCoverUploadInput,
@@ -74,7 +86,79 @@ type StudioChapterRecord = Prisma.ChapterGetPayload<{
 
 @Injectable()
 export class StudioService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(StudioService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly engagementService: EngagementService,
+  ) {}
+
+  async autoPublishDueChapters(
+    now = new Date(),
+    limit = 10,
+  ): Promise<{
+    failureCount: number;
+    publishedCount: number;
+    scannedCount: number;
+  }> {
+    const dueChapters = await this.prisma.chapter.findMany({
+      where: {
+        scheduledFor: {
+          lte: now,
+        },
+        status: ChapterStatus.SCHEDULED,
+      },
+      include: {
+        arc: true,
+        publishedChapter: true,
+        story: {
+          include: {
+            adminControl: true,
+            assets: true,
+          },
+        },
+        volume: true,
+      },
+      orderBy: [
+        {
+          scheduledFor: "asc",
+        },
+        {
+          chapterNumber: "asc",
+        },
+      ],
+      take: limit,
+    });
+
+    if (!dueChapters.length) {
+      return {
+        failureCount: 0,
+        publishedCount: 0,
+        scannedCount: 0,
+      };
+    }
+
+    let publishedCount = 0;
+    let failureCount = 0;
+
+    for (const chapter of dueChapters) {
+      try {
+        await this.publishLoadedChapter(chapter);
+        publishedCount += 1;
+      } catch (error) {
+        failureCount += 1;
+        this.logger.warn(
+          `Scheduled publish failed for story ${chapter.story.slug} chapter ${chapter.slug}: ${error instanceof Error ? error.message : "unknown error"}`,
+        );
+      }
+    }
+
+    return {
+      failureCount,
+      publishedCount,
+      scannedCount: dueChapters.length,
+    };
+  }
 
   async listStories(userId: string) {
     const stories = await this.prisma.story.findMany({
@@ -349,6 +433,8 @@ export class StudioService {
     input: StudioChapterDraftInput,
   ) {
     const story = await this.getStoryRecord(userId, storySlug);
+    const normalizedBody = normalizeRichTextDocument(input.body);
+    const plainTextBody = richTextToPlainText(normalizedBody);
     const chapterNumber = this.parseChapterNumber(input.number);
     const existingChapter = input.chapterId
       ? await this.prisma.chapter.findFirst({
@@ -380,21 +466,21 @@ export class StudioService {
           data: {
             arcId: this.normalizeObjectId(input.arcId),
             authorNote: input.authorsNote || null,
-            bodyDraft: input.body,
+            bodyDraft: normalizedBody,
             chapterNumber,
             coinUnlockPrice: input.premiumEnabled
               ? Math.max(1, input.coinUnlockPrice)
               : 0,
             contentWarnings: input.warnings,
-            excerpt: this.createExcerpt(input.body),
-            readingMinutes: this.estimateReadingMinutes(input.body),
+            excerpt: this.createExcerpt(plainTextBody),
+            readingMinutes: this.estimateReadingMinutes(normalizedBody),
             premiumEnabled: input.premiumEnabled,
             scheduledFor,
             slug: chapterSlug,
             status: existingChapter.status === "PUBLISHED" ? "PUBLISHED" : "DRAFT",
             title: input.title,
             volumeId: this.normalizeObjectId(input.volumeId),
-            wordCount: this.getWordCount(input.body),
+            wordCount: this.getWordCount(normalizedBody),
           },
           include: {
             arc: true,
@@ -412,14 +498,14 @@ export class StudioService {
           data: {
             arcId: this.normalizeObjectId(input.arcId),
             authorNote: input.authorsNote || null,
-            bodyDraft: input.body,
+            bodyDraft: normalizedBody,
             chapterNumber,
             coinUnlockPrice: input.premiumEnabled
               ? Math.max(1, input.coinUnlockPrice)
               : 0,
             contentWarnings: input.warnings,
-            excerpt: this.createExcerpt(input.body),
-            readingMinutes: this.estimateReadingMinutes(input.body),
+            excerpt: this.createExcerpt(plainTextBody),
+            readingMinutes: this.estimateReadingMinutes(normalizedBody),
             premiumEnabled: input.premiumEnabled,
             scheduledFor,
             slug: chapterSlug,
@@ -427,7 +513,7 @@ export class StudioService {
             storyId: story.id,
             title: input.title,
             volumeId: this.normalizeObjectId(input.volumeId),
-            wordCount: this.getWordCount(input.body),
+            wordCount: this.getWordCount(normalizedBody),
           },
           include: {
             arc: true,
@@ -480,7 +566,7 @@ export class StudioService {
       throw new BadRequestException("A chapter title is required before publishing.");
     }
 
-    if (!chapter.bodyDraft.trim()) {
+    if (!richTextToPlainText(chapter.bodyDraft).trim()) {
       throw new BadRequestException("Chapter body cannot be empty.");
     }
 
@@ -514,112 +600,7 @@ export class StudioService {
       };
     }
 
-    const publishedAt = new Date();
-    const paragraphs = this.splitParagraphs(chapter.bodyDraft);
-    const bookPolicy = await this.prisma.bookPlatformPolicy.upsert({
-      where: {
-        key: defaultBookPlatformPolicy.key,
-      },
-      create: {
-        defaultCoinCap: defaultBookPlatformPolicy.defaultCoinCap,
-        defaultPremiumWindowHours:
-          defaultBookPlatformPolicy.defaultPremiumWindowHours,
-        defaultReleaseMode: defaultBookPlatformPolicy.defaultReleaseMode,
-        key: defaultBookPlatformPolicy.key,
-      },
-      update: {},
-    });
-
-    if (paragraphs.length === 0) {
-      throw new BadRequestException("Chapter body cannot be empty.");
-    }
-
-    await this.prisma.$transaction(async (transaction) => {
-      if (!chapter.publishedChapter) {
-        await transaction.publishedChapter.create({
-          data: {
-            bodyParagraphs: paragraphs,
-            chapterId: chapter.id,
-            chapterNumber: chapter.chapterNumber,
-            coinUnlockPrice: chapter.premiumEnabled ? chapter.coinUnlockPrice : 0,
-            premium: chapter.premiumEnabled,
-            publishedAt,
-            slug: chapter.slug,
-            storyId: chapter.storyId,
-            title: chapter.title,
-          },
-        });
-      } else {
-        await transaction.publishedChapter.update({
-          where: {
-            id: chapter.publishedChapter.id,
-          },
-          data: {
-            bodyParagraphs: paragraphs,
-            coinUnlockPrice: chapter.premiumEnabled ? chapter.coinUnlockPrice : 0,
-            premium: chapter.premiumEnabled,
-            publishedAt,
-            title: chapter.title,
-          },
-        });
-      }
-
-      await transaction.chapter.update({
-        where: {
-          id: chapter.id,
-        },
-        data: {
-          lastPublishedAt: publishedAt,
-          scheduledFor: null,
-          status: "PUBLISHED",
-        },
-      });
-
-      await transaction.story.update({
-        where: {
-          id: chapter.storyId,
-        },
-        data: {
-          latestChapterAt: publishedAt,
-          publishedAt: chapter.story.publishedAt ?? publishedAt,
-          status:
-            chapter.story.status === StoryStatus.DRAFT
-              ? StoryStatus.PUBLISHED
-              : chapter.story.status,
-        },
-      });
-
-      await transaction.storyAdminControl.upsert({
-        where: {
-          storyId: chapter.storyId,
-        },
-        create: {
-          defaultPremiumWindowHours: bookPolicy.defaultPremiumWindowHours,
-          globalCoinCap: bookPolicy.defaultCoinCap,
-          releaseMode: bookPolicy.defaultReleaseMode,
-          reviewedAt:
-            chapter.story.adminControl?.visibilityState ===
-            AdminBookVisibilityState.LIVE
-              ? publishedAt
-              : null,
-          storyId: chapter.storyId,
-          visibilityState:
-            chapter.story.adminControl?.visibilityState ??
-            (chapter.story.isLive
-              ? AdminBookVisibilityState.LIVE
-              : AdminBookVisibilityState.PENDING_APPROVAL),
-        },
-        update:
-          chapter.story.adminControl?.visibilityState ===
-            AdminBookVisibilityState.HIDDEN ||
-          chapter.story.adminControl?.visibilityState ===
-            AdminBookVisibilityState.LIVE
-            ? {}
-            : {
-                visibilityState: AdminBookVisibilityState.PENDING_APPROVAL,
-              },
-      });
-    });
+    await this.publishLoadedChapter(chapter);
 
     const refreshedStory = await this.getStoryRecord(userId, chapter.story.slug);
 
@@ -732,6 +713,132 @@ export class StudioService {
       coverImageUrl: `data:${contentType};base64,${sanitizedBase64}`,
       filename: input.filename,
     };
+  }
+
+  private async publishLoadedChapter(chapter: StudioChapterRecord) {
+    const isFirstPublication = !chapter.publishedChapter;
+    const publishedAt = new Date();
+    const paragraphs = this.splitParagraphs(chapter.bodyDraft);
+    const existingBookPolicy = await this.prisma.bookPlatformPolicy.findUnique({
+      where: {
+        key: defaultBookPlatformPolicy.key,
+      },
+    });
+    const bookPolicy =
+      existingBookPolicy ??
+      (await this.prisma.bookPlatformPolicy.create({
+        data: {
+          defaultCoinCap: defaultBookPlatformPolicy.defaultCoinCap,
+          defaultPremiumWindowHours:
+            defaultBookPlatformPolicy.defaultPremiumWindowHours,
+          defaultReleaseMode: defaultBookPlatformPolicy.defaultReleaseMode,
+          key: defaultBookPlatformPolicy.key,
+        },
+      }));
+
+    if (paragraphs.length === 0) {
+      throw new BadRequestException("Chapter body cannot be empty.");
+    }
+
+    if (!chapter.publishedChapter) {
+      await this.prisma.publishedChapter.create({
+        data: {
+          bodyParagraphs: paragraphs,
+          chapterId: chapter.id,
+          chapterNumber: chapter.chapterNumber,
+          coinUnlockPrice: chapter.premiumEnabled ? chapter.coinUnlockPrice : 0,
+          premium: chapter.premiumEnabled,
+          publishedAt,
+          slug: chapter.slug,
+          storyId: chapter.storyId,
+          title: chapter.title,
+        },
+      });
+    } else {
+      await this.prisma.publishedChapter.update({
+        where: {
+          id: chapter.publishedChapter.id,
+        },
+        data: {
+          bodyParagraphs: paragraphs,
+          coinUnlockPrice: chapter.premiumEnabled ? chapter.coinUnlockPrice : 0,
+          premium: chapter.premiumEnabled,
+          publishedAt,
+          title: chapter.title,
+        },
+      });
+    }
+
+    await this.prisma.chapter.update({
+      where: {
+        id: chapter.id,
+      },
+      data: {
+        lastPublishedAt: publishedAt,
+        scheduledFor: null,
+        status: ChapterStatus.PUBLISHED,
+      },
+    });
+
+    await this.prisma.story.update({
+      where: {
+        id: chapter.storyId,
+      },
+      data: {
+        latestChapterAt: publishedAt,
+        publishedAt: chapter.story.publishedAt ?? publishedAt,
+        status:
+          chapter.story.status === StoryStatus.DRAFT
+            ? StoryStatus.PUBLISHED
+            : chapter.story.status,
+      },
+    });
+
+    if (!chapter.story.adminControl) {
+      await this.prisma.storyAdminControl.create({
+        data: {
+          defaultPremiumWindowHours: bookPolicy.defaultPremiumWindowHours,
+          globalCoinCap: bookPolicy.defaultCoinCap,
+          releaseMode: bookPolicy.defaultReleaseMode,
+          reviewedAt: chapter.story.isLive ? publishedAt : null,
+          storyId: chapter.storyId,
+          visibilityState: chapter.story.isLive
+            ? AdminBookVisibilityState.LIVE
+            : AdminBookVisibilityState.PENDING_APPROVAL,
+        },
+      });
+    } else if (
+      chapter.story.adminControl.visibilityState !== AdminBookVisibilityState.HIDDEN &&
+      chapter.story.adminControl.visibilityState !== AdminBookVisibilityState.LIVE
+    ) {
+      await this.prisma.storyAdminControl.update({
+        where: {
+          id: chapter.story.adminControl.id,
+        },
+        data: {
+          visibilityState: AdminBookVisibilityState.PENDING_APPROVAL,
+        },
+      });
+    }
+
+    if (isFirstPublication) {
+      await this.engagementService
+        .notifyFollowersOfPublishedChapter({
+          authorId: chapter.story.authorId ?? null,
+          authorName: chapter.story.authorName,
+          chapterNumber: chapter.chapterNumber,
+          chapterSlug: chapter.slug,
+          chapterTitle: chapter.title,
+          storyId: chapter.storyId,
+          storySlug: chapter.story.slug,
+          storyTitle: chapter.story.title,
+        })
+        .catch((error) => {
+          this.logger.warn(
+            `Follower notifications failed for story ${chapter.story.slug} chapter ${chapter.slug}: ${error instanceof Error ? error.message : "unknown error"}`,
+          );
+        });
+    }
   }
 
   private async getStoryRecord(userId: string, storySlug: string) {
@@ -937,7 +1044,7 @@ export class StudioService {
     return {
       arcId: chapter.arcId ?? null,
       authorsNote: chapter.authorNote ?? "",
-      body: chapter.bodyDraft,
+      body: normalizeRichTextDocument(chapter.bodyDraft),
       chapterId: chapter.id,
       coinUnlockPrice: chapter.premiumEnabled
         ? Math.max(1, chapter.coinUnlockPrice)
@@ -1053,7 +1160,9 @@ export class StudioService {
   }
 
   private getWordCount(body: string) {
-    return body.trim().split(/\s+/).filter(Boolean).length;
+    const plainText = richTextToPlainText(body);
+
+    return plainText ? plainText.split(/\s+/).filter(Boolean).length : 0;
   }
 
   private estimateReadingMinutes(body: string) {
@@ -1061,10 +1170,7 @@ export class StudioService {
   }
 
   private splitParagraphs(body: string) {
-    return body
-      .split(/\n{2,}/)
-      .map((paragraph) => paragraph.trim())
-      .filter(Boolean);
+    return richTextToBlocks(body);
   }
 
   private mapStoryHeroStatus(status: StoryStatus) {

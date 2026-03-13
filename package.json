@@ -13,6 +13,7 @@
     "prisma:generate": "prisma generate",
     "prisma:push": "prisma db push",
     "prisma:seed": "node --env-file=.env -r ts-node/register/transpile-only prisma/seed.ts",
+    "prisma:seed:writer": "node --env-file=.env -r ts-node/register/transpile-only prisma/seed-writer-demo.ts",
     "postinstall": "prisma generate"
   },
   "keywords": [
@@ -32,12 +33,15 @@
     "@prisma/client": "^6.19.0",
     "bcryptjs": "^3.0.3",
     "ioredis": "^5.10.0",
+    "node-html-parser": "^7.1.0",
     "reflect-metadata": "^0.2.2",
     "resend": "^6.9.3",
-    "rxjs": "7.8.1"
+    "rxjs": "7.8.1",
+    "sanitize-html": "^2.17.1"
   },
   "devDependencies": {
     "@types/node": "^25.4.0",
+    "@types/sanitize-html": "^2.16.1",
     "nodemon": "^3.1.14",
     "prisma": "^6.19.0",
     "ts-node": "^10.9.2",

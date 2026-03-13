@@ -12,7 +12,9 @@ import {
 import { AccessTokenGuard } from "../common/guards/access-token.guard";
 import { AuthenticatedRequest } from "../common/types/request-with-auth.type";
 import {
+  parseAdminCommentModerationBody,
   parseAdminContractBody,
+  parseAdminReviewModerationBody,
   parseAdminSettingValueBody,
   parseAdminUserStatusBody,
   parseAdminBookConfigBody,
@@ -279,6 +281,42 @@ export class OperationsController {
       request.auth!.userId,
       reportId,
       parseResolveReportBody(body),
+    );
+  }
+
+  @Get("admin/comments")
+  async getAdminComments(@Req() request: AuthenticatedRequest) {
+    return this.operationsService.listAdminComments(request.auth!.userId);
+  }
+
+  @Patch("admin/comments/:commentId")
+  async moderateAdminComment(
+    @Param("commentId") commentId: string,
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.operationsService.moderateAdminComment(
+      request.auth!.userId,
+      commentId,
+      parseAdminCommentModerationBody(body),
+    );
+  }
+
+  @Get("admin/reviews")
+  async getAdminReviews(@Req() request: AuthenticatedRequest) {
+    return this.operationsService.listAdminReviews(request.auth!.userId);
+  }
+
+  @Patch("admin/reviews/:reviewId")
+  async moderateAdminReview(
+    @Param("reviewId") reviewId: string,
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.operationsService.moderateAdminReview(
+      request.auth!.userId,
+      reviewId,
+      parseAdminReviewModerationBody(body),
     );
   }
 

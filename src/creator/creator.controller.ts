@@ -15,9 +15,11 @@ import { AuthenticatedRequest } from "../common/types/request-with-auth.type";
 import {
   parseCreatorApplicationDraftBody,
   parseCreatorApplicationStatusQuery,
+  parseCreatorWithdrawalRequestBody,
   parseReviewCreatorApplicationBody,
   parseSubmitCreatorApplicationBody,
 } from "./creator.schemas";
+import { CreatorFinanceService } from "./creator-finance.service";
 import { CreatorService } from "./creator.service";
 
 function assertAdminRole(request: AuthenticatedRequest) {
@@ -26,10 +28,19 @@ function assertAdminRole(request: AuthenticatedRequest) {
   }
 }
 
+function assertCreatorRole(request: AuthenticatedRequest) {
+  if (request.auth?.role !== "CREATOR" && request.auth?.role !== "ADMIN") {
+    throw new ForbiddenException("Creator access is required.");
+  }
+}
+
 @Controller("creator")
 @UseGuards(AccessTokenGuard)
 export class CreatorController {
-  constructor(private readonly creatorService: CreatorService) {}
+  constructor(
+    private readonly creatorService: CreatorService,
+    private readonly creatorFinanceService: CreatorFinanceService,
+  ) {}
 
   @Get("application")
   async getCurrentUserApplication(@Req() request: AuthenticatedRequest) {
@@ -52,6 +63,28 @@ export class CreatorController {
     return this.creatorService.submitApplication(
       request.auth!.userId,
       parseSubmitCreatorApplicationBody(body),
+    );
+  }
+
+  @Get("finance")
+  async getCreatorFinance(@Req() request: AuthenticatedRequest) {
+    assertCreatorRole(request);
+
+    return this.creatorFinanceService.getCreatorFinanceOverview(
+      request.auth!.userId,
+    );
+  }
+
+  @Post("withdrawals")
+  async createWithdrawalRequest(
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    assertCreatorRole(request);
+
+    return this.creatorFinanceService.createWithdrawalRequest(
+      request.auth!.userId,
+      parseCreatorWithdrawalRequestBody(body),
     );
   }
 }

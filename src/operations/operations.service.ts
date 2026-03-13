@@ -8,11 +8,19 @@ import {
   AdminBookReleaseMode,
   AdminBookVisibilityState,
   AdminSettingKind,
+  CommentStatus,
   ContractExclusivity,
   ContractStatus,
   Prisma,
+  ReviewStatus,
 } from "@prisma/client";
 import { AuthService } from "../auth/auth.service";
+import {
+  creatorExclusiveRevenueShareSettingKey,
+  creatorNonExclusiveRevenueShareSettingKey,
+  getDefaultCreatorRevenueSharePercent,
+  isCreatorWithdrawalPeriodLabel,
+} from "../creator/creator-finance.constants";
 import { PrismaService } from "../database/prisma.service";
 import {
   defaultBookPlatformPolicy,
@@ -183,6 +191,30 @@ const defaultAdminSettings: DefaultAdminSetting[] = [
     kind: "CURRENCY_CENTS",
     title: "Monthly Revenue Target",
     valueCents: 5_000_000,
+  },
+  {
+    description:
+      "Default revenue share for exclusive creator contracts tied to premium chapter purchases.",
+    enabled: true,
+    group: "Financial Controls",
+    key: creatorExclusiveRevenueShareSettingKey,
+    kind: "PERCENTAGE",
+    title: "Exclusive Contract Share",
+    valueCents: getDefaultCreatorRevenueSharePercent(
+      ContractExclusivity.EXCLUSIVE,
+    ),
+  },
+  {
+    description:
+      "Default revenue share for non-exclusive creator contracts tied to premium chapter purchases.",
+    enabled: true,
+    group: "Financial Controls",
+    key: creatorNonExclusiveRevenueShareSettingKey,
+    kind: "PERCENTAGE",
+    title: "Non-Exclusive Contract Share",
+    valueCents: getDefaultCreatorRevenueSharePercent(
+      ContractExclusivity.NON_EXCLUSIVE,
+    ),
   },
 ] as const;
 
@@ -1158,6 +1190,9 @@ export class OperationsService {
   async getAdminContractLookups(adminUserId: string) {
     await this.requireAdmin(adminUserId);
 
+    const contractRevenueDefaults =
+      await this.getCreatorRevenueShareDefaults();
+
     const [users, stories, templates] = await Promise.all([
       this.prisma.user.findMany({
         where: {
@@ -1237,6 +1272,7 @@ export class OperationsService {
         id: user.id,
         status: user.status,
       })),
+      revenueShareDefaults: contractRevenueDefaults,
     };
   }
 
@@ -1258,15 +1294,18 @@ export class OperationsService {
     ]);
     const sequence = await this.nextAdminSequenceValue("contract");
     const displayId = this.formatContractDisplayId(sequence);
+    const lifecycleFields = this.getContractLifecycleUpdate(null, input.status);
 
     const contract = await this.prisma.contract.create({
       data: {
         advancePaymentCents: input.advancePaymentCents,
+        activatedAt: lifecycleFields.activatedAt,
         body: input.body,
         companyName: input.companyName,
         contractType: input.contractType,
         createdByAdminUserId: admin.id,
         displayId,
+        endedAt: lifecycleFields.endedAt,
         geographicRights: input.geographicRights,
         partyRole: input.partyRole,
         revenueSharePercent: input.revenueSharePercent,
@@ -1302,12 +1341,20 @@ export class OperationsService {
     input: AdminContractInput,
   ) {
     const admin = await this.requireAdmin(adminUserId);
-    await this.getContractOrThrow(contractId);
+    const existingContract = await this.getContractOrThrow(contractId);
     const [party, story, template] = await Promise.all([
       this.getContractPartyUserOrThrow(input.userId),
       this.getContractStoryOrThrow(input.storyId),
       input.templateId ? this.getContractTemplateOrThrow(input.templateId) : null,
     ]);
+    const lifecycleFields = this.getContractLifecycleUpdate(
+      {
+        activatedAt: existingContract.activatedAt,
+        endedAt: existingContract.endedAt,
+        status: existingContract.status,
+      },
+      input.status,
+    );
 
     const contract = await this.prisma.contract.update({
       where: {
@@ -1315,9 +1362,11 @@ export class OperationsService {
       },
       data: {
         advancePaymentCents: input.advancePaymentCents,
+        activatedAt: lifecycleFields.activatedAt,
         body: input.body,
         companyName: input.companyName,
         contractType: input.contractType,
+        endedAt: lifecycleFields.endedAt,
         geographicRights: input.geographicRights,
         partyRole: input.partyRole,
         revenueSharePercent: input.revenueSharePercent,
@@ -1640,6 +1689,247 @@ export class OperationsService {
     };
   }
 
+  async listAdminComments(adminUserId: string) {
+    await this.requireAdmin(adminUserId);
+
+    const comments = await this.prisma.comment.findMany({
+      include: {
+        chapter: true,
+        parent: {
+          include: {
+            user: {
+              include: {
+                profile: true,
+              },
+            },
+          },
+        },
+        story: true,
+        user: {
+          include: {
+            profile: true,
+          },
+        },
+      },
+      orderBy: {
+        createdAt: "desc",
+      },
+      take: 200,
+    });
+
+    return {
+      comments: comments.map((comment) => this.mapAdminComment(comment)),
+      summary: {
+        deletedCount: comments.filter((comment) => comment.status === CommentStatus.DELETED)
+          .length,
+        hiddenCount: comments.filter((comment) => comment.status === CommentStatus.HIDDEN)
+          .length,
+        replyCount: comments.filter((comment) => Boolean(comment.parentCommentId)).length,
+        visibleCount: comments.filter((comment) => comment.status === CommentStatus.VISIBLE)
+          .length,
+      },
+    };
+  }
+
+  async moderateAdminComment(
+    adminUserId: string,
+    commentId: string,
+    input: {
+      action: "HIDE" | "RESTORE" | "DELETE";
+      notes: string | null;
+    },
+  ) {
+    const admin = await this.requireAdmin(adminUserId);
+    const existingComment = await this.prisma.comment.findUnique({
+      where: {
+        id: commentId,
+      },
+      include: {
+        chapter: true,
+        story: true,
+        user: {
+          include: {
+            profile: true,
+          },
+        },
+      },
+    });
+
+    if (!existingComment) {
+      throw new NotFoundException("Comment not found.");
+    }
+
+    const nextStatus =
+      input.action === "RESTORE"
+        ? CommentStatus.VISIBLE
+        : input.action === "HIDE"
+          ? CommentStatus.HIDDEN
+          : CommentStatus.DELETED;
+    const moderatedComment = await this.prisma.comment.update({
+      where: {
+        id: commentId,
+      },
+      data: {
+        moderatedAt: new Date(),
+        moderatedByAdminUserId: admin.id,
+        moderationNotes: input.notes,
+        status: nextStatus,
+      },
+      include: {
+        chapter: true,
+        parent: {
+          include: {
+            user: {
+              include: {
+                profile: true,
+              },
+            },
+          },
+        },
+        story: true,
+        user: {
+          include: {
+            profile: true,
+          },
+        },
+      },
+    });
+
+    await this.logAdminAction(admin.id, {
+      detail: `${this.getDisplayName(moderatedComment.user)}'s comment on ${moderatedComment.story.title} was ${nextStatus.toLowerCase()}.`,
+      icon:
+        input.action === "RESTORE"
+          ? "history"
+          : input.action === "HIDE"
+            ? "visibility_off"
+            : "delete",
+      summary: `${this.mapAdminCommentStatus(nextStatus)} comment moderation`,
+      targetId: commentId,
+      targetType: "COMMENT",
+      tone: input.action === "RESTORE" ? "emerald" : "rose",
+    });
+
+    return {
+      comment: this.mapAdminComment(moderatedComment),
+      message:
+        input.action === "RESTORE"
+          ? "Comment restored."
+          : input.action === "HIDE"
+            ? "Comment hidden."
+            : "Comment deleted.",
+    };
+  }
+
+  async listAdminReviews(adminUserId: string) {
+    await this.requireAdmin(adminUserId);
+
+    const reviews = await this.prisma.review.findMany({
+      include: {
+        story: true,
+        user: {
+          include: {
+            profile: true,
+          },
+        },
+      },
+      orderBy: {
+        createdAt: "desc",
+      },
+      take: 200,
+    });
+
+    return {
+      reviews: reviews.map((review) => this.mapAdminReview(review)),
+      summary: {
+        deletedCount: reviews.filter((review) => review.status === ReviewStatus.DELETED)
+          .length,
+        hiddenCount: reviews.filter((review) => review.status === ReviewStatus.HIDDEN)
+          .length,
+        spoilerCount: reviews.filter((review) => review.containsSpoilers).length,
+        visibleCount: reviews.filter((review) => review.status === ReviewStatus.VISIBLE)
+          .length,
+      },
+    };
+  }
+
+  async moderateAdminReview(
+    adminUserId: string,
+    reviewId: string,
+    input: {
+      action: "HIDE" | "RESTORE" | "DELETE";
+      notes: string | null;
+    },
+  ) {
+    const admin = await this.requireAdmin(adminUserId);
+    const existingReview = await this.prisma.review.findUnique({
+      where: {
+        id: reviewId,
+      },
+      include: {
+        story: true,
+        user: {
+          include: {
+            profile: true,
+          },
+        },
+      },
+    });
+
+    if (!existingReview) {
+      throw new NotFoundException("Review not found.");
+    }
+
+    const nextStatus =
+      input.action === "RESTORE"
+        ? ReviewStatus.VISIBLE
+        : input.action === "HIDE"
+          ? ReviewStatus.HIDDEN
+          : ReviewStatus.DELETED;
+    const moderatedReview = await this.prisma.review.update({
+      where: {
+        id: reviewId,
+      },
+      data: {
+        moderatedAt: new Date(),
+        moderatedByAdminUserId: admin.id,
+        moderationNotes: input.notes,
+        status: nextStatus,
+      },
+      include: {
+        story: true,
+        user: {
+          include: {
+            profile: true,
+          },
+        },
+      },
+    });
+
+    await this.logAdminAction(admin.id, {
+      detail: `${this.getDisplayName(moderatedReview.user)}'s review on ${moderatedReview.story.title} was ${nextStatus.toLowerCase()}.`,
+      icon:
+        input.action === "RESTORE"
+          ? "history"
+          : input.action === "HIDE"
+            ? "visibility_off"
+            : "delete",
+      summary: `${this.mapAdminReviewStatus(nextStatus)} review moderation`,
+      targetId: reviewId,
+      targetType: "REVIEW",
+      tone: input.action === "RESTORE" ? "emerald" : "rose",
+    });
+
+    return {
+      message:
+        input.action === "RESTORE"
+          ? "Review restored."
+          : input.action === "HIDE"
+            ? "Review hidden."
+            : "Review deleted.",
+      review: this.mapAdminReview(moderatedReview),
+    };
+  }
+
   async getAdminMonetization(adminUserId: string) {
     await this.requireAdmin(adminUserId);
     await this.ensureAdminDefaults();
@@ -1694,6 +1984,9 @@ export class OperationsService {
     const arpu = purchasers ? totalRevenueCents / purchasers : 0;
     const totalStreamCents =
       subscriptionRevenueCents + coinRevenueCents + adRevenueCents;
+    const withdrawalPayouts = payouts.filter((payout) =>
+      isCreatorWithdrawalPeriodLabel(payout.periodLabel),
+    );
 
     const packageCounts = purchases.reduce((map, purchase) => {
       if (!purchase.coinPackageId) {
@@ -1751,7 +2044,7 @@ export class OperationsService {
           width: `${this.getPercentWidth(adRevenueCents, totalStreamCents)}%`,
         },
       ],
-      payoutQueue: payouts.map((payout) => ({
+      payoutQueue: withdrawalPayouts.map((payout) => ({
         amount: this.formatCurrency(payout.amountCents),
         author: this.getDisplayName(payout.creator),
         id: payout.id,
@@ -1863,7 +2156,10 @@ export class OperationsService {
           title: setting.title,
         };
 
-        if (setting.kind !== AdminSettingKind.CURRENCY_CENTS) {
+        if (
+          setting.kind !== AdminSettingKind.CURRENCY_CENTS &&
+          setting.kind !== AdminSettingKind.PERCENTAGE
+        ) {
           return baseSetting;
         }
 
@@ -1874,7 +2170,10 @@ export class OperationsService {
 
         return {
           ...baseSetting,
-          formattedValue: this.formatCurrency(valueCents),
+          formattedValue:
+            setting.kind === AdminSettingKind.PERCENTAGE
+              ? this.formatPercentage(valueCents)
+              : this.formatCurrency(valueCents),
           valueCents,
         };
       }),
@@ -1939,9 +2238,21 @@ export class OperationsService {
       throw new NotFoundException("Setting not found.");
     }
 
-    if (setting.kind !== AdminSettingKind.CURRENCY_CENTS) {
+    if (
+      setting.kind !== AdminSettingKind.CURRENCY_CENTS &&
+      setting.kind !== AdminSettingKind.PERCENTAGE
+    ) {
       throw new BadRequestException(
         "This setting does not support a numeric value.",
+      );
+    }
+
+    if (
+      setting.kind === AdminSettingKind.PERCENTAGE &&
+      (input.valueCents < 0 || input.valueCents > 100)
+    ) {
+      throw new BadRequestException(
+        "Percentage settings must be between 0 and 100.",
       );
     }
 
@@ -1954,7 +2265,10 @@ export class OperationsService {
       },
     });
 
-    const formattedValue = this.formatCurrency(updated.valueCents ?? 0);
+    const formattedValue =
+      updated.kind === AdminSettingKind.PERCENTAGE
+        ? this.formatPercentage(updated.valueCents ?? 0)
+        : this.formatCurrency(updated.valueCents ?? 0);
 
     await this.logAdminAction(admin.id, {
       detail: `${updated.title} updated to ${formattedValue} from system settings.`,
@@ -2132,56 +2446,6 @@ export class OperationsService {
           title: setting.title,
           valueCents:
             setting.kind === AdminSettingKind.BOOLEAN ? null : undefined,
-        },
-      });
-    }
-
-    const creators = await this.prisma.user.findMany({
-      where: {
-        role: "CREATOR",
-        status: "ACTIVE",
-      },
-      include: {
-        profile: true,
-      },
-    });
-
-    for (const creator of creators) {
-      const existing = await this.prisma.creatorPayout.findFirst({
-        where: {
-          creatorUserId: creator.id,
-        },
-      });
-
-      if (existing) {
-        continue;
-      }
-
-      const authoredStories = await this.prisma.story.findMany({
-        where: {
-          authorId: creator.id,
-        },
-        select: {
-          totalReads: true,
-        },
-      });
-      const amountCents = Math.max(
-        75_00,
-        authoredStories.reduce(
-          (sum, story) => sum + Math.round(story.totalReads * 0.08),
-          0,
-        ),
-      );
-
-      await this.prisma.creatorPayout.create({
-        data: {
-          amountCents,
-          creatorUserId: creator.id,
-          periodLabel: new Intl.DateTimeFormat("en-US", {
-            month: "short",
-            year: "numeric",
-          }).format(new Date()),
-          status: amountCents > 200_00 ? "IN_REVIEW" : "PENDING",
         },
       });
     }
@@ -3027,12 +3291,105 @@ export class OperationsService {
     };
   }
 
+  private mapAdminComment(comment: any) {
+    return {
+      authorAvatarUrl: this.getAvatarUrl(comment.user),
+      authorId: comment.user.id,
+      authorName: this.getDisplayName(comment.user),
+      body: comment.body,
+      bodyPreview: this.truncateCopy(comment.body, 220),
+      chapterNumber: comment.chapter.chapterNumber,
+      chapterSlug: comment.chapter.slug,
+      chapterTitle: comment.chapter.title,
+      createdAt: comment.createdAt,
+      createdAtLabel: this.formatRelativeDate(comment.createdAt),
+      id: comment.id,
+      isReply: Boolean(comment.parentCommentId),
+      moderationNotes: comment.moderationNotes ?? null,
+      moderatedAt: comment.moderatedAt,
+      moderatedAtLabel: comment.moderatedAt
+        ? this.formatRelativeDate(comment.moderatedAt)
+        : null,
+      parentComment: comment.parent
+        ? {
+            authorName: this.getDisplayName(comment.parent.user),
+            bodyPreview: this.truncateCopy(comment.parent.body, 120),
+            id: comment.parent.id,
+            status: this.mapAdminCommentStatus(comment.parent.status),
+          }
+        : null,
+      readHref: `/read/${comment.story.slug}/${comment.chapter.slug}`,
+      status: this.mapAdminCommentStatus(comment.status),
+      storySlug: comment.story.slug,
+      storyTitle: comment.story.title,
+    };
+  }
+
+  private mapAdminCommentStatus(status: CommentStatus) {
+    if (status === CommentStatus.HIDDEN) {
+      return "Hidden";
+    }
+
+    if (status === CommentStatus.DELETED) {
+      return "Deleted";
+    }
+
+    return "Visible";
+  }
+
+  private mapAdminReview(review: any) {
+    return {
+      authorAvatarUrl: this.getAvatarUrl(review.user),
+      authorId: review.user.id,
+      authorName: this.getDisplayName(review.user),
+      body: review.body,
+      bodyPreview: this.truncateCopy(review.body, 240),
+      containsSpoilers: review.containsSpoilers,
+      createdAt: review.createdAt,
+      createdAtLabel: this.formatRelativeDate(review.createdAt),
+      id: review.id,
+      moderationNotes: review.moderationNotes ?? null,
+      moderatedAt: review.moderatedAt,
+      moderatedAtLabel: review.moderatedAt
+        ? this.formatRelativeDate(review.moderatedAt)
+        : null,
+      rating: review.rating,
+      readHref: `/stories/${review.story.slug}/reviews`,
+      status: this.mapAdminReviewStatus(review.status),
+      storySlug: review.story.slug,
+      storyTitle: review.story.title,
+      title: review.title ?? null,
+    };
+  }
+
+  private mapAdminReviewStatus(status: ReviewStatus) {
+    if (status === ReviewStatus.HIDDEN) {
+      return "Hidden";
+    }
+
+    if (status === ReviewStatus.DELETED) {
+      return "Deleted";
+    }
+
+    return "Visible";
+  }
+
   private getDisplayName(user: any) {
     return user.profile?.displayName ?? user.email.split("@")[0] ?? "StoryArc User";
   }
 
   private getAvatarUrl(user: any) {
     return user.profile?.avatarUrl ?? null;
+  }
+
+  private truncateCopy(value: string, maxLength: number) {
+    const trimmed = value.trim();
+
+    if (trimmed.length <= maxLength) {
+      return trimmed;
+    }
+
+    return `${trimmed.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
   }
 
   private mapUiRoleToDb(role: string) {
@@ -3079,6 +3436,73 @@ export class OperationsService {
     }
 
     return "Active";
+  }
+
+  private async getCreatorRevenueShareDefaults() {
+    const settings = await this.prisma.adminSetting.findMany({
+      where: {
+        key: {
+          in: [
+            creatorExclusiveRevenueShareSettingKey,
+            creatorNonExclusiveRevenueShareSettingKey,
+          ],
+        },
+      },
+    });
+
+    const settingsByKey = new Map(settings.map((setting) => [setting.key, setting]));
+
+    return {
+      exclusive: {
+        contractType: ContractExclusivity.EXCLUSIVE,
+        revenueSharePercent:
+          settingsByKey.get(creatorExclusiveRevenueShareSettingKey)?.valueCents ??
+          getDefaultCreatorRevenueSharePercent(ContractExclusivity.EXCLUSIVE),
+      },
+      nonExclusive: {
+        contractType: ContractExclusivity.NON_EXCLUSIVE,
+        revenueSharePercent:
+          settingsByKey.get(creatorNonExclusiveRevenueShareSettingKey)?.valueCents ??
+          getDefaultCreatorRevenueSharePercent(
+            ContractExclusivity.NON_EXCLUSIVE,
+          ),
+      },
+    };
+  }
+
+  private getContractLifecycleUpdate(
+    current:
+      | {
+          activatedAt: Date | null;
+          endedAt: Date | null;
+          status: ContractStatus;
+        }
+      | null,
+    nextStatus: ContractStatus,
+  ) {
+    const now = new Date();
+
+    if (nextStatus === ContractStatus.ACTIVE) {
+      return {
+        activatedAt: current?.activatedAt ?? now,
+        endedAt: null,
+      };
+    }
+
+    if (
+      nextStatus === ContractStatus.EXPIRED ||
+      nextStatus === ContractStatus.TERMINATED
+    ) {
+      return {
+        activatedAt: current?.activatedAt ?? now,
+        endedAt: current?.endedAt ?? now,
+      };
+    }
+
+    return {
+      activatedAt: null,
+      endedAt: null,
+    };
   }
 
   private mapContractStatusLabel(status: string) {
@@ -3236,6 +3660,10 @@ export class OperationsService {
       currency: "USD",
       style: "currency",
     }).format(amountCents / 100);
+  }
+
+  private formatPercentage(value: number) {
+    return `${value}%`;
   }
 
   private formatCompactCurrency(amountCents: number) {

@@ -1,5 +1,6 @@
 import { BadRequestException } from "@nestjs/common";
 import {
+  StudioAnalyticsQueryInput,
   StudioChapterDraftInput,
   StudioCoverUploadInput,
   StudioPublishInput,
@@ -136,6 +137,24 @@ function getModeValue(value: unknown): "now" | "scheduled" {
   }
 
   return value;
+}
+
+export function parseStudioAnalyticsQuery(
+  days: string | undefined,
+  storySlug: string | undefined,
+): StudioAnalyticsQueryInput {
+  const parsedDays = days ? Number(days) : 14;
+
+  if (![7, 14, 30].includes(parsedDays)) {
+    throw new BadRequestException("days must be 7, 14, or 30.");
+  }
+
+  const normalizedStorySlug = storySlug?.trim();
+
+  return {
+    days: parsedDays,
+    storySlug: normalizedStorySlug ? normalizedStorySlug : null,
+  };
 }
 
 export function parseStudioStoryBody(body: unknown): StudioStoryInput {

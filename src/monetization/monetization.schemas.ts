@@ -2,6 +2,8 @@ import { BadRequestException } from "@nestjs/common";
 import {
   CHECKOUT_BILLING_INTERVALS,
   CHECKOUT_KINDS,
+  CHAPTER_UNLOCK_BATCH_MODES,
+  ChapterUnlockBatchInput,
   ChapterUnlockInput,
   ConfirmCheckoutSessionInput,
   CreateCheckoutSessionInput,
@@ -158,6 +160,23 @@ export function parseUnlockChapterBody(
       minLength: 8,
       maxLength: 160,
     }),
+    storySlug: input.storySlug,
+  };
+}
+
+export function parseUnlockChapterBatchBody(
+  body: unknown,
+  input: { chapterSlug: string; storySlug: string },
+): ChapterUnlockBatchInput {
+  const record = getObjectBody(body);
+
+  return {
+    chapterSlug: input.chapterSlug,
+    idempotencyKey: getTrimmedString(record, "idempotencyKey", {
+      minLength: 8,
+      maxLength: 160,
+    }),
+    mode: getEnumValue(record, "mode", CHAPTER_UNLOCK_BATCH_MODES),
     storySlug: input.storySlug,
   };
 }

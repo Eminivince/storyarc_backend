@@ -287,6 +287,32 @@ export function parseResolveReportBody(body: unknown) {
   };
 }
 
+export function parseAdminCommentModerationBody(body: unknown) {
+  const record = getObjectBody(body);
+
+  return {
+    action: getEnumValue(record, "action", [
+      "HIDE",
+      "RESTORE",
+      "DELETE",
+    ] as const),
+    notes: getOptionalStringValue(record, "notes", 2_000),
+  };
+}
+
+export function parseAdminReviewModerationBody(body: unknown) {
+  const record = getObjectBody(body);
+
+  return {
+    action: getEnumValue(record, "action", [
+      "HIDE",
+      "RESTORE",
+      "DELETE",
+    ] as const),
+    notes: getOptionalStringValue(record, "notes", 2_000),
+  };
+}
+
 export function parseAdminBookPolicyBody(body: unknown) {
   const record = getObjectBody(body);
 

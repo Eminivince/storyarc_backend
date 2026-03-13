@@ -15,6 +15,7 @@ import {
   parseConfirmCheckoutSessionBody,
   parseCreateCheckoutSessionBody,
   parseSendGiftBody,
+  parseUnlockChapterBatchBody,
   parseUnlockChapterBody,
 } from "./monetization.schemas";
 import { MonetizationService } from "./monetization.service";
@@ -32,6 +33,11 @@ export class MonetizationController {
   @Get("status")
   async getStatus(@Req() request: AuthenticatedRequest) {
     return this.monetizationService.getStatus(request.auth!.userId);
+  }
+
+  @Get("purchases")
+  async getPurchases(@Req() request: AuthenticatedRequest) {
+    return this.monetizationService.getPurchases(request.auth!.userId);
   }
 
   @Post("checkout-session")
@@ -66,6 +72,31 @@ export class MonetizationController {
     return this.monetizationService.unlockChapterWithCoins(
       request.auth!.userId,
       parseUnlockChapterBody(body, { chapterSlug, storySlug }),
+    );
+  }
+
+  @Get("chapters/:storySlug/:chapterSlug/batch-options")
+  async getChapterBatchUnlockOptions(
+    @Param("chapterSlug") chapterSlug: string,
+    @Param("storySlug") storySlug: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.monetizationService.getChapterBatchUnlockOptions(
+      request.auth!.userId,
+      { chapterSlug, storySlug },
+    );
+  }
+
+  @Post("chapters/:storySlug/:chapterSlug/unlock-batch")
+  async unlockChapterBatchWithCoins(
+    @Body() body: unknown,
+    @Param("chapterSlug") chapterSlug: string,
+    @Param("storySlug") storySlug: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.monetizationService.unlockChapterBatchWithCoins(
+      request.auth!.userId,
+      parseUnlockChapterBatchBody(body, { chapterSlug, storySlug }),
     );
   }
 

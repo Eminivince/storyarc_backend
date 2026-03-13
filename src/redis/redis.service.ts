@@ -1,4 +1,5 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from "@nestjs/common";
+import { randomUUID } from "crypto";
 import Redis from "ioredis";
 import { env } from "../config/env";
 
@@ -98,6 +99,56 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
       },
       async () => {
         this.fallbackStore.delete(key);
+      },
+    );
+  }
+
+  async acquireLock(key: string, ttlSeconds: number): Promise<string | null> {
+    const token = randomUUID();
+
+    return this.withRedisClient(
+      async (client) => {
+        const result = await client.set(key, token, "EX", ttlSeconds, "NX");
+        return result === "OK" ? token : null;
+      },
+      async () => {
+        const existing = this.getFallbackValue(key);
+
+        if (existing) {
+          return null;
+        }
+
+        this.fallbackStore.set(key, {
+          expiresAt: Date.now() + ttlSeconds * 1000,
+          value: token,
+        });
+
+        return token;
+      },
+    );
+  }
+
+  async releaseLock(key: string, token: string) {
+    await this.withRedisClient(
+      async (client) => {
+        await client.eval(
+          `
+            if redis.call("get", KEYS[1]) == ARGV[1] then
+              return redis.call("del", KEYS[1])
+            end
+            return 0
+          `,
+          1,
+          key,
+          token,
+        );
+      },
+      async () => {
+        const existing = this.getFallbackValue(key);
+
+        if (existing?.value === token) {
+          this.fallbackStore.delete(key);
+        }
       },
     );
   }

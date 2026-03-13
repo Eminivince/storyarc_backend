@@ -7,12 +7,15 @@ import {
   Patch,
   Post,
   Put,
+  Query,
   Req,
   UseGuards,
 } from "@nestjs/common";
+import { CreatorAnalyticsService } from "../analytics/creator-analytics.service";
 import { AccessTokenGuard } from "../common/guards/access-token.guard";
 import { AuthenticatedRequest } from "../common/types/request-with-auth.type";
 import {
+  parseStudioAnalyticsQuery,
   parseStudioChapterDraftBody,
   parseStudioCoverUploadBody,
   parseStudioPublishBody,
@@ -30,13 +33,30 @@ function assertStudioAccess(request: AuthenticatedRequest) {
 @Controller("studio")
 @UseGuards(AccessTokenGuard)
 export class StudioController {
-  constructor(private readonly studioService: StudioService) {}
+  constructor(
+    private readonly studioService: StudioService,
+    private readonly creatorAnalyticsService: CreatorAnalyticsService,
+  ) {}
 
   @Get("stories")
   async listStories(@Req() request: AuthenticatedRequest) {
     assertStudioAccess(request);
 
     return this.studioService.listStories(request.auth!.userId);
+  }
+
+  @Get("analytics")
+  async getAnalytics(
+    @Query("days") days: string | undefined,
+    @Query("storySlug") storySlug: string | undefined,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    assertStudioAccess(request);
+
+    return this.creatorAnalyticsService.getCreatorDashboardAnalytics(
+      request.auth!.userId,
+      parseStudioAnalyticsQuery(days, storySlug),
+    );
   }
 
   @Get("stories/:storySlug")
