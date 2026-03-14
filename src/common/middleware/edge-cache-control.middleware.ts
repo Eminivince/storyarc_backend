@@ -34,6 +34,10 @@ type RequestLike = {
 
 type ReplyLike = {
   header: (name: string, value: string) => unknown;
+  raw?: {
+    removeHeader?: (name: string) => unknown;
+  };
+  removeHeader?: (name: string) => unknown;
   statusCode: number;
 };
 
@@ -90,11 +94,19 @@ function resolvePathname(request: RequestLike) {
 }
 
 function setNoStore(reply: ReplyLike, options?: { includeCdnHeader?: boolean }) {
+  clearCacheHeaders(reply);
   reply.header("Cache-Control", NO_STORE_CACHE_CONTROL);
 
   if (options?.includeCdnHeader) {
     reply.header("CDN-Cache-Control", NO_STORE_CACHE_CONTROL);
   }
+}
+
+function clearCacheHeaders(reply: ReplyLike) {
+  reply.removeHeader?.("Cache-Control");
+  reply.removeHeader?.("CDN-Cache-Control");
+  reply.raw?.removeHeader?.("Cache-Control");
+  reply.raw?.removeHeader?.("CDN-Cache-Control");
 }
 
 export function edgeCacheControlMiddleware(
@@ -131,6 +143,7 @@ export function edgeCacheControlMiddleware(
   }
 
   if (matchesRoute(pathname, EDGE_PROFILE_ROUTE_PATTERNS)) {
+    clearCacheHeaders(reply);
     reply.header("Cache-Control", EDGE_PROFILE_CACHE_CONTROL);
     reply.header("CDN-Cache-Control", EDGE_PROFILE_CACHE_CONTROL);
     done(null, payload);
@@ -138,6 +151,7 @@ export function edgeCacheControlMiddleware(
   }
 
   if (matchesRoute(pathname, EDGE_CONTENT_ROUTE_PATTERNS)) {
+    clearCacheHeaders(reply);
     reply.header("Cache-Control", EDGE_CONTENT_CACHE_CONTROL);
     reply.header("CDN-Cache-Control", EDGE_CONTENT_CACHE_CONTROL);
     done(null, payload);
