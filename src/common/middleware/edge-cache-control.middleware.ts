@@ -106,6 +106,7 @@ export function edgeCacheControlMiddleware(
   const method = request.method.toUpperCase();
   const pathname = resolvePathname(request);
   const isAuthRoute = matchesRoute(pathname, AUTH_ROUTE_PATTERNS);
+  const isCacheableReadMethod = method === "GET" || method === "HEAD";
 
   console.log(
     "[CACHE DEBUG]",
@@ -117,7 +118,7 @@ export function edgeCacheControlMiddleware(
     `status=${reply.statusCode}`,
   );
 
-  if (method !== "GET" || reply.statusCode < 200 || reply.statusCode >= 300) {
+  if (!isCacheableReadMethod || reply.statusCode < 200 || reply.statusCode >= 300) {
     setNoStore(reply, { includeCdnHeader: isAuthRoute });
     done(null, payload);
     return;
