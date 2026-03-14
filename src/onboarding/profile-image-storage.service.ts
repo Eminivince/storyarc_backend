@@ -109,7 +109,7 @@ export class ProfileImageStorageService {
   }
 
   private getProfileImageFolder() {
-    return (env.cloudinaryProfileImageFolder ?? "storyarc/profile-pictures")
+    return (env.cloudinaryProfileImageFolder ?? "talestead/profile-pictures")
       .trim()
       .replace(/^\/+|\/+$/g, "");
   }

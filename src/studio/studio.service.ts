@@ -257,7 +257,7 @@ export class StudioService {
     const story = await this.prisma.story.create({
       data: {
         authorId: userId,
-        authorName: author.profile?.displayName ?? "StoryArc Creator",
+        authorName: author.profile?.displayName ?? "TaleStead Creator",
         genreSlugs: [this.toSlug(input.genre)],
         shortSynopsis,
         slug,

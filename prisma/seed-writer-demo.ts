@@ -4,27 +4,47 @@ import {
   AdminBookVisibilityState,
   ChapterStatus,
   CreatorApplicationStatus,
+  FollowTargetType,
   PrismaClient,
+  ReadingListVisibility,
   StoryStatus,
+  UserActivityEventType,
   UserRole,
   UserStatus,
 } from "@prisma/client";
+
+import dotenv from "dotenv";
+dotenv.config();
 
 const prisma = new PrismaClient();
 const HASH_ROUNDS = 12;
 
 const writerSeed = {
   bio:
-    "A resident StoryArc creator account seeded with complete sample books for studio, reader, and admin testing.",
+    "A resident TaleStead creator account seeded with complete sample books for studio, reader, and admin testing.",
   displayName: process.env.WRITER_SEED_DISPLAY_NAME?.trim() || "Avery Quinn",
-  email: process.env.WRITER_SEED_EMAIL?.trim() || "writer.demo@storyarc.local",
+  email: process.env.WRITER_SEED_EMAIL?.trim() || "writer.demo@talestead.local",
   location: process.env.WRITER_SEED_LOCATION?.trim() || "Lagos, Nigeria",
-  password: process.env.WRITER_SEED_PASSWORD?.trim() || "StoryArcWriter123!",
+  password: process.env.WRITER_SEED_PASSWORD?.trim() || "TaleSteadWriter123!",
   tagline:
     process.env.WRITER_SEED_TAGLINE?.trim() ||
     "Epic serial fiction across fantasy, sci-fi, mystery, and supernatural romance.",
   website:
-    process.env.WRITER_SEED_WEBSITE?.trim() || "https://storyarc.example/avery-quinn",
+    process.env.WRITER_SEED_WEBSITE?.trim() || "https://talestead.example/avery-quinn",
+};
+
+const loadReaderSeed = {
+  bio:
+    "Synthetic TaleStead reader account seeded for load testing reads, follows, bookmarks, reviews, comments, and reading lists.",
+  emailDomain:
+    process.env.WRITER_SEED_READER_EMAIL_DOMAIN?.trim() || "talestead.local",
+  location:
+    process.env.WRITER_SEED_READER_LOCATION?.trim() || "Frankfurt, Germany",
+  password:
+    process.env.WRITER_SEED_READER_PASSWORD?.trim() || "TaleSteadReader123!",
+  tagline:
+    process.env.WRITER_SEED_READER_TAGLINE?.trim() ||
+    "Load-test reader account for TaleStead.",
 };
 
 const genreCatalog = {
@@ -468,6 +488,82 @@ const stories: StorySeed[] = [
   },
 ];
 
+type WriterSeedConfig = {
+  commentsPerReader: number;
+  chapterCountPerGeneratedStory: number;
+  listsPerReader: number;
+  readerCount: number;
+  readerSeedConcurrency: number;
+  storyCount: number;
+  storiesPerReader: number;
+  storySeedConcurrency: number;
+};
+
+type SeededLoadReader = {
+  displayName: string;
+  email: string;
+  id: string;
+  index: number;
+};
+
+type SeededStoryRecord = Awaited<ReturnType<typeof getSeededStoryRecords>>[number];
+
+const syntheticStoryDescriptors = [
+  "Iron Accord",
+  "Obsidian Choir",
+  "Glass Meridian",
+  "Velvet Requiem",
+  "Ash Harbor",
+  "Silent Engine",
+  "Winter Ledger",
+  "Ivory Signal",
+  "Storm Archive",
+  "Midnight Protocol",
+  "Radiant Undertow",
+  "Broken Constellation",
+];
+
+const syntheticLocales = [
+  "the floodlit customs ward",
+  "the sealed observatory district",
+  "the underbridge markets",
+  "the reactor perimeter",
+  "the ash cathedral quarter",
+  "the lighthouse tribunal",
+  "the buried rail exchange",
+  "the quarantine gardens",
+];
+
+const syntheticInstitutions = [
+  "the imperial audit court",
+  "the station oversight board",
+  "the harbor covenant office",
+  "the lower archive ministry",
+  "the civic rites bureau",
+  "the emergency relay council",
+];
+
+const syntheticArtifacts = [
+  "a redacted witness ledger",
+  "a reactor hymn spool",
+  "a drowned oath seal",
+  "an unsigned coronation writ",
+  "a ghost map of service tunnels",
+  "a trial record stamped with tomorrow's date",
+];
+
+const syntheticArcLabels = ["Faultline", "Undertow", "Glassfire", "Night Ledger"];
+const syntheticChapterVerbs = [
+  "Opening the Locked Gate",
+  "Crossing the False Threshold",
+  "Naming the Hidden Witness",
+  "Breaching the Archive Floor",
+  "Following the Last Signal",
+  "Hearing the City's Oath",
+  "Taking Inventory of the Dead",
+  "Before the Emergency Bells",
+];
+
 function daysAgo(days: number) {
   return new Date(Date.now() - days * 24 * 60 * 60 * 1000);
 }
@@ -485,6 +581,255 @@ function countWords(text: string) {
 
 function estimateReadingMinutes(wordCount: number) {
   return Math.max(7, Math.ceil(wordCount / 220));
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function parseSeedIntegerEnv(name: string, fallback: number, min: number, max: number) {
+  const rawValue = process.env[name]?.trim();
+
+  if (!rawValue) {
+    return fallback;
+  }
+
+  const parsedValue = Number(rawValue);
+
+  if (!Number.isInteger(parsedValue) || parsedValue < min || parsedValue > max) {
+    throw new Error(`${name} must be an integer between ${min} and ${max}.`);
+  }
+
+  return parsedValue;
+}
+
+function getWriterSeedConfig(): WriterSeedConfig {
+  return {
+    commentsPerReader: parseSeedIntegerEnv("WRITER_SEED_COMMENTS_PER_READER", 4, 0, 50),
+    chapterCountPerGeneratedStory: parseSeedIntegerEnv(
+      "WRITER_SEED_CHAPTERS_PER_STORY",
+      12,
+      4,
+      60,
+    ),
+    listsPerReader: parseSeedIntegerEnv("WRITER_SEED_LISTS_PER_READER", 2, 0, 10),
+    readerCount: parseSeedIntegerEnv("WRITER_SEED_READER_COUNT", 0, 0, 10_000),
+    readerSeedConcurrency: parseSeedIntegerEnv(
+      "WRITER_SEED_READER_CONCURRENCY",
+      12,
+      1,
+      50,
+    ),
+    storyCount: parseSeedIntegerEnv("WRITER_SEED_STORY_COUNT", stories.length, 1, 5_000),
+    storiesPerReader: parseSeedIntegerEnv("WRITER_SEED_STORIES_PER_READER", 12, 1, 250),
+    storySeedConcurrency: parseSeedIntegerEnv("WRITER_SEED_STORY_CONCURRENCY", 6, 1, 24),
+  };
+}
+
+function buildSyntheticArcs(
+  story: StorySeed,
+  variantIndex: number,
+  chapterCount: number,
+  variantCode: string,
+): ArcSeed[] {
+  const arcCount = chapterCount >= 12 ? 3 : 2;
+  const arcs: ArcSeed[] = [];
+  let emittedChapters = 0;
+
+  for (let arcIndex = 0; arcIndex < arcCount; arcIndex += 1) {
+    const remaining = chapterCount - emittedChapters;
+    const remainingArcs = arcCount - arcIndex;
+    const chaptersInArc = Math.ceil(remaining / remainingArcs);
+    const locale = syntheticLocales[(variantIndex + arcIndex) % syntheticLocales.length];
+    const institution =
+      syntheticInstitutions[(variantIndex * 2 + arcIndex) % syntheticInstitutions.length];
+
+    const chapters = Array.from({ length: chaptersInArc }, (_, chapterOffset) => {
+      const chapterIndex = emittedChapters + chapterOffset;
+      const verb = syntheticChapterVerbs[
+        (variantIndex + chapterIndex) % syntheticChapterVerbs.length
+      ];
+      const artifact =
+        syntheticArtifacts[(variantIndex + chapterIndex * 2) % syntheticArtifacts.length];
+      const ally =
+        story.supportingCast[chapterIndex % story.supportingCast.length] ??
+        story.supportingCast[0] ??
+        story.protagonist;
+      const secondAlly =
+        story.supportingCast[(chapterIndex + 1) % story.supportingCast.length] ?? ally;
+
+      return {
+        focus: `${story.protagonist} pushes deeper into ${locale} to trace ${artifact} before ${institution} can seal the evidence`,
+        title: `${verb} ${variantCode}-${String(chapterIndex + 1).padStart(2, "0")}`,
+        twist: `${ally} realizes ${secondAlly} has been tracking the same evidence under direct orders from ${institution}, turning the alliance into leverage`,
+      };
+    });
+
+    arcs.push({
+      chapters,
+      title: `Arc ${arcIndex + 1}: ${syntheticArcLabels[(variantIndex + arcIndex) % syntheticArcLabels.length]}`,
+    });
+    emittedChapters += chaptersInArc;
+  }
+
+  return arcs;
+}
+
+function buildSyntheticStory(template: StorySeed, index: number, chapterCount: number): StorySeed {
+  const descriptor = syntheticStoryDescriptors[index % syntheticStoryDescriptors.length];
+  const locale = syntheticLocales[(index * 3) % syntheticLocales.length];
+  const institution = syntheticInstitutions[(index * 5) % syntheticInstitutions.length];
+  const artifact = syntheticArtifacts[(index * 7) % syntheticArtifacts.length];
+  const variantNumber = index + 1;
+  const variantCode = `LT${String(variantNumber).padStart(4, "0")}`;
+  const title = `${template.title}: ${descriptor} ${variantCode}`;
+  const supportingCast = template.supportingCast.map(
+    (name, castIndex) => `${name} ${variantCode}${String.fromCharCode(65 + castIndex)}`,
+  );
+
+  return {
+    accentColor: template.accentColor,
+    arcs: buildSyntheticArcs(
+      {
+        ...template,
+        supportingCast,
+        title,
+      },
+      index,
+      chapterCount,
+      variantCode,
+    ),
+    averageRating: Number(clamp(4.1 + ((variantNumber % 9) * 0.09), 4.1, 4.9).toFixed(1)),
+    bannerImageUrl: template.bannerImageUrl,
+    cardImageUrl: template.cardImageUrl,
+    coverImageUrl: template.coverImageUrl,
+    genreSlugs: template.genreSlugs,
+    maturityRating: template.maturityRating,
+    premise: `${template.premise} In variant ${variantCode}, the first credible break appears inside ${locale}, where a sealed report points directly at ${institution}.`,
+    protagonist: `${template.protagonist} ${variantCode}`,
+    publishedStartDaysAgo: template.publishedStartDaysAgo + (variantNumber % 180),
+    reviewCount: template.reviewCount + variantNumber * 3,
+    setting: `${template.setting}, with critical scenes unfolding around ${locale}`,
+    shortSynopsis: `${template.shortSynopsis} Load-test variant ${variantCode} shifts the conflict toward ${locale} and a fresh institutional cover-up.`,
+    slug: `seed-${String(variantNumber).padStart(4, "0")}-${template.slug}`,
+    stakes: `${template.stakes} The decisive clue is now ${artifact}, and losing it gives ${institution} one uncontested cycle to finish the cover-up.`,
+    supportingCast,
+    synopsis: `${template.synopsis} This load-test variant ${variantCode} expands the pressure around ${locale}, where ${template.protagonist} discovers that ${institution} is using ${artifact} to reroute blame before the public can see the pattern.`,
+    tagSlugs: template.tagSlugs,
+    targetAudience: template.targetAudience,
+    title,
+    totalReads: template.totalReads + variantNumber * 173,
+    volumeTitle: `${template.volumeTitle} ${variantCode}`,
+  };
+}
+
+function getStoriesToSeed(config: WriterSeedConfig) {
+  if (config.storyCount <= stories.length) {
+    return stories.slice(0, config.storyCount);
+  }
+
+  const syntheticStories = Array.from(
+    { length: config.storyCount - stories.length },
+    (_, index) =>
+      buildSyntheticStory(
+        stories[index % stories.length],
+        index,
+        config.chapterCountPerGeneratedStory,
+      ),
+  );
+
+  return [...stories, ...syntheticStories];
+}
+
+function buildLoadReaderCode(index: number) {
+  return String(index + 1).padStart(5, "0");
+}
+
+function buildLoadReaderEmail(index: number) {
+  return `reader.loadtest+${buildLoadReaderCode(index)}@${loadReaderSeed.emailDomain}`;
+}
+
+function buildLoadReaderDisplayName(index: number) {
+  return `Load Reader ${buildLoadReaderCode(index)}`;
+}
+
+function buildLoadReaderShareSlug(index: number, listIndex: number) {
+  return `load-reader-${buildLoadReaderCode(index)}-list-${listIndex + 1}`;
+}
+
+function buildLoadReaderSelectedGenres(index: number) {
+  const template = stories[index % stories.length];
+
+  return template.genreSlugs.map((genreSlug) => genreCatalog[genreSlug].name);
+}
+
+function pickDistinctItems<T>(items: T[], count: number, seed: number) {
+  if (items.length === 0 || count <= 0) {
+    return [];
+  }
+
+  const targetCount = Math.min(count, items.length);
+  const start = (seed * 7) % items.length;
+  const step = items.length > 2 ? items.length - 1 : 1;
+  const seen = new Set<number>();
+  const selected: T[] = [];
+  let offset = 0;
+
+  while (selected.length < targetCount && offset < items.length * 3) {
+    const index = (start + offset * step) % items.length;
+
+    if (!seen.has(index)) {
+      seen.add(index);
+      selected.push(items[index]);
+    }
+
+    offset += 1;
+  }
+
+  return selected;
+}
+
+function buildLoadTestReviewBody(
+  story: SeededStoryRecord,
+  chapter: SeededStoryRecord["publishedChapters"][number] | null,
+  reader: SeededLoadReader,
+) {
+  return `${reader.displayName} used this seeded review to exercise the written review flow for ${story.title}. The pacing stays strong, ${chapter ? `especially around Chapter ${chapter.chapterNumber}: ${chapter.title}.` : "especially in the opening chapters."} The worldbuilding is readable at speed, the hook is immediate, and the chapter-to-chapter momentum makes this title useful for load and ranking tests.`;
+}
+
+function buildLoadTestCommentBody(
+  story: SeededStoryRecord,
+  chapter: SeededStoryRecord["publishedChapters"][number],
+  reader: SeededLoadReader,
+) {
+  return `${reader.displayName} dropped this seeded comment on ${story.title}, Chapter ${chapter.chapterNumber}. The cliffhanger lands well, the chapter pacing stays clean, and this comment exists to exercise comment volume under load.`;
+}
+
+function chunkArray<T>(items: T[], chunkSize: number) {
+  const chunks: T[][] = [];
+
+  for (let index = 0; index < items.length; index += chunkSize) {
+    chunks.push(items.slice(index, index + chunkSize));
+  }
+
+  return chunks;
+}
+
+async function createManyInChunks<T>(
+  label: string,
+  items: T[],
+  createChunk: (chunk: T[]) => Promise<unknown>,
+  chunkSize = 500,
+) {
+  if (items.length === 0) {
+    return;
+  }
+
+  for (const chunk of chunkArray(items, chunkSize)) {
+    await createChunk(chunk);
+  }
+
+  console.log(`Inserted ${items.length} ${label}.`);
 }
 
 function buildChapterParagraphs(
@@ -539,9 +884,9 @@ async function ensureBookPlatformPolicy() {
   });
 }
 
-async function ensureGenresAndTags() {
-  const genreSlugs = new Set(stories.flatMap((story) => story.genreSlugs));
-  const tagSlugs = new Set(stories.flatMap((story) => story.tagSlugs));
+async function ensureGenresAndTags(storySeeds: StorySeed[]) {
+  const genreSlugs = new Set(storySeeds.flatMap((story) => story.genreSlugs));
+  const tagSlugs = new Set(storySeeds.flatMap((story) => story.tagSlugs));
 
   for (const genreSlug of genreSlugs) {
     const genre = genreCatalog[genreSlug];
@@ -732,6 +1077,127 @@ async function upsertWriterAccount() {
   }
 
   return user;
+}
+
+async function upsertLoadTestReaders(config: WriterSeedConfig) {
+  if (config.readerCount === 0) {
+    return [] as SeededLoadReader[];
+  }
+
+  const passwordHash = await hash(loadReaderSeed.password, HASH_ROUNDS);
+  const now = new Date();
+  const readers: SeededLoadReader[] = [];
+
+  for (let startIndex = 0; startIndex < config.readerCount; startIndex += config.readerSeedConcurrency) {
+    const batchIndexes = Array.from(
+      { length: Math.min(config.readerSeedConcurrency, config.readerCount - startIndex) },
+      (_, offset) => startIndex + offset,
+    );
+    const batchReaders = await Promise.all(
+      batchIndexes.map(async (readerIndex) => {
+        const email = buildLoadReaderEmail(readerIndex);
+        const displayName = buildLoadReaderDisplayName(readerIndex);
+        const selectedGenres = buildLoadReaderSelectedGenres(readerIndex);
+        const existingUser = await prisma.user.findUnique({
+          where: {
+            email,
+          },
+        });
+
+        const user = existingUser
+          ? await prisma.user.update({
+              where: {
+                id: existingUser.id,
+              },
+              data: {
+                emailVerifiedAt: now,
+                role: UserRole.READER,
+                status: UserStatus.ACTIVE,
+              },
+            })
+          : await prisma.user.create({
+              data: {
+                email,
+                emailVerifiedAt: now,
+                role: UserRole.READER,
+                status: UserStatus.ACTIVE,
+              },
+            });
+
+        const profileData = {
+          bio: loadReaderSeed.bio,
+          displayName,
+          location: loadReaderSeed.location,
+          onboardingCompletedAt: now,
+          privateLibrary: readerIndex % 2 === 0,
+          selectedGenres,
+          showActivity: true,
+          tagline: loadReaderSeed.tagline,
+        };
+
+        await prisma.profile.upsert({
+          where: {
+            userId: user.id,
+          },
+          update: profileData,
+          create: {
+            ...profileData,
+            userId: user.id,
+          },
+        });
+
+        await prisma.credential.upsert({
+          where: {
+            userId: user.id,
+          },
+          update: {
+            passwordHash,
+          },
+          create: {
+            passwordHash,
+            userId: user.id,
+          },
+        });
+
+        await prisma.notificationPreference.upsert({
+          where: {
+            userId: user.id,
+          },
+          update: {
+            emailMarketing: readerIndex % 5 === 0,
+            emailNewComments: true,
+            emailWeeklyDigest: readerIndex % 4 !== 0,
+            pushCommentReplies: true,
+            pushNewStories: true,
+            pushStoryComments: readerIndex % 3 !== 0,
+          },
+          create: {
+            emailMarketing: readerIndex % 5 === 0,
+            emailNewComments: true,
+            emailWeeklyDigest: readerIndex % 4 !== 0,
+            pushCommentReplies: true,
+            pushNewStories: true,
+            pushStoryComments: readerIndex % 3 !== 0,
+            userId: user.id,
+          },
+        });
+
+        return {
+          displayName,
+          email,
+          id: user.id,
+          index: readerIndex,
+        } satisfies SeededLoadReader;
+      }),
+    );
+
+    readers.push(...batchReaders);
+    console.log(
+      `Prepared ${Math.min(startIndex + batchReaders.length, config.readerCount)}/${config.readerCount} load readers...`,
+    );
+  }
+
+  return readers;
 }
 
 async function upsertStory(userId: string, story: StorySeed) {
@@ -1062,25 +1528,727 @@ async function upsertStory(userId: string, story: StorySeed) {
   };
 }
 
+async function getSeededStoryRecords(storySeeds: StorySeed[]) {
+  return prisma.story.findMany({
+    where: {
+      slug: {
+        in: storySeeds.map((story) => story.slug),
+      },
+    },
+    select: {
+      id: true,
+      slug: true,
+      title: true,
+      publishedChapters: {
+        orderBy: {
+          chapterNumber: "asc",
+        },
+        select: {
+          chapterNumber: true,
+          id: true,
+          publishedAt: true,
+          slug: true,
+          title: true,
+        },
+      },
+    },
+    orderBy: {
+      slug: "asc",
+    },
+  });
+}
+
+async function clearLoadTestReaderActivity(readerIds: string[]) {
+  if (readerIds.length === 0) {
+    return;
+  }
+
+  const existingLists = await prisma.readingList.findMany({
+    where: {
+      userId: {
+        in: readerIds,
+      },
+    },
+    select: {
+      id: true,
+    },
+  });
+  const readingListIds = existingLists.map((list) => list.id);
+
+  await Promise.all([
+    prisma.userActivityEvent.deleteMany({
+      where: {
+        userId: {
+          in: readerIds,
+        },
+      },
+    }),
+    prisma.comment.deleteMany({
+      where: {
+        userId: {
+          in: readerIds,
+        },
+      },
+    }),
+    prisma.review.deleteMany({
+      where: {
+        userId: {
+          in: readerIds,
+        },
+      },
+    }),
+    prisma.storyRating.deleteMany({
+      where: {
+        userId: {
+          in: readerIds,
+        },
+      },
+    }),
+    prisma.bookmark.deleteMany({
+      where: {
+        userId: {
+          in: readerIds,
+        },
+      },
+    }),
+    prisma.readingProgress.deleteMany({
+      where: {
+        userId: {
+          in: readerIds,
+        },
+      },
+    }),
+    prisma.chapterReadEvent.deleteMany({
+      where: {
+        userId: {
+          in: readerIds,
+        },
+      },
+    }),
+    prisma.follow.deleteMany({
+      where: {
+        userId: {
+          in: readerIds,
+        },
+      },
+    }),
+    readingListIds.length > 0
+      ? prisma.readingListItem.deleteMany({
+          where: {
+            readingListId: {
+              in: readingListIds,
+            },
+          },
+        })
+      : Promise.resolve({ count: 0 }),
+  ]);
+
+  if (readingListIds.length > 0) {
+    await prisma.readingList.deleteMany({
+      where: {
+        id: {
+          in: readingListIds,
+        },
+      },
+    });
+  }
+}
+
+async function refreshSeededStorySummaries(
+  seededStories: SeededStoryRecord[],
+  ratingsByStoryId: Map<string, number[]>,
+  totalReadsByStoryId: Map<string, number>,
+) {
+  for (const storyChunk of chunkArray(seededStories, 50)) {
+    await Promise.all(
+      storyChunk.map((story) => {
+        const ratings = ratingsByStoryId.get(story.id) ?? [];
+        const averageRating =
+          ratings.length > 0
+            ? Number(
+                (ratings.reduce((sum, rating) => sum + rating, 0) / ratings.length).toFixed(4),
+              )
+            : 0;
+
+        return prisma.story.update({
+          where: {
+            id: story.id,
+          },
+          data: {
+            averageRating,
+            reviewCount: ratings.length,
+            totalReads: totalReadsByStoryId.get(story.id) ?? 0,
+          },
+        });
+      }),
+    );
+  }
+}
+
+async function seedReaderLoadData(input: {
+  config: WriterSeedConfig;
+  readers: SeededLoadReader[];
+  seededStories: SeededStoryRecord[];
+  writerId: string;
+}) {
+  if (input.readers.length === 0 || input.seededStories.length === 0) {
+    return {
+      bookmarks: 0,
+      chapterReadEvents: 0,
+      comments: 0,
+      follows: 0,
+      progressRows: 0,
+      ratings: 0,
+      readingListItems: 0,
+      readingLists: 0,
+      reviews: 0,
+      userActivityEvents: 0,
+    };
+  }
+
+  await clearLoadTestReaderActivity(input.readers.map((reader) => reader.id));
+
+  const follows: Array<{
+    createdAt: Date;
+    storyId: string | null;
+    subjectKey: string;
+    targetType: FollowTargetType;
+    targetUserId: string | null;
+    updatedAt: Date;
+    userId: string;
+  }> = [];
+  const readingProgressRows: Array<{
+    createdAt: Date;
+    lastReadAt: Date;
+    paragraphIndex: number;
+    progressPercent: number;
+    publishedChapterId: string;
+    storyId: string;
+    updatedAt: Date;
+    userId: string;
+  }> = [];
+  const bookmarks: Array<{
+    createdAt: Date;
+    publishedChapterId: string;
+    storyId: string;
+    updatedAt: Date;
+    userId: string;
+  }> = [];
+  const ratings: Array<{
+    createdAt: Date;
+    rating: number;
+    storyId: string;
+    updatedAt: Date;
+    userId: string;
+  }> = [];
+  const reviews: Array<{
+    body: string;
+    containsSpoilers: boolean;
+    createdAt: Date;
+    rating: number;
+    storyId: string;
+    title: string;
+    updatedAt: Date;
+    userId: string;
+  }> = [];
+  const comments: Array<{
+    body: string;
+    createdAt: Date;
+    depth: number;
+    publishedChapterId: string;
+    storyId: string;
+    updatedAt: Date;
+    userId: string;
+  }> = [];
+  const chapterReadEvents: Array<{
+    completed: boolean;
+    completedAt: Date | null;
+    createdAt: Date;
+    firstReadAt: Date;
+    lastReadAt: Date;
+    maxProgressPercent: number;
+    paragraphIndex: number;
+    publishedChapterId: string;
+    readDate: Date;
+    storyId: string;
+    updatedAt: Date;
+    userId: string;
+  }> = [];
+  const userActivityEvents: Array<{
+    createdAt: Date;
+    happenedAt: Date;
+    numericValue: number;
+    referenceId: string;
+    type: UserActivityEventType;
+    userId: string;
+  }> = [];
+  const readingLists: Array<{
+    createdAt: Date;
+    description: string;
+    name: string;
+    shareSlug: string;
+    updatedAt: Date;
+    userId: string;
+    visibility: ReadingListVisibility;
+  }> = [];
+  const pendingReadingListItems: Array<{
+    shareSlug: string;
+    storyIds: string[];
+  }> = [];
+  const totalReadsByStoryId = new Map<string, number>();
+  const ratingsByStoryId = new Map<string, number[]>();
+
+  for (const reader of input.readers) {
+    const selectedStories = pickDistinctItems(
+      input.seededStories,
+      Math.min(input.config.storiesPerReader, input.seededStories.length),
+      reader.index,
+    );
+
+    if (selectedStories.length === 0) {
+      continue;
+    }
+
+    const authorFollowDate = daysAgo((reader.index % 45) + 1);
+    follows.push({
+      createdAt: authorFollowDate,
+      storyId: null,
+      subjectKey: `author:${input.writerId}`,
+      targetType: FollowTargetType.AUTHOR,
+      targetUserId: input.writerId,
+      updatedAt: authorFollowDate,
+      userId: reader.id,
+    });
+
+    for (let listIndex = 0; listIndex < input.config.listsPerReader; listIndex += 1) {
+      const shareSlug = buildLoadReaderShareSlug(reader.index, listIndex);
+      const visibility =
+        listIndex % 2 === 0 ? ReadingListVisibility.PUBLIC : ReadingListVisibility.PRIVATE;
+      const listCreatedAt = daysAgo((reader.index + listIndex) % 35);
+      const listStories = pickDistinctItems(
+        selectedStories,
+        Math.max(
+          1,
+          Math.ceil(selectedStories.length / Math.max(input.config.listsPerReader, 1)),
+        ),
+        reader.index + listIndex * 13,
+      );
+
+      readingLists.push({
+        createdAt: listCreatedAt,
+        description: `Load-test reading list ${listIndex + 1} for ${reader.displayName}.`,
+        name: listIndex === 0 ? "Load Test Favorites" : `Load Test Queue ${listIndex + 1}`,
+        shareSlug,
+        updatedAt: listCreatedAt,
+        userId: reader.id,
+        visibility,
+      });
+      pendingReadingListItems.push({
+        shareSlug,
+        storyIds: listStories.map((story) => story.id),
+      });
+    }
+
+    let commentsCreatedForReader = 0;
+    const followedStoryLimit = Math.min(selectedStories.length, Math.max(4, input.config.listsPerReader * 2));
+    const ratingLimit = Math.min(selectedStories.length, 4);
+    const reviewLimit = Math.min(selectedStories.length, 2);
+    const bookmarkLimit = Math.min(selectedStories.length, Math.max(2, Math.ceil(selectedStories.length / 2)));
+
+    for (const [storyIndex, story] of selectedStories.entries()) {
+      if (story.publishedChapters.length === 0) {
+        continue;
+      }
+
+      if (storyIndex < followedStoryLimit) {
+        const followDate = daysAgo((reader.index + storyIndex * 2) % 40);
+        follows.push({
+          createdAt: followDate,
+          storyId: story.id,
+          subjectKey: `story:${story.id}`,
+          targetType: FollowTargetType.STORY,
+          targetUserId: null,
+          updatedAt: followDate,
+          userId: reader.id,
+        });
+      }
+
+      const progressChapterIndex = Math.min(
+        story.publishedChapters.length - 1,
+        (reader.index + storyIndex * 3) % story.publishedChapters.length,
+      );
+      const progressChapter = story.publishedChapters[progressChapterIndex];
+      const progressPercent =
+        progressChapterIndex === story.publishedChapters.length - 1 && (reader.index + storyIndex) % 4 === 0
+          ? 100
+          : Math.min(96, 38 + ((reader.index * 11 + storyIndex * 7) % 57));
+      const paragraphIndex = Math.min(
+        10,
+        Math.max(0, Math.floor((progressPercent / 100) * 10)),
+      );
+      const lastReadAt = daysAgo((reader.index * 2 + storyIndex) % 30);
+
+      readingProgressRows.push({
+        createdAt: lastReadAt,
+        lastReadAt,
+        paragraphIndex,
+        progressPercent,
+        publishedChapterId: progressChapter.id,
+        storyId: story.id,
+        updatedAt: lastReadAt,
+        userId: reader.id,
+      });
+      totalReadsByStoryId.set(story.id, (totalReadsByStoryId.get(story.id) ?? 0) + 1);
+
+      const eventChapterCount = Math.min(progressChapterIndex + 1, 4);
+
+      for (let eventIndex = 0; eventIndex < eventChapterCount; eventIndex += 1) {
+        const eventChapter = story.publishedChapters[eventIndex];
+        const eventDate = daysAgo((reader.index * 3 + storyIndex * 5 + eventIndex) % 45);
+        const isCompletedChapter = eventIndex < progressChapterIndex || progressPercent >= 100;
+        const eventProgress =
+          eventIndex < progressChapterIndex
+            ? 100
+            : eventIndex === progressChapterIndex
+              ? progressPercent
+              : Math.min(90, 45 + ((reader.index + eventIndex * 9) % 40));
+        const eventParagraphIndex = Math.min(
+          10,
+          Math.max(0, Math.floor((eventProgress / 100) * 10)),
+        );
+
+        chapterReadEvents.push({
+          completed: isCompletedChapter && eventProgress >= 100,
+          completedAt: isCompletedChapter && eventProgress >= 100 ? eventDate : null,
+          createdAt: eventDate,
+          firstReadAt: eventDate,
+          lastReadAt: eventDate,
+          maxProgressPercent: eventProgress,
+          paragraphIndex: eventParagraphIndex,
+          publishedChapterId: eventChapter.id,
+          readDate: eventDate,
+          storyId: story.id,
+          updatedAt: eventDate,
+          userId: reader.id,
+        });
+        userActivityEvents.push({
+          createdAt: eventDate,
+          happenedAt: eventDate,
+          numericValue: 1,
+          referenceId: eventChapter.id,
+          type: UserActivityEventType.READ_CHAPTER,
+          userId: reader.id,
+        });
+      }
+
+      if (storyIndex < bookmarkLimit) {
+        const bookmarkChapter =
+          story.publishedChapters[Math.min(progressChapterIndex, story.publishedChapters.length - 1)];
+        const bookmarkDate = daysAgo((reader.index + storyIndex * 4) % 32);
+        bookmarks.push({
+          createdAt: bookmarkDate,
+          publishedChapterId: bookmarkChapter.id,
+          storyId: story.id,
+          updatedAt: bookmarkDate,
+          userId: reader.id,
+        });
+        userActivityEvents.push({
+          createdAt: bookmarkDate,
+          happenedAt: bookmarkDate,
+          numericValue: 1,
+          referenceId: bookmarkChapter.id,
+          type: UserActivityEventType.BOOKMARK_CHAPTER,
+          userId: reader.id,
+        });
+      }
+
+      if (storyIndex < ratingLimit) {
+        const ratingValue = 3 + ((reader.index + storyIndex) % 3);
+        const ratingDate = daysAgo((reader.index * 5 + storyIndex) % 26);
+        ratings.push({
+          createdAt: ratingDate,
+          rating: ratingValue,
+          storyId: story.id,
+          updatedAt: ratingDate,
+          userId: reader.id,
+        });
+        ratingsByStoryId.set(story.id, [
+          ...(ratingsByStoryId.get(story.id) ?? []),
+          ratingValue,
+        ]);
+
+        if (storyIndex < reviewLimit) {
+          reviews.push({
+            body: buildLoadTestReviewBody(story, progressChapter, reader),
+            containsSpoilers: progressPercent >= 100 && storyIndex % 2 === 0,
+            createdAt: ratingDate,
+            rating: ratingValue,
+            storyId: story.id,
+            title: `${story.title} kept the hook sharp`,
+            updatedAt: ratingDate,
+            userId: reader.id,
+          });
+        }
+      }
+
+      if (commentsCreatedForReader < input.config.commentsPerReader) {
+        const commentChapter =
+          story.publishedChapters[(reader.index + storyIndex) % story.publishedChapters.length];
+        const commentDate = daysAgo((reader.index + storyIndex * 6) % 28);
+        comments.push({
+          body: buildLoadTestCommentBody(story, commentChapter, reader),
+          createdAt: commentDate,
+          depth: 0,
+          publishedChapterId: commentChapter.id,
+          storyId: story.id,
+          updatedAt: commentDate,
+          userId: reader.id,
+        });
+        commentsCreatedForReader += 1;
+      }
+    }
+  }
+
+  await createManyInChunks(
+    "follows",
+    follows,
+    (chunk) =>
+      prisma.follow.createMany({
+        data: chunk,
+      }),
+  );
+  await createManyInChunks(
+    "reading progress rows",
+    readingProgressRows,
+    (chunk) =>
+      prisma.readingProgress.createMany({
+        data: chunk,
+      }),
+  );
+  await createManyInChunks(
+    "bookmarks",
+    bookmarks,
+    (chunk) =>
+      prisma.bookmark.createMany({
+        data: chunk,
+      }),
+  );
+  await createManyInChunks(
+    "story ratings",
+    ratings,
+    (chunk) =>
+      prisma.storyRating.createMany({
+        data: chunk,
+      }),
+  );
+  await createManyInChunks(
+    "reviews",
+    reviews,
+    (chunk) =>
+      prisma.review.createMany({
+        data: chunk,
+      }),
+  );
+  await createManyInChunks(
+    "comments",
+    comments,
+    (chunk) =>
+      prisma.comment.createMany({
+        data: chunk,
+      }),
+  );
+  await createManyInChunks(
+    "chapter read events",
+    chapterReadEvents,
+    (chunk) =>
+      prisma.chapterReadEvent.createMany({
+        data: chunk,
+      }),
+  );
+  await createManyInChunks(
+    "user activity events",
+    userActivityEvents,
+    (chunk) =>
+      prisma.userActivityEvent.createMany({
+        data: chunk,
+      }),
+  );
+
+  if (readingLists.length > 0) {
+    await createManyInChunks(
+      "reading lists",
+      readingLists,
+      (chunk) =>
+        prisma.readingList.createMany({
+          data: chunk,
+        }),
+      200,
+    );
+
+    const seededReadingLists = await prisma.readingList.findMany({
+      where: {
+        userId: {
+          in: input.readers.map((reader) => reader.id),
+        },
+      },
+      select: {
+        id: true,
+        shareSlug: true,
+      },
+    });
+    const listIdByShareSlug = new Map(
+      seededReadingLists.map((list) => [list.shareSlug, list.id] as const),
+    );
+    const readingListItems = pendingReadingListItems.flatMap((list) => {
+      const readingListId = listIdByShareSlug.get(list.shareSlug);
+
+      if (!readingListId) {
+        return [];
+      }
+
+      return list.storyIds.map((storyId, storyIndex) => {
+        const addedAt = daysAgo((storyIndex + list.shareSlug.length) % 24);
+
+        return {
+          addedAt,
+          createdAt: addedAt,
+          readingListId,
+          storyId,
+          updatedAt: addedAt,
+        };
+      });
+    });
+
+    await createManyInChunks(
+      "reading list items",
+      readingListItems,
+      (chunk) =>
+        prisma.readingListItem.createMany({
+          data: chunk,
+        }),
+    );
+
+    await refreshSeededStorySummaries(
+      input.seededStories,
+      ratingsByStoryId,
+      totalReadsByStoryId,
+    );
+
+    return {
+      bookmarks: bookmarks.length,
+      chapterReadEvents: chapterReadEvents.length,
+      comments: comments.length,
+      follows: follows.length,
+      progressRows: readingProgressRows.length,
+      ratings: ratings.length,
+      readingListItems: readingListItems.length,
+      readingLists: readingLists.length,
+      reviews: reviews.length,
+      userActivityEvents: userActivityEvents.length,
+    };
+  }
+
+  await refreshSeededStorySummaries(input.seededStories, ratingsByStoryId, totalReadsByStoryId);
+
+  return {
+    bookmarks: bookmarks.length,
+    chapterReadEvents: chapterReadEvents.length,
+    comments: comments.length,
+    follows: follows.length,
+    progressRows: readingProgressRows.length,
+    ratings: ratings.length,
+    readingListItems: 0,
+    readingLists: 0,
+    reviews: reviews.length,
+    userActivityEvents: userActivityEvents.length,
+  };
+}
+
+async function seedStoriesInBatches(
+  userId: string,
+  storySeeds: StorySeed[],
+  concurrency: number,
+) {
+  const seededStories: Array<{
+    chapterCount: number;
+    slug: string;
+    title: string;
+  }> = [];
+
+  for (let index = 0; index < storySeeds.length; index += concurrency) {
+    const batch = storySeeds.slice(index, index + concurrency);
+    const results = await Promise.all(batch.map((story) => upsertStory(userId, story)));
+    seededStories.push(...results);
+
+    console.log(
+      `Seeded ${Math.min(index + batch.length, storySeeds.length)}/${storySeeds.length} stories...`,
+    );
+  }
+
+  return seededStories;
+}
+
 async function main() {
+  const config = getWriterSeedConfig();
+  const storySeeds = getStoriesToSeed(config);
+
   await ensureBookPlatformPolicy();
-  await ensureGenresAndTags();
+  await ensureGenresAndTags(storySeeds);
 
   const writer = await upsertWriterAccount();
-  const seededStories = [];
-
-  for (const story of stories) {
-    seededStories.push(await upsertStory(writer.id, story));
-  }
+  const seededStories = await seedStoriesInBatches(
+    writer.id,
+    storySeeds,
+    config.storySeedConcurrency,
+  );
+  const seededStoryRecords = await getSeededStoryRecords(storySeeds);
+  const loadReaders = await upsertLoadTestReaders(config);
+  const readerLoadSummary = await seedReaderLoadData({
+    config,
+    readers: loadReaders,
+    seededStories: seededStoryRecords,
+    writerId: writer.id,
+  });
 
   console.log("Seeded demo writer account.");
   console.log(`Email: ${writerSeed.email}`);
   console.log(`Password: ${writerSeed.password}`);
   console.log(`Display name: ${writerSeed.displayName}`);
+  console.log(`Stories requested: ${config.storyCount}`);
+  console.log(
+    `Generated story chapters: ${config.chapterCountPerGeneratedStory} (for synthetic stories)`,
+  );
+  console.log(`Seed concurrency: ${config.storySeedConcurrency}`);
+  console.log(`Load readers requested: ${config.readerCount}`);
+  console.log(`Stories per reader: ${config.storiesPerReader}`);
+  console.log(`Comments per reader: ${config.commentsPerReader}`);
+  console.log(`Reading lists per reader: ${config.listsPerReader}`);
+  console.log(`Reader seed concurrency: ${config.readerSeedConcurrency}`);
+  if (config.readerCount > 0) {
+    console.log(`Reader password: ${loadReaderSeed.password}`);
+  }
   console.log("Stories:");
 
-  for (const story of seededStories) {
+  for (const story of seededStories.slice(0, 20)) {
     console.log(`- ${story.title} (${story.slug}) -> ${story.chapterCount} chapters`);
+  }
+
+  if (seededStories.length > 20) {
+    console.log(`... plus ${seededStories.length - 20} more stories`);
+  }
+
+  if (config.readerCount > 0) {
+    console.log("Reader load summary:");
+    console.log(`- Follows: ${readerLoadSummary.follows}`);
+    console.log(`- Reading progress rows: ${readerLoadSummary.progressRows}`);
+    console.log(`- Bookmarks: ${readerLoadSummary.bookmarks}`);
+    console.log(`- Ratings: ${readerLoadSummary.ratings}`);
+    console.log(`- Reviews: ${readerLoadSummary.reviews}`);
+    console.log(`- Comments: ${readerLoadSummary.comments}`);
+    console.log(`- Chapter read events: ${readerLoadSummary.chapterReadEvents}`);
+    console.log(`- User activity events: ${readerLoadSummary.userActivityEvents}`);
+    console.log(`- Reading lists: ${readerLoadSummary.readingLists}`);
+    console.log(`- Reading list items: ${readerLoadSummary.readingListItems}`);
   }
 }
 

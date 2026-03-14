@@ -1,7 +1,7 @@
 {
   "name": "backend",
   "version": "0.1.0",
-  "description": "StoryArc backend base",
+  "description": "TaleStead backend base",
   "private": true,
   "main": "dist/main.js",
   "scripts": {

@@ -30,7 +30,7 @@ export class OnboardingService {
       },
       create: {
         userId,
-        displayName: "StoryArc User",
+        displayName: "TaleStead User",
         selectedGenres: input.genres,
       },
     });
@@ -50,7 +50,7 @@ export class OnboardingService {
       },
       create: {
         userId,
-        displayName: "StoryArc User",
+        displayName: "TaleStead User",
         readingStyle: input.readingStyle,
         readingTheme: input.readingTheme,
         onboardingCompletedAt: new Date(),
@@ -78,7 +78,7 @@ export class OnboardingService {
       },
       create: {
         avatarUrl,
-        displayName: "StoryArc User",
+        displayName: "TaleStead User",
         userId,
       },
     });

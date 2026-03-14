@@ -35,7 +35,7 @@ function matchesRoute(pathname: string, patterns: RegExp[]) {
 }
 
 function normalizePathname(url: string) {
-  const pathname = new URL(url, "http://storyarc.local").pathname;
+  const pathname = new URL(url, "http://talestead.local").pathname;
 
   if (pathname.length > 1 && pathname.endsWith("/")) {
     return pathname.slice(0, -1);

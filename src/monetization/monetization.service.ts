@@ -3077,7 +3077,7 @@ export class MonetizationService implements OnModuleInit {
       return `${eventType}:${candidate}`;
     }
 
-    return `${eventType}:${createHmac("sha256", "storyarc-paystack").update(rawBody).digest("hex")}`;
+    return `${eventType}:${createHmac("sha256", "talestead-paystack").update(rawBody).digest("hex")}`;
   }
 
   private constantTimeEquals(actual: string, expected: string) {
@@ -3092,7 +3092,7 @@ export class MonetizationService implements OnModuleInit {
   }
 
   private buildPaystackReference(purchaseId: string) {
-    return `storyarc-${purchaseId}`;
+    return `talestead-${purchaseId}`;
   }
 
   private async findPurchaseForPaystackTransaction(

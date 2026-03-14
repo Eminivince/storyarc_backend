@@ -3906,7 +3906,7 @@ export class ReaderService {
       displayName?: string | null;
     } | null;
   }) {
-    return user.profile?.displayName?.trim() || user.email.split("@")[0] || "StoryArc Reader";
+    return user.profile?.displayName?.trim() || user.email.split("@")[0] || "TaleStead Reader";
   }
 
   private dedupeStoryCards(

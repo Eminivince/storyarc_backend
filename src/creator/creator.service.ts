@@ -74,7 +74,7 @@ export class CreatorService {
       },
       create: {
         userId,
-        fullName: input.fullName || user.profile?.displayName || "StoryArc Creator",
+        fullName: input.fullName || user.profile?.displayName || "TaleStead Creator",
         email: input.email || user.email,
         primaryGenre: input.primaryGenre,
         experience: input.experience,
@@ -91,7 +91,7 @@ export class CreatorService {
         submittedAt: null,
       },
       update: {
-        fullName: input.fullName || user.profile?.displayName || "StoryArc Creator",
+        fullName: input.fullName || user.profile?.displayName || "TaleStead Creator",
         email: input.email || user.email,
         primaryGenre: input.primaryGenre,
         experience: input.experience,
@@ -160,7 +160,7 @@ export class CreatorService {
       },
       create: {
         userId,
-        fullName: input.fullName || user.profile?.displayName || "StoryArc Creator",
+        fullName: input.fullName || user.profile?.displayName || "TaleStead Creator",
         email: input.email || user.email,
         primaryGenre: input.primaryGenre,
         experience: input.experience,
@@ -177,7 +177,7 @@ export class CreatorService {
         submittedAt,
       },
       update: {
-        fullName: input.fullName || user.profile?.displayName || "StoryArc Creator",
+        fullName: input.fullName || user.profile?.displayName || "TaleStead Creator",
         email: input.email || user.email,
         primaryGenre: input.primaryGenre,
         experience: input.experience,
@@ -554,7 +554,7 @@ export class CreatorService {
       updatedAt: application.updatedAt,
       wantsContract: application.wantsContract,
       reviewedBy: application.reviewedAt
-        ? application.reviewedByUser?.profile?.displayName ?? "StoryArc Admin"
+        ? application.reviewedByUser?.profile?.displayName ?? "TaleStead Admin"
         : null,
       ...(options.includeApplicant
         ? {

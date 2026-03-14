@@ -22,13 +22,13 @@ export class ResendEmailService {
     const result = await this.resend.emails.send({
       from: env.resendFromEmail,
       to: email,
-      subject: "Verify your StoryArc account",
-      text: `Hi ${displayName}, your StoryArc verification code is ${code}. It expires in ${expiresInMinutes} minutes.`,
+      subject: "Verify your TaleStead account",
+      text: `Hi ${displayName}, your TaleStead verification code is ${code}. It expires in ${expiresInMinutes} minutes.`,
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 520px; margin: 0 auto; padding: 24px; color: #111827;">
           <p style="font-size: 16px; margin-bottom: 16px;">Hi ${displayName},</p>
           <p style="font-size: 16px; margin-bottom: 16px;">
-            Use the code below to verify your StoryArc account and complete registration.
+            Use the code below to verify your TaleStead account and complete registration.
           </p>
           <div style="font-size: 32px; font-weight: 700; letter-spacing: 8px; margin: 24px 0; color: #d97706;">
             ${code}
@@ -61,13 +61,13 @@ export class ResendEmailService {
     const result = await this.resend.emails.send({
       from: env.resendFromEmail,
       to: email,
-      subject: "Your StoryArc password reset code",
-      text: `Hi ${displayName}, your StoryArc password reset code is ${code}. It expires in ${expiresInMinutes} minutes.`,
+      subject: "Your TaleStead password reset code",
+      text: `Hi ${displayName}, your TaleStead password reset code is ${code}. It expires in ${expiresInMinutes} minutes.`,
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 520px; margin: 0 auto; padding: 24px; color: #111827;">
           <p style="font-size: 16px; margin-bottom: 16px;">Hi ${displayName},</p>
           <p style="font-size: 16px; margin-bottom: 16px;">
-            Use the code below to reset your StoryArc password.
+            Use the code below to reset your TaleStead password.
           </p>
           <div style="font-size: 32px; font-weight: 700; letter-spacing: 8px; margin: 24px 0; color: #d97706;">
             ${code}

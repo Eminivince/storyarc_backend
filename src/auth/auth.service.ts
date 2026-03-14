@@ -475,7 +475,7 @@ export class AuthService {
 
     await this.resendEmailService.sendPasswordResetCode({
       email: user.email,
-      displayName: user.profile?.displayName ?? "StoryArc Reader",
+      displayName: user.profile?.displayName ?? "TaleStead Reader",
       code,
       expiresInMinutes: env.passwordResetCodeTtlMinutes,
     });
@@ -918,7 +918,7 @@ export class AuthService {
 
     if (existingIdentity && !existingUserByIdentity) {
       throw new ConflictException(
-        "This Google account is already linked to a different StoryArc user.",
+        "This Google account is already linked to a different TaleStead user.",
       );
     }
 
@@ -928,7 +928,7 @@ export class AuthService {
       existingUserByIdentity.id !== existingUserByEmail.id
     ) {
       throw new ConflictException(
-        "This Google account is already linked to a different StoryArc user.",
+        "This Google account is already linked to a different TaleStead user.",
       );
     }
 
@@ -1239,7 +1239,7 @@ export class AuthService {
       id: user.id,
       email: user.email,
       role: user.role,
-      displayName: user.profile?.displayName ?? "StoryArc User",
+      displayName: user.profile?.displayName ?? "TaleStead User",
       onboarding: this.mapOnboarding(user.profile),
     };
   }
@@ -1252,7 +1252,7 @@ export class AuthService {
       contentFiltering: user.profile?.contentFiltering ?? true,
       discord: user.profile?.discord ?? "",
       displayLanguage: user.profile?.displayLanguage ?? "English (US)",
-      displayName: user.profile?.displayName ?? "StoryArc Reader",
+      displayName: user.profile?.displayName ?? "TaleStead Reader",
       email: user.email,
       location: user.profile?.location ?? "",
       privateLibrary: user.profile?.privateLibrary ?? true,

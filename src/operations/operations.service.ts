@@ -90,7 +90,7 @@ const supportHelpCenterArticles = [
     excerpt:
       "Understand memberships, coin balances, billing cycles, and what happens after a successful purchase.",
     tag: "Billing",
-    title: "StoryArc Coins and Subscriptions",
+    title: "TaleStead Coins and Subscriptions",
   },
   {
     id: "report-inappropriate-content",
@@ -108,12 +108,12 @@ const supportHelpCenterActions = [
     title: "Submit Ticket",
     icon: "mail",
     description:
-      "Open a support thread and get help from the StoryArc team.",
+      "Open a support thread and get help from the TaleStead team.",
     primary: true,
     ticketTemplate: {
       category: "GENERAL",
       message:
-        "I need help from the StoryArc support team. Please follow up on this support request.",
+        "I need help from the TaleStead support team. Please follow up on this support request.",
       priority: "NORMAL",
       subject: "General support request",
     },
@@ -128,7 +128,7 @@ const supportHelpCenterActions = [
     ticketTemplate: {
       category: "ACCOUNT",
       message:
-        "I need fast help from the StoryArc support team. Please contact me about this account issue.",
+        "I need fast help from the TaleStead support team. Please contact me about this account issue.",
       priority: "HIGH",
       subject: "Urgent support request",
     },
@@ -147,7 +147,7 @@ type DefaultAdminSetting = {
 
 const defaultAdminSettings: DefaultAdminSetting[] = [
   {
-    description: "Put StoryArc into read-only maintenance mode for deployments.",
+    description: "Put TaleStead into read-only maintenance mode for deployments.",
     enabled: false,
     group: "General Settings",
     key: "maintenanceMode",
@@ -3154,7 +3154,7 @@ export class OperationsService {
       recentActivity: [
         {
           id: `activity-${user.id}-created`,
-          label: `Joined StoryArc on ${this.formatDate(user.createdAt)}`,
+          label: `Joined TaleStead on ${this.formatDate(user.createdAt)}`,
           time: this.formatRelativeDate(user.createdAt),
         },
       ],
@@ -3267,7 +3267,7 @@ export class OperationsService {
       preview: ticket.latestPreview ?? ticket.subject,
       profileHref: `/admin/users/${requester.id}`,
       roleLabel:
-        requester.role === "CREATOR" ? "StoryArc Creator" : "Reader",
+        requester.role === "CREATOR" ? "TaleStead Creator" : "Reader",
       status: ticket.status === "OPEN" ? "online" : ticket.status === "PENDING" ? "away" : "offline",
       updatedAt: this.formatRelativeDateShort(ticket.updatedAt),
       userName: this.getDisplayName(requester),
@@ -3375,7 +3375,7 @@ export class OperationsService {
   }
 
   private getDisplayName(user: any) {
-    return user.profile?.displayName ?? user.email.split("@")[0] ?? "StoryArc User";
+    return user.profile?.displayName ?? user.email.split("@")[0] ?? "TaleStead User";
   }
 
   private getAvatarUrl(user: any) {

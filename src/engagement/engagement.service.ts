@@ -30,7 +30,7 @@ const missionCatalog = [
   {
     actionHref: "/account/rewards",
     actionLabel: "Check In",
-    description: "Keep your streak alive and collect your daily StoryArc reward.",
+    description: "Keep your streak alive and collect your daily TaleStead reward.",
     group: "READER",
     icon: "today",
     key: "daily-check-in",
@@ -72,7 +72,7 @@ const missionCatalog = [
   {
     actionHref: "/account/referrals",
     actionLabel: "Invite",
-    description: "Share StoryArc with a friend and extend the world beyond your shelf.",
+    description: "Share TaleStead with a friend and extend the world beyond your shelf.",
     group: "READER",
     icon: "share",
     key: "share-results",
@@ -436,7 +436,7 @@ export class EngagementService {
 
     if (streakDays === 7 || streakDays === 14 || streakDays === 30) {
       await this.maybeSendNotificationEmail(user, "REWARD", {
-        body: `You reached a ${streakDays}-day StoryArc streak. Your daily reward has been added to your account.`,
+        body: `You reached a ${streakDays}-day TaleStead streak. Your daily reward has been added to your account.`,
         title: `Streak milestone: ${streakDays} days`,
       });
     }
@@ -638,7 +638,7 @@ export class EngagementService {
     });
 
     await this.maybeSendNotificationEmail(user, "REFERRAL", {
-      body: `Your StoryArc referral code was shared via ${input.channel}. ${REFERRAL_SHARE_REWARD} Arc Points were added to your rewards balance.`,
+      body: `Your TaleStead referral code was shared via ${input.channel}. ${REFERRAL_SHARE_REWARD} Arc Points were added to your rewards balance.`,
       title: "Referral activity recorded",
     });
 
@@ -683,7 +683,7 @@ export class EngagementService {
         name:
           user.profile?.displayName ||
           user.email.split("@")[0] ||
-          "StoryArc Reader",
+          "TaleStead Reader",
         points: this.formatCompactNumber(viewerEntry.points),
         rank: viewerEntry.rank,
         subtitle:
@@ -797,7 +797,7 @@ export class EngagementService {
     });
 
     await this.broadcastCommunityNotification(user, {
-      body: `${input.title} is now live in StoryArc Community.`,
+      body: `${input.title} is now live in TaleStead Community.`,
       ctaHref: "/creator/community",
       ctaLabel: "Open Community",
       title: "New announcement published",
@@ -850,7 +850,7 @@ export class EngagementService {
     });
 
     await this.broadcastCommunityNotification(user, {
-      body: `${input.title} is ready for votes in StoryArc Community.`,
+      body: `${input.title} is ready for votes in TaleStead Community.`,
       ctaHref: "/creator/community",
       ctaLabel: "Vote Now",
       title: "New community poll published",
@@ -1095,7 +1095,7 @@ export class EngagementService {
                 userName:
                   user.profile?.displayName?.trim()
                     ? user.profile.displayName
-                    : user.email.split("@")[0] || "StoryArc Reader",
+                    : user.email.split("@")[0] || "TaleStead Reader",
               })
               .catch((error: unknown) => {
                 const message =
@@ -1213,7 +1213,7 @@ export class EngagementService {
         if (preferences?.emailNewComments ?? true) {
           const emailTitle =
             reasons.reply
-              ? `${input.actorDisplayName} replied to your StoryArc comment`
+              ? `${input.actorDisplayName} replied to your TaleStead comment`
               : `${input.actorDisplayName} commented on ${input.storyTitle}`;
 
           await this.resendEmailService
@@ -1224,7 +1224,7 @@ export class EngagementService {
               title: emailTitle,
               userName: recipient.profile?.displayName?.trim()
                 ? recipient.profile.displayName
-                : recipient.email.split("@")[0] || "StoryArc Reader",
+                : recipient.email.split("@")[0] || "TaleStead Reader",
             })
             .catch((error: unknown) => {
               const message =
@@ -1354,7 +1354,7 @@ export class EngagementService {
     const existingNotification = await this.prisma.appNotification.findFirst({
       where: {
         ctaHref: "/account/rewards",
-        title: "Welcome to StoryArc Rewards",
+        title: "Welcome to TaleStead Rewards",
         userId,
       },
     });
@@ -1368,7 +1368,7 @@ export class EngagementService {
         body: "Check in daily, claim missions, and share your referral code to grow your rewards wallet.",
         ctaHref: "/account/rewards",
         ctaLabel: "View Rewards",
-        title: "Welcome to StoryArc Rewards",
+        title: "Welcome to TaleStead Rewards",
         type: "SYSTEM",
         userId,
       },
@@ -1834,7 +1834,7 @@ export class EngagementService {
             subject: payload.title,
             title: payload.title,
             userName:
-              user.profile?.displayName || user.email.split("@")[0] || "StoryArc Reader",
+              user.profile?.displayName || user.email.split("@")[0] || "TaleStead Reader",
           })
           .then(async () => {
             await this.prisma.appNotification.update({
@@ -1901,7 +1901,7 @@ export class EngagementService {
       subject: payload.title,
       title: payload.title,
       userName:
-        user.profile?.displayName || user.email.split("@")[0] || "StoryArc Reader",
+        user.profile?.displayName || user.email.split("@")[0] || "TaleStead Reader",
     });
   }
 
@@ -2050,7 +2050,7 @@ export class EngagementService {
       contentFiltering: user.profile?.contentFiltering ?? true,
       discord: user.profile?.discord ?? "",
       displayLanguage: user.profile?.displayLanguage ?? "English (US)",
-      displayName: user.profile?.displayName ?? "StoryArc Reader",
+      displayName: user.profile?.displayName ?? "TaleStead Reader",
       email: user.email,
       location: user.profile?.location ?? "",
       privateLibrary: user.profile?.privateLibrary ?? true,
@@ -2079,7 +2079,7 @@ export class EngagementService {
           detail: null,
           icon: "person",
           time: this.formatRelativeDate(user.createdAt),
-          title: `Joined StoryArc on ${user.createdAt.toLocaleDateString("en-US", {
+          title: `Joined TaleStead on ${user.createdAt.toLocaleDateString("en-US", {
             day: "numeric",
             month: "short",
             year: "numeric",
@@ -2165,7 +2165,7 @@ export class EngagementService {
 
       if (event.type === "SHARE_REFERRAL") {
         return {
-          detail: "Shared an invite to bring someone into StoryArc.",
+          detail: "Shared an invite to bring someone into TaleStead.",
           icon: "share",
           time: this.formatRelativeDate(event.happenedAt),
           title: "Shared a referral invite",
@@ -2185,7 +2185,7 @@ export class EngagementService {
         detail: null,
         icon: "bolt",
         time: this.formatRelativeDate(event.happenedAt),
-        title: "Used StoryArc",
+        title: "Used TaleStead",
       };
     });
   }
@@ -2253,7 +2253,7 @@ export class EngagementService {
     const name =
       entry.user.profile?.displayName ||
       entry.user.email.split("@")[0] ||
-      "StoryArc Reader";
+      "TaleStead Reader";
 
     return {
       image: entry.user.profile?.avatarUrl ?? null,
@@ -2279,7 +2279,7 @@ export class EngagementService {
     const name =
       entry.user.profile?.displayName ||
       entry.user.email.split("@")[0] ||
-      "StoryArc Reader";
+      "TaleStead Reader";
 
     return {
       image: entry.user.profile?.avatarUrl ?? null,
@@ -2310,7 +2310,7 @@ export class EngagementService {
     const authorName =
       post.creator.profile?.displayName ||
       post.creator.email.split("@")[0] ||
-      "StoryArc Creator";
+      "TaleStead Creator";
     const totalVotes = post.pollOptions.reduce(
       (sum, option) => sum + option.votes.length,
       0,
@@ -2515,7 +2515,7 @@ export class EngagementService {
     const base =
       user.profile?.displayName ||
       user.email.split("@")[0] ||
-      "storyarc";
+      "talestead";
 
     return `${base}`
       .replace(/[^a-zA-Z0-9]/g, "")

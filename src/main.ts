@@ -15,7 +15,7 @@ const explicitAllowedOrigins = new Set(
     env.frontendAppUrl,
     "https://fractalholding.com",
     "https://www.fractalholding.com",
-    "https://www.storyarc.vercel.app",
+    "https://www.talestead.vercel.app",
   ]
     .map(normalizeOrigin)
     .filter((origin): origin is string => Boolean(origin)),
@@ -99,12 +99,12 @@ async function bootstrap() {
 
   await app.listen(env.port, "0.0.0.0");
 
-  logger.log(`StoryArc backend listening on port ${env.port}`);
+  logger.log(`TaleStead backend listening on port ${env.port}`);
 }
 
 bootstrap().catch((error) => {
   logger.error(
-    "Failed to start StoryArc backend",
+    "Failed to start TaleStead backend",
     error instanceof Error ? error.stack : String(error),
   );
   process.exit(1);
