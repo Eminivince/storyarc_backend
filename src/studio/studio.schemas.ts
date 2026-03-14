@@ -157,6 +157,34 @@ export function parseStudioAnalyticsQuery(
   };
 }
 
+export function parseStudioStoryListLimitQuery(value: string | undefined) {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 100) {
+    throw new BadRequestException("limit must be an integer between 1 and 100.");
+  }
+
+  return parsed;
+}
+
+export function parseStudioStoryListOffsetQuery(value: string | undefined) {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 10_000) {
+    throw new BadRequestException("offset must be an integer between 0 and 10000.");
+  }
+
+  return parsed;
+}
+
 export function parseStudioStoryBody(body: unknown): StudioStoryInput {
   const record = getObjectBody(body);
 

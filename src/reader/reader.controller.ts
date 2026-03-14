@@ -18,6 +18,8 @@ import {
   parseCreateCommentBody,
   parseCreateBookmarkBody,
   parseCreateReadingListBody,
+  parseStoryCatalogLimitQuery,
+  parseStoryCatalogOffsetQuery,
   parseReviewLimitQuery,
   parseReviewSortQuery,
   parseStoryRankingKindQuery,
@@ -66,16 +68,27 @@ export class ReaderController {
   async listStories(
     @Query("q") query: string | undefined,
     @Query("genre") genre: string | undefined,
+    @Query("limit") limit: string | undefined,
+    @Query("offset") offset: string | undefined,
   ) {
     return this.readerService.listStories({
       genre,
+      limit: parseStoryCatalogLimitQuery(limit),
+      offset: parseStoryCatalogOffsetQuery(offset),
       query,
     });
   }
 
   @Get("search")
-  async search(@Query("q") query: string | undefined) {
-    return this.readerService.search(query);
+  async search(
+    @Query("q") query: string | undefined,
+    @Query("limit") limit: string | undefined,
+    @Query("offset") offset: string | undefined,
+  ) {
+    return this.readerService.search(query, {
+      limit: parseStoryCatalogLimitQuery(limit),
+      offset: parseStoryCatalogOffsetQuery(offset),
+    });
   }
 
   @Get("stories/:storySlug")

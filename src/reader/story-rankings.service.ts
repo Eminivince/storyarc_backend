@@ -13,6 +13,7 @@ import {
   StoryStatus,
 } from "@prisma/client";
 import { PrismaService } from "../database/prisma.service";
+import { RedisService } from "../redis/redis.service";
 import { isStoryLive } from "../utils/book-admin";
 import { StoryRankingKindInput } from "./reader.types";
 
@@ -148,6 +149,7 @@ const STORY_RANKING_CONFIG_BY_KIND = new Map(
 
 const RANKING_REFRESH_INTERVAL_MS = 15 * 60 * 1000;
 const RANKING_STALE_AFTER_MS = 75 * 60 * 1000;
+const RANKING_RESPONSE_CACHE_TTL_SECONDS = 5 * 60;
 const MAX_QUERY_LIMIT = 50;
 
 @Injectable()
@@ -156,7 +158,10 @@ export class StoryRankingsService implements OnModuleDestroy, OnModuleInit {
   private refreshPromise: Promise<void> | null = null;
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly redisService: RedisService,
+  ) {}
 
   onModuleInit() {
     void this.safeRefreshSnapshots("startup");
@@ -178,6 +183,32 @@ export class StoryRankingsService implements OnModuleDestroy, OnModuleInit {
     kind: StoryRankingKindInput;
     limit: number | null;
   }) {
+    const cacheKey = this.getRankingResponseCacheKey(input);
+    const cachedResponse = await this.redisService.getJson<{
+      genres: Array<{ label: string; slug: string }>;
+      ranking: {
+        activityWindowLabel: string;
+        description: string;
+        kind: StoryRankingKindInput;
+        label: string;
+        totalStories: number;
+        updatedAt: string | null;
+        updatedAtLabel: string;
+        windowLabel: string;
+      };
+      stories: Array<Record<string, unknown>>;
+      tabs: Array<{
+        description: string;
+        kind: StoryRankingKindInput;
+        label: string;
+        windowLabel: string;
+      }>;
+    }>(cacheKey);
+
+    if (cachedResponse) {
+      return cachedResponse;
+    }
+
     const config = this.getConfigByKey(input.kind);
     await this.ensureSnapshotFresh(config.kind);
 
@@ -210,7 +241,7 @@ export class StoryRankingsService implements OnModuleDestroy, OnModuleInit {
       );
     });
 
-    return {
+    const response = {
       genres: genres.map((genre) => ({
         label: genre.name,
         slug: genre.slug,
@@ -237,6 +268,14 @@ export class StoryRankingsService implements OnModuleDestroy, OnModuleInit {
         windowLabel: tab.windowLabel,
       })),
     };
+
+    await this.redisService.setJson(
+      cacheKey,
+      response,
+      RANKING_RESPONSE_CACHE_TTL_SECONDS,
+    );
+
+    return response;
   }
 
   private async safeRefreshSnapshots(source: string) {
@@ -833,6 +872,17 @@ export class StoryRankingsService implements OnModuleDestroy, OnModuleInit {
         },
       },
     });
+  }
+
+  private getRankingResponseCacheKey(input: {
+    genre: string | null;
+    kind: StoryRankingKindInput;
+    limit: number | null;
+  }) {
+    const normalizedGenre = this.normalizeOptionalQuery(input.genre) ?? "all";
+    const normalizedLimit = input.limit ?? MAX_QUERY_LIMIT;
+
+    return `reader:rankings:${input.kind}:${normalizedGenre}:${normalizedLimit}`;
   }
 
   private mapRankingEntry(

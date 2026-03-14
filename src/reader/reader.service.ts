@@ -6,6 +6,7 @@ import {
 } from "@nestjs/common";
 import { randomBytes } from "crypto";
 import {
+  AdminBookVisibilityState,
   CommentStatus,
   FollowTargetType,
   Prisma,
@@ -25,6 +26,7 @@ import {
 import { MonetizationService } from "../monetization/monetization.service";
 import {
   defaultBookPlatformPolicy,
+  getStoryVisibilityState,
   isStoryLive,
   normalizeConfiguredPremiumWindowHours,
   resolveEffectiveChapterAccess,
@@ -57,6 +59,100 @@ type StoryWithReaderRelations = Prisma.StoryGetPayload<{
     };
   };
 }>;
+
+const publishedStoryCatalogSelect = {
+  id: true,
+  slug: true,
+  title: true,
+  shortSynopsis: true,
+  synopsis: true,
+  authorId: true,
+  authorName: true,
+  status: true,
+  isLive: true,
+  liveAt: true,
+  featured: true,
+  genreSlugs: true,
+  tagSlugs: true,
+  totalReads: true,
+  averageRating: true,
+  reviewCount: true,
+  publishedAt: true,
+  latestChapterAt: true,
+  createdAt: true,
+  adminControl: {
+    select: {
+      visibilityState: true,
+    },
+  },
+  assets: {
+    select: {
+      bannerImageUrl: true,
+      cardImageUrl: true,
+      coverImageUrl: true,
+    },
+  },
+  publishedChapters: {
+    orderBy: {
+      chapterNumber: "asc" as const,
+    },
+    select: {
+      chapterNumber: true,
+      publishedAt: true,
+      slug: true,
+      title: true,
+    },
+    take: 1,
+  },
+  _count: {
+    select: {
+      publishedChapters: true,
+    },
+  },
+} satisfies Prisma.StorySelect;
+
+type PublishedStoryCatalogRecord = Prisma.StoryGetPayload<{
+  select: typeof publishedStoryCatalogSelect;
+}>;
+
+type StoryCardSource = {
+  adminControl?: {
+    visibilityState?: AdminBookVisibilityState | null;
+  } | null;
+  assets?: {
+    bannerImageUrl?: string | null;
+    cardImageUrl?: string | null;
+    coverImageUrl?: string | null;
+  } | null;
+  authorId?: string | null;
+  authorName: string;
+  averageRating: number;
+  createdAt: Date;
+  featured?: boolean;
+  genreSlugs: string[];
+  id: string;
+  isLive?: boolean | null;
+  latestChapterAt?: Date | null;
+  liveAt?: Date | null;
+  publishedAt?: Date | null;
+  publishedChapters: Array<{
+    chapterNumber: number;
+    publishedAt?: Date;
+    slug: string;
+    title?: string;
+  }>;
+  reviewCount: number;
+  shortSynopsis: string;
+  slug: string;
+  status: StoryStatus;
+  synopsis: string;
+  tagSlugs: string[];
+  title: string;
+  totalReads: number;
+  _count?: {
+    publishedChapters: number;
+  };
+};
 
 type ProgressWithRelations = Prisma.ReadingProgressGetPayload<{
   include: {
@@ -185,7 +281,9 @@ export class ReaderService {
   ) {}
 
   async getHomeCatalog() {
-    const stories = await this.getPublishedStories();
+    const stories = await this.getPublishedStories({
+      limit: 24,
+    });
 
     if (stories.length === 0) {
       return {
@@ -567,29 +665,46 @@ export class ReaderService {
     };
   }
 
-  async listStories(input: { genre?: string; query?: string }) {
-    const [stories, genres] = await Promise.all([
-      this.getPublishedStories(),
+  async listStories(input: {
+    genre?: string;
+    limit?: number | null;
+    offset?: number | null;
+    query?: string;
+  }) {
+    const [storyCatalog, genres] = await Promise.all([
+      this.queryPublishedStories({
+        genre: input.genre,
+        limit: input.limit ?? null,
+        offset: input.offset ?? null,
+        query: input.query,
+      }),
       this.prisma.genre.findMany({
         orderBy: { name: "asc" },
         select: { name: true, slug: true },
       }),
     ]);
 
-    const filteredStories = this.filterStories(stories, input);
-
     return {
       genres: genres.map((genre) => ({
         label: genre.name,
         slug: genre.slug,
       })),
-      stories: filteredStories.map((story) => this.mapStoryCard(story)),
+      pageInfo: storyCatalog.pageInfo,
+      stories: storyCatalog.stories.map((story) => this.mapStoryCard(story)),
     };
   }
 
-  async search(rawQuery?: string) {
+  async search(
+    rawQuery?: string,
+    pagination: {
+      limit?: number | null;
+      offset?: number | null;
+    } = {},
+  ) {
     const query = this.normalizeOptionalQuery(rawQuery);
-    const stories = this.filterStories(await this.getPublishedStories(), {
+    const { pageInfo, stories } = await this.queryPublishedStories({
+      limit: pagination.limit ?? null,
+      offset: pagination.offset ?? null,
       query,
     });
 
@@ -634,6 +749,7 @@ export class ReaderService {
           totalReadsLabel: this.formatCompactNumber(author.totalReads),
         })),
       query: query ?? "",
+      pageInfo,
       stories: stories.map((story) => this.mapStoryCard(story)),
     };
   }
@@ -736,7 +852,7 @@ export class ReaderService {
       excludeSeenStories: true,
       excludeStoryIds: [story.id],
       limit: 6,
-      sourceStory: story,
+      sourceStory: this.toStoryCardSource(story),
       stories,
       userId,
     });
@@ -1195,9 +1311,24 @@ export class ReaderService {
           storyId: story.id,
         },
       },
-      include: {
+      select: {
         adminOverride: true,
-        chapter: true,
+        chapter: {
+          select: {
+            coinUnlockPrice: true,
+            premiumEnabled: true,
+            readingMinutes: true,
+          },
+        },
+        chapterId: true,
+        chapterNumber: true,
+        coinUnlockPrice: true,
+        id: true,
+        premium: true,
+        publishedAt: true,
+        slug: true,
+        storyId: true,
+        title: true,
       },
     });
 
@@ -1289,6 +1420,16 @@ export class ReaderService {
       isChapterPremium: effectiveChapter.isCurrentlyPremium,
       story,
     });
+    const readableChapter = access.accessState === "READABLE"
+      ? await this.prisma.publishedChapter.findUnique({
+          where: {
+            id: chapter.id,
+          },
+          select: {
+            bodyParagraphs: true,
+          },
+        })
+      : null;
     const isLocked =
       effectiveChapter.isCurrentlyPremium && access.accessState === "UNLOCK_REQUIRED";
 
@@ -1315,7 +1456,7 @@ export class ReaderService {
               },
         paragraphIndex:
           progress?.publishedChapterId === chapter.id ? progress.paragraphIndex : 0,
-        paragraphs: access.accessState === "READABLE" ? chapter.bodyParagraphs : [],
+        paragraphs: readableChapter?.bodyParagraphs ?? [],
         premium: effectiveChapter.isCurrentlyPremium,
         previousChapter:
           previousChapter === null
@@ -1330,7 +1471,8 @@ export class ReaderService {
           progress?.publishedChapterId === chapter.id ? progress.progressPercent : 0,
         publishedAt: chapter.publishedAt,
         readingMinutes:
-          chapter.chapter?.readingMinutes ?? this.estimateReadingMinutes(chapter.bodyParagraphs),
+          chapter.chapter?.readingMinutes ??
+          this.estimateReadingMinutes(readableChapter?.bodyParagraphs ?? []),
         requiredPreviousChapter: access.requiredPreviousChapter,
         unlockPriceCoins: effectiveChapter.effectiveCoinPrice,
       },
@@ -2170,26 +2312,28 @@ export class ReaderService {
       }));
   }
 
-  private async getPublishedStories() {
-    const stories = await this.prisma.story.findMany({
-      where: {
-        status: {
-          in: [StoryStatus.PUBLISHED, StoryStatus.COMPLETED, StoryStatus.HIATUS],
-        },
-      },
-      include: {
-        adminControl: true,
-        assets: true,
-        publishedChapters: {
-          include: {
-            adminOverride: true,
-            chapter: true,
-          },
-          orderBy: {
-            chapterNumber: "asc",
-          },
-        },
-      },
+  private async getPublishedStories(input: {
+    genre?: string;
+    limit?: number | null;
+    offset?: number | null;
+    query?: string;
+  } = {}): Promise<PublishedStoryCatalogRecord[]> {
+    const { stories } = await this.queryPublishedStories(input);
+
+    return stories;
+  }
+
+  private async queryPublishedStories(input: {
+    genre?: string;
+    limit?: number | null;
+    offset?: number | null;
+    query?: string;
+  }) {
+    const limit = input.limit ?? null;
+    const offset = input.offset ?? null;
+    const stories: PublishedStoryCatalogRecord[] = await this.prisma.story.findMany({
+      where: this.buildPublishedStoryWhere(input),
+      select: publishedStoryCatalogSelect,
       orderBy: [
         {
           featured: "desc",
@@ -2197,18 +2341,32 @@ export class ReaderService {
         {
           totalReads: "desc",
         },
+        {
+          updatedAt: "desc",
+        },
       ],
+      skip: offset ?? undefined,
+      take: limit ? limit + 1 : undefined,
     });
+    const hasMore = Boolean(limit && stories.length > limit);
 
-    return stories.filter((story) => isStoryLive(story));
+    return {
+      pageInfo: {
+        hasMore,
+        limit,
+        nextOffset: hasMore && limit !== null ? (offset ?? 0) + limit : null,
+        offset: offset ?? 0,
+      },
+      stories: hasMore && limit !== null ? stories.slice(0, limit) : stories,
+    };
   }
 
   private async getRecommendedStoryCards(input: {
     excludeSeenStories?: boolean;
     excludeStoryIds?: string[];
     limit?: number;
-    sourceStory?: StoryWithReaderRelations | null;
-    stories: StoryWithReaderRelations[];
+    sourceStory?: StoryCardSource | null;
+    stories: StoryCardSource[];
     userId: string;
   }) {
     const recommendationSignals = await this.buildRecommendationSignals({
@@ -2251,8 +2409,8 @@ export class ReaderService {
   }
 
   private async buildRecommendationSignals(input: {
-    sourceStory: StoryWithReaderRelations | null;
-    stories: StoryWithReaderRelations[];
+    sourceStory: StoryCardSource | null;
+    stories: StoryCardSource[];
     userId: string;
   }) {
     const publishedStoryIds = input.stories.map((story) => story.id);
@@ -2275,9 +2433,6 @@ export class ReaderService {
       }),
       this.prisma.readingProgress.findMany({
         where: {
-          storyId: {
-            in: publishedStoryIds,
-          },
           userId: input.userId,
         },
         select: {
@@ -2287,9 +2442,6 @@ export class ReaderService {
       }),
       this.prisma.bookmark.findMany({
         where: {
-          storyId: {
-            in: publishedStoryIds,
-          },
           userId: input.userId,
         },
         select: {
@@ -2298,9 +2450,6 @@ export class ReaderService {
       }),
       this.prisma.follow.findMany({
         where: {
-          storyId: {
-            in: publishedStoryIds,
-          },
           targetType: FollowTargetType.STORY,
           userId: input.userId,
         },
@@ -2322,9 +2471,6 @@ export class ReaderService {
       }),
       this.prisma.storyRating.findMany({
         where: {
-          storyId: {
-            in: publishedStoryIds,
-          },
           userId: input.userId,
         },
         select: {
@@ -2335,9 +2481,6 @@ export class ReaderService {
       this.prisma.review.findMany({
         where: {
           status: ReviewStatus.VISIBLE,
-          storyId: {
-            in: publishedStoryIds,
-          },
           userId: input.userId,
         },
         select: {
@@ -2349,9 +2492,6 @@ export class ReaderService {
         where: {
           readingList: {
             userId: input.userId,
-          },
-          storyId: {
-            in: publishedStoryIds,
           },
         },
         select: {
@@ -2809,12 +2949,12 @@ export class ReaderService {
   }
 
   private scoreRecommendedStory(
-    story: StoryWithReaderRelations,
+    story: StoryCardSource,
     signals: {
       authorAffinity: Map<string, number>;
       collaborativeCandidateScores: Map<string, number>;
       genreAffinity: Map<string, number>;
-      sourceStory: StoryWithReaderRelations | null;
+      sourceStory: StoryCardSource | null;
       tagAffinity: Map<string, number>;
     },
   ) {
@@ -2870,13 +3010,13 @@ export class ReaderService {
   }
 
   private getScoredRecommendationCandidates(
-    stories: StoryWithReaderRelations[],
+    stories: StoryCardSource[],
     excludedStoryIds: Set<string>,
     signals: {
       authorAffinity: Map<string, number>;
       collaborativeCandidateScores: Map<string, number>;
       genreAffinity: Map<string, number>;
-      sourceStory: StoryWithReaderRelations | null;
+      sourceStory: StoryCardSource | null;
       tagAffinity: Map<string, number>;
     },
   ) {
@@ -2932,6 +3072,95 @@ export class ReaderService {
     }
 
     return story;
+  }
+
+  private buildPublishedStoryWhere(input: {
+    genre?: string;
+    query?: string;
+  }): Prisma.StoryWhereInput {
+    const normalizedGenre = this.normalizeOptionalQuery(input.genre);
+    const normalizedGenreSlug = normalizedGenre ? this.toSlug(normalizedGenre) : null;
+    const normalizedQuery = this.normalizeOptionalQuery(input.query);
+    const normalizedQuerySlug = normalizedQuery ? this.toSlug(normalizedQuery) : null;
+    const andFilters: Prisma.StoryWhereInput[] = [
+      {
+        OR: [
+          {
+            adminControl: {
+              is: {
+                visibilityState: AdminBookVisibilityState.LIVE,
+              },
+            },
+          },
+          {
+            adminControl: {
+              is: null,
+            },
+            isLive: true,
+          },
+        ],
+      },
+    ];
+
+    if (normalizedGenreSlug) {
+      andFilters.push({
+        genreSlugs: {
+          has: normalizedGenreSlug,
+        },
+      });
+    }
+
+    if (normalizedQuery) {
+      andFilters.push({
+        OR: [
+          {
+            title: {
+              contains: normalizedQuery,
+              mode: "insensitive",
+            },
+          },
+          {
+            shortSynopsis: {
+              contains: normalizedQuery,
+              mode: "insensitive",
+            },
+          },
+          {
+            synopsis: {
+              contains: normalizedQuery,
+              mode: "insensitive",
+            },
+          },
+          {
+            authorName: {
+              contains: normalizedQuery,
+              mode: "insensitive",
+            },
+          },
+          ...(normalizedQuerySlug
+            ? [
+                {
+                  genreSlugs: {
+                    has: normalizedQuerySlug,
+                  },
+                },
+                {
+                  tagSlugs: {
+                    has: normalizedQuerySlug,
+                  },
+                },
+              ]
+            : []),
+        ],
+      });
+    }
+
+    return {
+      AND: andFilters,
+      status: {
+        in: [StoryStatus.PUBLISHED, StoryStatus.COMPLETED, StoryStatus.HIATUS],
+      },
+    };
   }
 
   private async requireActiveUser(userId: string) {
@@ -3152,44 +3381,6 @@ export class ReaderService {
     };
   }
 
-  private filterStories(
-    stories: StoryWithReaderRelations[],
-    input: { genre?: string; query?: string },
-  ) {
-    const normalizedQuery = this.normalizeOptionalQuery(input.query);
-    const normalizedGenre = this.normalizeOptionalQuery(input.genre);
-
-    return stories.filter((story) => {
-      if (
-        normalizedGenre &&
-        !story.genreSlugs.some(
-          (genreSlug) =>
-            this.normalizeTerm(genreSlug) === normalizedGenre ||
-            this.normalizeTerm(this.slugToLabel(genreSlug)) === normalizedGenre,
-        )
-      ) {
-        return false;
-      }
-
-      if (!normalizedQuery) {
-        return true;
-      }
-
-      const haystack = [
-        story.authorName,
-        story.shortSynopsis,
-        story.synopsis,
-        story.title,
-        ...story.genreSlugs,
-        ...story.tagSlugs,
-      ]
-        .join(" ")
-        .toLowerCase();
-
-      return haystack.includes(normalizedQuery);
-    });
-  }
-
   private getStoryControl(story: {
     adminControl?: {
       defaultPremiumWindowHours: number;
@@ -3206,6 +3397,53 @@ export class ReaderService {
       globalCoinCap:
         story.adminControl?.globalCoinCap ?? defaultBookPlatformPolicy.defaultCoinCap,
       liveAt: story.liveAt ?? null,
+    };
+  }
+
+  private getFirstPublishedChapter(story: StoryCardSource) {
+    return story.publishedChapters[0] ?? null;
+  }
+
+  private getPublishedChapterCount(story: StoryCardSource) {
+    return story._count?.publishedChapters ?? story.publishedChapters.length;
+  }
+
+  private toStoryCardSource(story: StoryWithReaderRelations): StoryCardSource {
+    return {
+      adminControl: story.adminControl
+        ? {
+            visibilityState: getStoryVisibilityState(story),
+          }
+        : null,
+      assets: story.assets,
+      authorId: story.authorId ?? null,
+      authorName: story.authorName,
+      averageRating: story.averageRating,
+      createdAt: story.createdAt,
+      featured: story.featured,
+      genreSlugs: story.genreSlugs,
+      id: story.id,
+      isLive: story.isLive,
+      latestChapterAt: story.latestChapterAt ?? null,
+      liveAt: story.liveAt ?? null,
+      publishedAt: story.publishedAt ?? null,
+      publishedChapters: story.publishedChapters.slice(0, 1).map((chapter) => ({
+        chapterNumber: chapter.chapterNumber,
+        publishedAt: chapter.publishedAt,
+        slug: chapter.slug,
+        title: chapter.title,
+      })),
+      reviewCount: story.reviewCount,
+      shortSynopsis: story.shortSynopsis,
+      slug: story.slug,
+      status: story.status,
+      synopsis: story.synopsis,
+      tagSlugs: story.tagSlugs,
+      title: story.title,
+      totalReads: story.totalReads,
+      _count: {
+        publishedChapters: story.publishedChapters.length,
+      },
     };
   }
 
@@ -3672,7 +3910,7 @@ export class ReaderService {
   }
 
   private dedupeStoryCards(
-    stories: StoryWithReaderRelations[],
+    stories: StoryCardSource[],
     limit = 6,
   ) {
     const seen = new Set<string>();
@@ -3719,7 +3957,7 @@ export class ReaderService {
     return score;
   }
 
-  private getStoryFreshnessScore(story: StoryWithReaderRelations) {
+  private getStoryFreshnessScore(story: StoryCardSource) {
     const latestActivity = story.latestChapterAt ?? story.publishedAt ?? null;
 
     if (!latestActivity) {
@@ -3750,8 +3988,8 @@ export class ReaderService {
     return 0;
   }
 
-  private mapFeaturedStory(story: StoryWithReaderRelations) {
-    const firstChapter = story.publishedChapters[0] ?? null;
+  private mapFeaturedStory(story: StoryCardSource) {
+    const firstChapter = this.getFirstPublishedChapter(story);
 
     return {
       authorName: story.authorName,
@@ -3768,8 +4006,8 @@ export class ReaderService {
     };
   }
 
-  private mapHomeFeaturedStory(story: StoryWithReaderRelations) {
-    const firstChapter = story.publishedChapters[0] ?? null;
+  private mapHomeFeaturedStory(story: StoryCardSource) {
+    const firstChapter = this.getFirstPublishedChapter(story);
 
     return {
       authorName: story.authorName,
@@ -3794,13 +4032,13 @@ export class ReaderService {
     };
   }
 
-  private mapStoryCard(story: StoryWithReaderRelations) {
-    const firstChapter = story.publishedChapters[0] ?? null;
+  private mapStoryCard(story: StoryCardSource) {
+    const firstChapter = this.getFirstPublishedChapter(story);
 
     return {
       authorName: story.authorName,
       averageRating: Number(story.averageRating.toFixed(1)),
-      chapterCount: story.publishedChapters.length,
+      chapterCount: this.getPublishedChapterCount(story),
       coverImage:
         story.assets?.coverImageUrl ??
         story.assets?.cardImageUrl ??
@@ -3854,6 +4092,14 @@ export class ReaderService {
 
   private normalizeTerm(value: string) {
     return value.trim().toLowerCase();
+  }
+
+  private toSlug(value: string) {
+    return value
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
   }
 
   private estimateReadingMinutes(paragraphs: string[]) {

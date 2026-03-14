@@ -160,7 +160,15 @@ export class StudioService {
     };
   }
 
-  async listStories(userId: string) {
+  async listStories(
+    userId: string,
+    pagination: {
+      limit?: number | null;
+      offset?: number | null;
+    } = {},
+  ) {
+    const limit = pagination.limit ?? null;
+    const offset = pagination.offset ?? null;
     const stories = await this.prisma.story.findMany({
       where: {
         authorId: userId,
@@ -204,10 +212,20 @@ export class StudioService {
       orderBy: {
         updatedAt: "desc",
       },
+      skip: offset ?? undefined,
+      take: limit ? limit + 1 : undefined,
     });
+    const hasMore = Boolean(limit && stories.length > limit);
+    const items = hasMore && limit !== null ? stories.slice(0, limit) : stories;
 
     return {
-      stories: stories.map((story) => this.mapStudioStory(story)),
+      pageInfo: {
+        hasMore,
+        limit,
+        nextOffset: hasMore && limit !== null ? (offset ?? 0) + limit : null,
+        offset: offset ?? 0,
+      },
+      stories: items.map((story) => this.mapStudioStory(story)),
     };
   }
 

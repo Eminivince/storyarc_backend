@@ -5,10 +5,67 @@ import { FastifyAdapter, NestFastifyApplication } from "@nestjs/platform-fastify
 import { AppModule } from "./app.module";
 import { HttpExceptionFilter } from "./common/filters/http-exception.filter";
 import { RequestLoggingInterceptor } from "./common/interceptors/request-logging.interceptor";
+import { edgeCacheControlMiddleware } from "./common/middleware/edge-cache-control.middleware";
 import { env } from "./config/env";
 import { PrismaService } from "./database/prisma.service";
 
 const logger = new Logger("Bootstrap");
+const explicitAllowedOrigins = new Set(
+  [
+    env.frontendAppUrl,
+    "https://fractalholding.com",
+    "https://www.fractalholding.com",
+    "https://www.storyarc.vercel.app",
+  ]
+    .map(normalizeOrigin)
+    .filter((origin): origin is string => Boolean(origin)),
+);
+
+function normalizeOrigin(origin: string | null | undefined) {
+  if (!origin) {
+    return null;
+  }
+
+  try {
+    return new URL(origin).origin;
+  } catch {
+    return null;
+  }
+}
+
+function isLocalDevelopmentOrigin(origin: string) {
+  const normalizedOrigin = normalizeOrigin(origin);
+
+  if (!normalizedOrigin) {
+    return false;
+  }
+
+  const { hostname } = new URL(normalizedOrigin);
+
+  return hostname === "localhost" || hostname === "127.0.0.1";
+}
+
+function isAllowedCorsOrigin(origin: string | undefined) {
+  if (!origin) {
+    return true;
+  }
+
+  const normalizedOrigin = normalizeOrigin(origin);
+
+  if (!normalizedOrigin) {
+    return false;
+  }
+
+  if (explicitAllowedOrigins.has(normalizedOrigin)) {
+    return true;
+  }
+
+  if (env.nodeEnv !== "production" && isLocalDevelopmentOrigin(normalizedOrigin)) {
+    return true;
+  }
+
+  return false;
+}
 
 async function bootstrap() {
   logger.log("Starting Nest application...");
@@ -26,11 +83,17 @@ async function bootstrap() {
   prisma.enableShutdownHooks(app);
 
   app.enableCors({
-    origin: true,
+    origin: (origin, callback) => {
+      callback(null, isAllowedCorsOrigin(origin ?? undefined));
+    },
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
     allowedHeaders: ["Content-Type", "Authorization", "Accept"],
   });
+  app
+    .getHttpAdapter()
+    .getInstance()
+    .addHook("onSend", edgeCacheControlMiddleware);
   app.useGlobalFilters(new HttpExceptionFilter());
   app.useGlobalInterceptors(new RequestLoggingInterceptor());
 

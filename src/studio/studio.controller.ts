@@ -18,6 +18,8 @@ import {
   parseStudioAnalyticsQuery,
   parseStudioChapterDraftBody,
   parseStudioCoverUploadBody,
+  parseStudioStoryListLimitQuery,
+  parseStudioStoryListOffsetQuery,
   parseStudioPublishBody,
   parseStudioStoryBody,
   parseStudioStructureBody,
@@ -39,10 +41,17 @@ export class StudioController {
   ) {}
 
   @Get("stories")
-  async listStories(@Req() request: AuthenticatedRequest) {
+  async listStories(
+    @Query("limit") limit: string | undefined,
+    @Query("offset") offset: string | undefined,
+    @Req() request: AuthenticatedRequest,
+  ) {
     assertStudioAccess(request);
 
-    return this.studioService.listStories(request.auth!.userId);
+    return this.studioService.listStories(request.auth!.userId, {
+      limit: parseStudioStoryListLimitQuery(limit),
+      offset: parseStudioStoryListOffsetQuery(offset),
+    });
   }
 
   @Get("analytics")
