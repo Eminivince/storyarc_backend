@@ -68,6 +68,11 @@ enum PurchaseStatus {
   REFUNDED
 }
 
+enum PaymentProvider {
+  PAYSTACK
+  CRYPTOMUS
+}
+
 enum BillingInterval {
   MONTHLY
   ANNUAL
@@ -997,6 +1002,9 @@ model Purchase {
   userId                String           @db.ObjectId
   kind                  PurchaseKind
   status                PurchaseStatus   @default(PENDING)
+  paymentProvider       PaymentProvider?
+  paymentReference      String?
+  paymentSessionId      String?
   billingInterval       BillingInterval?
   amountCents           Int
   currency              String           @default("usd")
@@ -1019,6 +1027,8 @@ model Purchase {
   chapterEntitlements   ChapterEntitlement[]
 
   @@index([userId, createdAt])
+  @@index([paymentReference])
+  @@index([paymentSessionId])
   @@index([paystackReference])
   @@index([paystackTransactionId])
   @@index([paystackSubscriptionCode])

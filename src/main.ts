@@ -15,7 +15,7 @@ const explicitAllowedOrigins = new Set(
     env.frontendAppUrl,
     "https://fractalholding.com",
     "https://www.fractalholding.com",
-    "https://www.talestead.vercel.app",
+    "https://www.talestead.com",
   ]
     .map(normalizeOrigin)
     .filter((origin): origin is string => Boolean(origin)),

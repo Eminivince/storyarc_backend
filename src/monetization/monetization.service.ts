@@ -7,7 +7,7 @@ import {
   OnModuleInit,
   ServiceUnavailableException,
 } from "@nestjs/common";
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   BillingInterval,
@@ -19,6 +19,7 @@ import {
   WalletLedgerEntryType,
   WalletLedgerReason,
 } from "@prisma/client";
+import { AuthenticatedRequest } from "../common/types/request-with-auth.type";
 import { env } from "../config/env";
 import { PrismaService } from "../database/prisma.service";
 import {
@@ -126,6 +127,48 @@ type PaystackWebhookPayload = {
   event?: string;
 };
 
+type CryptomusInvoice = {
+  amount?: string | number | null;
+  currency?: string | null;
+  expired_at?: string | null;
+  is_final?: boolean | null;
+  order_id?: string | null;
+  payment_status?: string | null;
+  payer_amount?: string | number | null;
+  payer_currency?: string | null;
+  status?: string | null;
+  txid?: string | null;
+  updated_at?: string | null;
+  url?: string | null;
+  uuid?: string | null;
+};
+
+type CryptomusPaymentPayload = {
+  amount?: string | number | null;
+  currency?: string | null;
+  order_id?: string | null;
+  payment_status?: string | null;
+  sign?: string | null;
+  status?: string | null;
+  txid?: string | null;
+  updated_at?: string | null;
+  uuid?: string | null;
+};
+
+type CryptomusApiResponse<T> = {
+  message?: string;
+  result?: T | null;
+  state?: number;
+};
+
+const PAYMENT_PROVIDER = {
+  CRYPTOMUS: "CRYPTOMUS",
+  PAYSTACK: "PAYSTACK",
+} as const;
+
+type CheckoutProvider =
+  (typeof PAYMENT_PROVIDER)[keyof typeof PAYMENT_PROVIDER];
+
 type StoryAccessContext = {
   adminControl?: {
     defaultPremiumWindowHours: number;
@@ -209,8 +252,24 @@ const PAYSTACK_MINIMUM_AMOUNT_BY_CURRENCY: Record<string, number> = {
   ZAR: 100,
 };
 
+const CRYPTOMUS_SUCCESS_STATUSES = new Set(["paid", "paid_over"]);
+const CRYPTOMUS_FAILED_STATUSES = new Set([
+  "cancel",
+  "cancelled",
+  "canceled",
+  "fail",
+  "system_fail",
+  "wrong_amount",
+]);
+const CRYPTOMUS_REFUNDED_STATUSES = new Set([
+  "refund_fail",
+  "refund_paid",
+  "refund_process",
+]);
+
 @Injectable()
 export class MonetizationService implements OnModuleInit {
+  private readonly cryptomusApiBaseUrl = "https://api.cryptomus.com/v1";
   private readonly paystackApiBaseUrl = "https://api.paystack.co";
   private readonly logger = new Logger(MonetizationService.name);
   private catalogBootstrapped = false;
@@ -226,6 +285,7 @@ export class MonetizationService implements OnModuleInit {
 
   async getCatalog() {
     await this.ensureCatalogBootstrapped();
+    const checkoutProvider = this.getCheckoutProviderValue();
 
     const [coinPackages, plans] = await Promise.all([
       this.prisma.coinPackage.findMany({
@@ -239,20 +299,21 @@ export class MonetizationService implements OnModuleInit {
     ]);
 
     const supportedCoinPackages = coinPackages.filter((item) =>
-      this.canProcessPaystackAmount(item.priceCents),
+      this.canProcessCheckoutAmount(item.priceCents),
     );
     const supportedPlans = plans.filter((plan) => {
-      const monthlySupported = this.canProcessPaystackAmount(plan.monthlyPriceCents);
+      const monthlySupported = this.canProcessCheckoutAmount(plan.monthlyPriceCents);
       const yearlySupported =
         typeof plan.yearlyPriceCents === "number"
-          ? this.canProcessPaystackAmount(plan.yearlyPriceCents)
+          ? this.canProcessCheckoutAmount(plan.yearlyPriceCents)
           : true;
 
       return monthlySupported && yearlySupported;
     });
 
     return {
-      currency: env.paystackCurrency,
+      checkoutProvider,
+      currency: this.getCheckoutCurrency(),
       coinPackages: supportedCoinPackages.map((item) => ({
         code: item.code,
         coins: item.coins,
@@ -311,7 +372,8 @@ export class MonetizationService implements OnModuleInit {
       billingCycle: subscription
         ? this.toFrontendBillingInterval(subscription.billingInterval)
         : "monthly",
-      currency: env.paystackCurrency,
+      checkoutProvider: this.getCheckoutProviderValue(),
+      currency: this.getCheckoutCurrency(),
       chapterEntitlements: entitlements.map((item) => ({
         chapterKey: this.toChapterKey(item.chapter.story.slug, item.chapter.slug),
         chapterSlug: item.chapter.slug,
@@ -374,9 +436,10 @@ export class MonetizationService implements OnModuleInit {
   async createCheckoutSession(
     userId: string,
     input: CreateCheckoutSessionInput,
+    request: AuthenticatedRequest,
   ) {
-    this.assertPaystackConfigured();
     const frontendAppUrl = this.getFrontendAppUrl();
+    const checkoutProvider = this.getConfiguredCheckoutProvider();
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: {
@@ -388,9 +451,24 @@ export class MonetizationService implements OnModuleInit {
       throw new NotFoundException("User account not found.");
     }
 
-    const product = await this.getCheckoutProduct(input);
-    this.assertSupportedPaystackAmount(product.amountCents, input);
-    const purchase = await this.findOrCreateCheckoutPurchase(userId, input, product);
+    const product = await this.getCheckoutProduct(input, checkoutProvider);
+    this.assertSupportedCheckoutAmount(product.amountCents, input, checkoutProvider);
+    const purchase = await this.findOrCreateCheckoutPurchase(
+      userId,
+      input,
+      product,
+      checkoutProvider,
+    );
+
+    if (checkoutProvider === PAYMENT_PROVIDER.CRYPTOMUS) {
+      return this.createCryptomusCheckoutSession({
+        frontendAppUrl,
+        input,
+        purchase,
+        request,
+      });
+    }
+
     const paystackReference =
       purchase.paystackReference ?? this.buildPaystackReference(purchase.id);
 
@@ -410,7 +488,7 @@ export class MonetizationService implements OnModuleInit {
       body: JSON.stringify({
         amount: product.amountCents,
         callback_url: successUrl.toString(),
-        currency: env.paystackCurrency,
+        currency: this.getCheckoutCurrency(),
         email: user.email,
         metadata: {
           billingInterval: input.billing,
@@ -431,6 +509,8 @@ export class MonetizationService implements OnModuleInit {
     await this.prisma.purchase.update({
       where: { id: purchase.id },
       data: {
+        paymentProvider: PAYMENT_PROVIDER.PAYSTACK,
+        paymentReference: reference,
         paystackReference: reference,
       },
     });
@@ -452,6 +532,52 @@ export class MonetizationService implements OnModuleInit {
     userId: string,
     input: ConfirmCheckoutSessionInput,
   ) {
+    const referencedPurchase = await this.findPurchaseForCheckoutReference(
+      input.reference,
+    );
+
+    if (
+      referencedPurchase &&
+      referencedPurchase.userId !== userId
+    ) {
+      throw new BadRequestException("This checkout reference does not belong to you.");
+    }
+
+    if (this.getPurchaseProvider(referencedPurchase) === PAYMENT_PROVIDER.CRYPTOMUS) {
+      const invoice = await this.verifyCryptomusPayment(input.reference);
+      const purchase =
+        referencedPurchase ??
+        (await this.findPurchaseForCheckoutReference(
+          this.getCryptomusOrderId(invoice) ??
+            this.getCryptomusUuid(invoice) ??
+            input.reference,
+        ));
+
+      if (!purchase || purchase.userId !== userId) {
+        throw new BadRequestException(
+          "This checkout reference does not belong to you.",
+        );
+      }
+
+      const checkoutStatus = this.mapCryptomusCheckoutStatus(invoice);
+
+      if (checkoutStatus === "success") {
+        await this.processCryptomusInvoice(invoice, purchase);
+      } else {
+        await this.syncNonSuccessfulCryptomusPurchase(
+          purchase,
+          invoice,
+          checkoutStatus,
+        );
+      }
+
+      return {
+        checkoutStatus,
+        message: this.getCheckoutStatusMessage(checkoutStatus),
+        status: await this.getStatus(userId),
+      };
+    }
+
     const transaction = await this.verifyPaystackTransaction(input.reference);
     const purchase = await this.findPurchaseForPaystackTransaction(transaction);
 
@@ -1154,6 +1280,50 @@ export class MonetizationService implements OnModuleInit {
     };
   }
 
+  async handleCryptomusWebhook(rawBody: Buffer | undefined) {
+    if (!rawBody) {
+      throw new BadRequestException("Cryptomus webhook raw body is required.");
+    }
+
+    const payload = this.parseCryptomusWebhookPayload(rawBody);
+    this.assertCryptomusWebhookSignature(payload);
+
+    const reference =
+      this.getCryptomusOrderId(payload) ??
+      this.getCryptomusUuid(payload);
+
+    if (!reference) {
+      throw new BadRequestException(
+        "Cryptomus webhook is missing order_id or uuid.",
+      );
+    }
+
+    const purchase = await this.findPurchaseForCheckoutReference(reference);
+
+    if (!purchase) {
+      return {
+        ignored: true,
+        received: true,
+      };
+    }
+
+    const checkoutStatus = this.mapCryptomusCheckoutStatus(payload);
+
+    if (checkoutStatus === "success") {
+      await this.processCryptomusInvoice(payload, purchase);
+    } else {
+      await this.syncNonSuccessfulCryptomusPurchase(
+        purchase,
+        payload,
+        checkoutStatus,
+      );
+    }
+
+    return {
+      received: true,
+    };
+  }
+
   async getChapterAccess(
     userId: string,
     input: { chapterId: string; storyId: string },
@@ -1268,9 +1438,10 @@ export class MonetizationService implements OnModuleInit {
     product: {
       amountCents: number;
       coinPackageId?: string;
-      paystackPlanCode?: string;
+      paystackPlanCode?: string | null;
       planId?: string;
     },
+    paymentProvider: CheckoutProvider,
   ) {
     const existing = await this.prisma.purchase.findUnique({
       where: {
@@ -1295,12 +1466,13 @@ export class MonetizationService implements OnModuleInit {
     const purchaseData: Prisma.PurchaseUncheckedCreateInput = {
       amountCents: product.amountCents,
       billingInterval: this.toBillingInterval(input.billing),
-      currency: env.paystackCurrency,
+      currency: this.getCheckoutCurrency(),
       idempotencyKey: input.idempotencyKey,
       kind:
         input.kind === "coins"
           ? PurchaseKind.COINS
           : PurchaseKind.SUBSCRIPTION,
+      paymentProvider,
       returnTo: input.returnTo,
       status: PurchaseStatus.PENDING,
       userId,
@@ -1325,7 +1497,10 @@ export class MonetizationService implements OnModuleInit {
     });
   }
 
-  private async getCheckoutProduct(input: CreateCheckoutSessionInput) {
+  private async getCheckoutProduct(
+    input: CreateCheckoutSessionInput,
+    paymentProvider: CheckoutProvider,
+  ) {
     await this.ensureCatalogBootstrapped();
 
     if (input.kind === "coins") {
@@ -1364,21 +1539,99 @@ export class MonetizationService implements OnModuleInit {
         ? plan.yearlyPriceCents
         : plan.monthlyPriceCents;
 
-    if (!paystackPlanCode) {
+    if (
+      paymentProvider === PAYMENT_PROVIDER.PAYSTACK &&
+      !paystackPlanCode
+    ) {
       throw new ServiceUnavailableException(
         `Paystack plan code is not configured for plan ${plan.code} (${input.billing}).`,
       );
     }
 
-    this.assertValidPaystackPlanCode(
-      paystackPlanCode,
-      this.getPaystackPlanEnvFieldName(plan.code, input.billing),
-    );
+    if (paymentProvider === PAYMENT_PROVIDER.PAYSTACK) {
+      this.assertValidPaystackPlanCode(
+        paystackPlanCode!,
+        this.getPaystackPlanEnvFieldName(plan.code, input.billing),
+      );
+    }
 
     return {
       amountCents,
       paystackPlanCode,
       planId: plan.id,
+    };
+  }
+
+  private async createCryptomusCheckoutSession({
+    frontendAppUrl,
+    input,
+    purchase,
+    request,
+  }: {
+    frontendAppUrl: string;
+    input: CreateCheckoutSessionInput;
+    purchase: PurchaseWithRelations;
+    request: AuthenticatedRequest;
+  }) {
+    this.assertCryptomusConfigured();
+    const paymentReference =
+      purchase.paymentReference ?? this.buildCryptomusOrderId(purchase.id);
+    const successUrl = new URL("/checkout/status", frontendAppUrl);
+    successUrl.searchParams.set("billing", input.billing);
+    successUrl.searchParams.set("kind", input.kind);
+    successUrl.searchParams.set("productId", input.productId);
+    successUrl.searchParams.set("reference", paymentReference);
+    successUrl.searchParams.set("returnTo", input.returnTo);
+
+    const cancelUrl = new URL("/checkout", frontendAppUrl);
+    cancelUrl.searchParams.set("billing", input.billing);
+    cancelUrl.searchParams.set("kind", input.kind);
+    cancelUrl.searchParams.set("productId", input.productId);
+    cancelUrl.searchParams.set("returnTo", input.returnTo);
+    cancelUrl.searchParams.set("canceled", "1");
+
+    const callbackOrigin = this.getRequestOrigin(request);
+    const payload: Record<string, unknown> = {
+      amount: this.formatAmountCents(purchase.amountCents),
+      currency: purchase.currency.toUpperCase(),
+      order_id: paymentReference,
+      url_return: cancelUrl.toString(),
+      url_success: successUrl.toString(),
+    };
+
+    if (callbackOrigin) {
+      payload.url_callback = new URL(
+        "/monetization/cryptomus/webhook",
+        callbackOrigin,
+      ).toString();
+    }
+
+    const response = await this.cryptomusRequest<CryptomusInvoice>(
+      "/payment",
+      payload,
+    );
+    const checkoutUrl = response.result?.url?.trim() || null;
+    const uuid = this.getCryptomusUuid(response.result ?? null);
+
+    await this.prisma.purchase.update({
+      where: { id: purchase.id },
+      data: {
+        paymentProvider: PAYMENT_PROVIDER.CRYPTOMUS,
+        paymentReference,
+        paymentSessionId: uuid,
+      },
+    });
+
+    if (!checkoutUrl) {
+      throw new ServiceUnavailableException(
+        "Cryptomus checkout URL was not returned.",
+      );
+    }
+
+    return {
+      checkoutUrl,
+      purchaseId: purchase.id,
+      reference: paymentReference,
     };
   }
 
@@ -1398,7 +1651,7 @@ export class MonetizationService implements OnModuleInit {
         silverAnnualPlanCode: env.paystackPlanSilverAnnual ?? null,
         silverMonthlyPlanCode: env.paystackPlanSilverMonthly ?? null,
       },
-      currency: env.paystackCurrency,
+      currency: this.getCheckoutCurrency(),
     })
       .then(({ coinPackageCodes, planCodes }) => {
         this.catalogBootstrapped = true;
@@ -1592,6 +1845,11 @@ export class MonetizationService implements OnModuleInit {
       where: { id: purchase.id },
       data: {
         failedAt: checkoutStatus === "failed" ? paidAt ?? new Date() : null,
+        paymentProvider: PAYMENT_PROVIDER.PAYSTACK,
+        paymentReference:
+          this.getPaystackReference(transaction) ?? purchase.paymentReference,
+        paymentSessionId:
+          this.getPaystackTransactionId(transaction) ?? purchase.paymentSessionId,
         paystackCustomerCode:
           this.getPaystackCustomerCode(transaction.customer) ??
           purchase.paystackCustomerCode,
@@ -1602,6 +1860,266 @@ export class MonetizationService implements OnModuleInit {
           purchase.paystackTransactionId,
         status: nextStatus,
       },
+    });
+  }
+
+  private async processCryptomusInvoice(
+    invoice: CryptomusInvoice | CryptomusPaymentPayload,
+    purchase?: PurchaseWithRelations | null,
+  ) {
+    const resolvedPurchase =
+      purchase ??
+      (await this.findPurchaseForCheckoutReference(
+        this.getCryptomusOrderId(invoice) ??
+          this.getCryptomusUuid(invoice) ??
+          "",
+      ));
+
+    if (!resolvedPurchase) {
+      return;
+    }
+
+    this.assertCryptomusInvoiceMatchesPurchase(invoice, resolvedPurchase);
+
+    if (resolvedPurchase.kind === PurchaseKind.COINS) {
+      await this.completeCryptomusCoinPurchase(resolvedPurchase, invoice);
+      return;
+    }
+
+    await this.completeCryptomusSubscriptionPurchase(resolvedPurchase, invoice);
+  }
+
+  private async syncNonSuccessfulCryptomusPurchase(
+    purchase: PurchaseWithRelations,
+    invoice: CryptomusInvoice | CryptomusPaymentPayload,
+    checkoutStatus: "failed" | "pending",
+  ) {
+    const cryptomusStatus = this.getCryptomusStatus(invoice);
+    const nextStatus =
+      checkoutStatus === "pending"
+        ? PurchaseStatus.PENDING
+        : CRYPTOMUS_REFUNDED_STATUSES.has(cryptomusStatus)
+          ? PurchaseStatus.REFUNDED
+          : PurchaseStatus.FAILED;
+    const paidAt = this.getCryptomusPaidAt(invoice);
+
+    await this.prisma.purchase.update({
+      where: { id: purchase.id },
+      data: {
+        failedAt: checkoutStatus === "failed" ? paidAt ?? new Date() : null,
+        paymentProvider: PAYMENT_PROVIDER.CRYPTOMUS,
+        paymentReference:
+          this.getCryptomusOrderId(invoice) ?? purchase.paymentReference,
+        paymentSessionId:
+          this.getCryptomusUuid(invoice) ??
+          this.getCryptomusTransactionId(invoice) ??
+          purchase.paymentSessionId,
+        status: nextStatus,
+      },
+    });
+  }
+
+  private async completeCryptomusCoinPurchase(
+    purchase: PurchaseWithRelations,
+    invoice: CryptomusInvoice | CryptomusPaymentPayload,
+  ) {
+    const coinPackage = purchase.coinPackage;
+
+    if (!coinPackage) {
+      throw new BadRequestException("Coin purchase is missing its package.");
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      const currentPurchase = await tx.purchase.findUnique({
+        where: { id: purchase.id },
+      });
+
+      if (!currentPurchase) {
+        throw new NotFoundException("Purchase not found.");
+      }
+
+      const existingLedgerEntry = await tx.walletLedgerEntry.findUnique({
+        where: {
+          idempotencyKey: `purchase:${purchase.id}:coins-credit`,
+        },
+      });
+
+      if (!existingLedgerEntry) {
+        const wallet = await this.getOrCreateWalletTx(tx, purchase.userId);
+        const coinsToCredit = coinPackage.coins + coinPackage.bonusCoins;
+        const nextBalance = wallet.balanceCoins + coinsToCredit;
+
+        await tx.wallet.update({
+          where: { id: wallet.id },
+          data: {
+            balanceCoins: nextBalance,
+          },
+        });
+
+        await tx.walletLedgerEntry.create({
+          data: {
+            balanceAfter: nextBalance,
+            deltaCoins: coinsToCredit,
+            entryType: WalletLedgerEntryType.CREDIT,
+            idempotencyKey: `purchase:${purchase.id}:coins-credit`,
+            purchase: {
+              connect: { id: purchase.id },
+            },
+            reason: WalletLedgerReason.COIN_PURCHASE,
+            user: {
+              connect: { id: purchase.userId },
+            },
+            wallet: {
+              connect: { id: wallet.id },
+            },
+          },
+        });
+      }
+
+      await tx.purchase.update({
+        where: { id: purchase.id },
+        data: {
+          completedAt:
+            currentPurchase.completedAt ??
+            this.getCryptomusPaidAt(invoice) ??
+            new Date(),
+          paymentProvider: PAYMENT_PROVIDER.CRYPTOMUS,
+          paymentReference:
+            this.getCryptomusOrderId(invoice) ?? currentPurchase.paymentReference,
+          paymentSessionId:
+            this.getCryptomusUuid(invoice) ??
+            this.getCryptomusTransactionId(invoice) ??
+            currentPurchase.paymentSessionId,
+          status: PurchaseStatus.COMPLETED,
+        },
+      });
+    });
+  }
+
+  private async completeCryptomusSubscriptionPurchase(
+    purchase: PurchaseWithRelations,
+    invoice: CryptomusInvoice | CryptomusPaymentPayload,
+  ) {
+    const plan = purchase.plan;
+
+    if (!plan) {
+      throw new BadRequestException("Subscription purchase is missing its plan.");
+    }
+
+    const currentPeriodStart =
+      this.getCryptomusPaidAt(invoice) ?? new Date();
+    const currentPeriodEnd = this.addBillingInterval(
+      currentPeriodStart,
+      purchase.billingInterval ?? BillingInterval.MONTHLY,
+    );
+
+    await this.prisma.$transaction(async (tx) => {
+      const currentPurchase = await tx.purchase.findUnique({
+        where: { id: purchase.id },
+      });
+
+      if (!currentPurchase) {
+        throw new NotFoundException("Purchase not found.");
+      }
+
+      await tx.purchase.update({
+        where: { id: purchase.id },
+        data: {
+          completedAt: currentPurchase.completedAt ?? currentPeriodStart,
+          paymentProvider: PAYMENT_PROVIDER.CRYPTOMUS,
+          paymentReference:
+            this.getCryptomusOrderId(invoice) ?? currentPurchase.paymentReference,
+          paymentSessionId:
+            this.getCryptomusUuid(invoice) ??
+            this.getCryptomusTransactionId(invoice) ??
+            currentPurchase.paymentSessionId,
+          status: PurchaseStatus.COMPLETED,
+        },
+      });
+
+      const existingSubscription = await tx.subscription.findFirst({
+        where: {
+          userId: purchase.userId,
+        },
+        orderBy: {
+          updatedAt: "desc",
+        },
+      });
+
+      if (existingSubscription) {
+        await tx.subscription.update({
+          where: {
+            id: existingSubscription.id,
+          },
+          data: {
+            billingInterval:
+              purchase.billingInterval ?? BillingInterval.MONTHLY,
+            cancelAtPeriodEnd: true,
+            currentPeriodEnd: currentPeriodEnd ?? existingSubscription.currentPeriodEnd,
+            currentPeriodStart:
+              currentPeriodStart ?? existingSubscription.currentPeriodStart,
+            planId: plan.id,
+            status: SubscriptionStatus.ACTIVE,
+          },
+        });
+      } else {
+        await tx.subscription.create({
+          data: {
+            billingInterval:
+              purchase.billingInterval ?? BillingInterval.MONTHLY,
+            cancelAtPeriodEnd: true,
+            currentPeriodEnd,
+            currentPeriodStart,
+            plan: {
+              connect: { id: plan.id },
+            },
+            status: SubscriptionStatus.ACTIVE,
+            user: {
+              connect: { id: purchase.userId },
+            },
+          },
+        });
+      }
+
+      if (plan.monthlyCoinGrant > 0) {
+        const existingLedgerEntry = await tx.walletLedgerEntry.findUnique({
+          where: {
+            idempotencyKey: `purchase:${purchase.id}:subscription-grant`,
+          },
+        });
+
+        if (!existingLedgerEntry) {
+          const wallet = await this.getOrCreateWalletTx(tx, purchase.userId);
+          const nextBalance = wallet.balanceCoins + plan.monthlyCoinGrant;
+
+          await tx.wallet.update({
+            where: { id: wallet.id },
+            data: {
+              balanceCoins: nextBalance,
+            },
+          });
+
+          await tx.walletLedgerEntry.create({
+            data: {
+              balanceAfter: nextBalance,
+              deltaCoins: plan.monthlyCoinGrant,
+              entryType: WalletLedgerEntryType.CREDIT,
+              idempotencyKey: `purchase:${purchase.id}:subscription-grant`,
+              note: `Subscription grant: ${plan.name}`,
+              purchase: {
+                connect: { id: purchase.id },
+              },
+              reason: WalletLedgerReason.SUBSCRIPTION_GRANT,
+              user: {
+                connect: { id: purchase.userId },
+              },
+              wallet: {
+                connect: { id: wallet.id },
+              },
+            },
+          });
+        }
+      }
     });
   }
 
@@ -1669,6 +2187,12 @@ export class MonetizationService implements OnModuleInit {
             currentPurchase.completedAt ??
             this.getPaystackTransactionPaidAt(transaction) ??
             new Date(),
+          paymentProvider: PAYMENT_PROVIDER.PAYSTACK,
+          paymentReference:
+            this.getPaystackReference(transaction) ?? currentPurchase.paymentReference,
+          paymentSessionId:
+            this.getPaystackTransactionId(transaction) ??
+            currentPurchase.paymentSessionId,
           paystackCustomerCode: this.getPaystackCustomerCode(transaction.customer),
           paystackReference:
             this.getPaystackReference(transaction) ?? currentPurchase.paystackReference,
@@ -1715,6 +2239,12 @@ export class MonetizationService implements OnModuleInit {
         where: { id: purchase.id },
         data: {
           completedAt: currentPurchase.completedAt ?? currentPeriodStart,
+          paymentProvider: PAYMENT_PROVIDER.PAYSTACK,
+          paymentReference:
+            this.getPaystackReference(transaction) ?? currentPurchase.paymentReference,
+          paymentSessionId:
+            this.getPaystackTransactionId(transaction) ??
+            currentPurchase.paymentSessionId,
           paystackCustomerCode,
           paystackReference:
             this.getPaystackReference(transaction) ?? currentPurchase.paystackReference,
@@ -2841,6 +3371,411 @@ export class MonetizationService implements OnModuleInit {
 
   private toBillingInterval(value: string) {
     return value === "annual" ? BillingInterval.ANNUAL : BillingInterval.MONTHLY;
+  }
+
+  private hasCryptomusConfiguration() {
+    return Boolean(env.cryptomusMerchantId && env.cryptomusPaymentApiKey);
+  }
+
+  private getConfiguredCheckoutProvider(): CheckoutProvider {
+    if (this.hasCryptomusConfiguration()) {
+      return PAYMENT_PROVIDER.CRYPTOMUS;
+    }
+
+    if (env.paystackSecretKey) {
+      return PAYMENT_PROVIDER.PAYSTACK;
+    }
+
+    throw new ServiceUnavailableException(
+      "No checkout provider is configured. Set CRYPTOMUS_* or PAYSTACK_* credentials.",
+    );
+  }
+
+  private getCheckoutProviderValue() {
+    return this.getConfiguredCheckoutProvider() === PAYMENT_PROVIDER.CRYPTOMUS
+      ? "cryptomus"
+      : "paystack";
+  }
+
+  private getCheckoutCurrency() {
+    return this.getConfiguredCheckoutProvider() === PAYMENT_PROVIDER.CRYPTOMUS
+      ? env.cryptomusCurrency
+      : env.paystackCurrency;
+  }
+
+  private assertSupportedCheckoutAmount(
+    amountCents: number,
+    input: Pick<CreateCheckoutSessionInput, "kind" | "productId">,
+    paymentProvider: CheckoutProvider,
+  ) {
+    if (paymentProvider === PAYMENT_PROVIDER.CRYPTOMUS) {
+      if (amountCents > 0) {
+        return;
+      }
+
+      throw new BadRequestException(
+        `${input.kind === "coins" ? "Coin package" : "Subscription"} ${input.productId} must be priced above 0.`,
+      );
+    }
+
+    this.assertSupportedPaystackAmount(amountCents, input);
+  }
+
+  private canProcessCheckoutAmount(amountCents: number) {
+    if (this.getConfiguredCheckoutProvider() === PAYMENT_PROVIDER.CRYPTOMUS) {
+      return amountCents > 0;
+    }
+
+    return this.canProcessPaystackAmount(amountCents);
+  }
+
+  private getPurchaseProvider(
+    purchase?: Pick<PurchaseWithRelations, "paymentProvider"> | null,
+  ) {
+    return purchase?.paymentProvider ?? PAYMENT_PROVIDER.PAYSTACK;
+  }
+
+  private formatAmountCents(amountCents: number) {
+    return (amountCents / 100).toFixed(2);
+  }
+
+  private getRequestOrigin(request: AuthenticatedRequest) {
+    const forwardedProto =
+      this.getHeaderValue(request.headers, "x-forwarded-proto") ??
+      this.getSchemeFromCfVisitor(
+        this.getHeaderValue(request.headers, "cf-visitor"),
+      ) ??
+      "https";
+    const forwardedHost =
+      this.getHeaderValue(request.headers, "x-forwarded-host") ??
+      this.getHeaderValue(request.headers, "host");
+
+    if (!forwardedHost) {
+      return null;
+    }
+
+    try {
+      return new URL(
+        `${forwardedProto.split(",")[0].trim()}://${forwardedHost.split(",")[0].trim()}`,
+      ).origin;
+    } catch {
+      return null;
+    }
+  }
+
+  private getHeaderValue(
+    headers: Record<string, string | string[] | undefined> | undefined,
+    headerName: string,
+  ) {
+    const value = headers?.[headerName];
+
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+
+    if (Array.isArray(value)) {
+      const first = value.find(
+        (entry): entry is string => typeof entry === "string" && entry.trim().length > 0,
+      );
+
+      return first?.trim() ?? null;
+    }
+
+    return null;
+  }
+
+  private getSchemeFromCfVisitor(cfVisitor: string | null) {
+    if (!cfVisitor) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(cfVisitor) as { scheme?: unknown };
+
+      return typeof parsed.scheme === "string" && parsed.scheme.trim()
+        ? parsed.scheme.trim()
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private buildCryptomusOrderId(purchaseId: string) {
+    return `storyarc-${purchaseId}`;
+  }
+
+  private looksLikeUuid(value: string) {
+    return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      value,
+    );
+  }
+
+  private getCryptomusStatus(
+    payload: CryptomusInvoice | CryptomusPaymentPayload | null | undefined,
+  ) {
+    return String(payload?.payment_status ?? payload?.status ?? "").toLowerCase();
+  }
+
+  private mapCryptomusCheckoutStatus(
+    payload: CryptomusInvoice | CryptomusPaymentPayload | null | undefined,
+  ) {
+    const status = this.getCryptomusStatus(payload);
+
+    if (CRYPTOMUS_SUCCESS_STATUSES.has(status)) {
+      return "success" as const;
+    }
+
+    if (CRYPTOMUS_FAILED_STATUSES.has(status)) {
+      return "failed" as const;
+    }
+
+    if (CRYPTOMUS_REFUNDED_STATUSES.has(status)) {
+      return "failed" as const;
+    }
+
+    return "pending" as const;
+  }
+
+  private getCryptomusOrderId(
+    payload: CryptomusInvoice | CryptomusPaymentPayload | null | undefined,
+  ) {
+    const value = payload?.order_id;
+
+    return typeof value === "string" && value.trim() ? value.trim() : null;
+  }
+
+  private getCryptomusUuid(
+    payload: CryptomusInvoice | CryptomusPaymentPayload | null | undefined,
+  ) {
+    const value = payload?.uuid;
+
+    return typeof value === "string" && value.trim() ? value.trim() : null;
+  }
+
+  private getCryptomusTransactionId(
+    payload: CryptomusInvoice | CryptomusPaymentPayload | null | undefined,
+  ) {
+    const value = payload?.txid;
+
+    return typeof value === "string" && value.trim() ? value.trim() : null;
+  }
+
+  private getCryptomusAmount(
+    payload: CryptomusInvoice | CryptomusPaymentPayload | null | undefined,
+  ) {
+    if (typeof payload?.amount === "number" && Number.isFinite(payload.amount)) {
+      return payload.amount;
+    }
+
+    if (typeof payload?.amount === "string" && payload.amount.trim()) {
+      const parsed = Number(payload.amount);
+
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+
+    return null;
+  }
+
+  private getCryptomusCurrency(
+    payload: CryptomusInvoice | CryptomusPaymentPayload | null | undefined,
+  ) {
+    const value = payload?.currency;
+
+    return typeof value === "string" && value.trim()
+      ? value.trim().toUpperCase()
+      : null;
+  }
+
+  private getCryptomusPaidAt(
+    payload: CryptomusInvoice | CryptomusPaymentPayload | null | undefined,
+  ) {
+    if (!payload || typeof payload !== "object") {
+      return null;
+    }
+
+    const updatedAt =
+      "updated_at" in payload && typeof payload.updated_at === "string"
+        ? payload.updated_at
+        : null;
+    const expiredAt =
+      "expired_at" in payload && typeof payload.expired_at === "string"
+        ? payload.expired_at
+        : null;
+
+    return this.parseDateValue(updatedAt) ?? this.parseDateValue(expiredAt);
+  }
+
+  private assertCryptomusConfigured() {
+    if (!this.hasCryptomusConfiguration()) {
+      throw new ServiceUnavailableException(
+        "CRYPTOMUS_MERCHANT_ID and CRYPTOMUS_PAYMENT_API_KEY must be configured.",
+      );
+    }
+  }
+
+  private buildCryptomusSignature(payload: Record<string, unknown>) {
+    const normalizedJson = this.serializeCryptomusPayload(payload);
+    const encoded = Buffer.from(normalizedJson).toString("base64");
+
+    return createHash("md5")
+      .update(encoded + env.cryptomusPaymentApiKey!)
+      .digest("hex");
+  }
+
+  private serializeCryptomusPayload(payload: Record<string, unknown>) {
+    return JSON.stringify(payload).replace(/\//g, "\\/");
+  }
+
+  private async cryptomusRequest<T>(
+    path: string,
+    payload: Record<string, unknown>,
+  ) {
+    this.assertCryptomusConfigured();
+    const serializedPayload = this.serializeCryptomusPayload(payload);
+
+    const response = await fetch(`${this.cryptomusApiBaseUrl}${path}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        merchant: env.cryptomusMerchantId!,
+        sign: this.buildCryptomusSignature(payload),
+      },
+      body: serializedPayload,
+    });
+    const body = (await response.json().catch(() => null)) as
+      | CryptomusApiResponse<T>
+      | null;
+
+    if (
+      !response.ok ||
+      (typeof body?.state === "number" && body.state !== 0) ||
+      !body?.result
+    ) {
+      const message =
+        body?.message?.trim() ||
+        `Cryptomus request failed with status ${response.status}.`;
+
+      if (response.status >= 400 && response.status < 500) {
+        throw new BadRequestException(message);
+      }
+
+      throw new ServiceUnavailableException(message);
+    }
+
+    return body;
+  }
+
+  private async verifyCryptomusPayment(reference: string) {
+    const payload = this.looksLikeUuid(reference)
+      ? { uuid: reference }
+      : { order_id: reference };
+    const response = await this.cryptomusRequest<CryptomusInvoice>(
+      "/payment/info",
+      payload,
+    );
+    const invoice = response.result ?? null;
+
+    if (!invoice) {
+      throw new NotFoundException("Cryptomus payment was not found.");
+    }
+
+    return invoice;
+  }
+
+  private parseCryptomusWebhookPayload(rawBody: Buffer) {
+    try {
+      return JSON.parse(rawBody.toString("utf8")) as CryptomusPaymentPayload;
+    } catch {
+      throw new BadRequestException("Cryptomus webhook body is not valid JSON.");
+    }
+  }
+
+  private assertCryptomusWebhookSignature(payload: CryptomusPaymentPayload) {
+    const providedSignature =
+      typeof payload.sign === "string" ? payload.sign.trim() : "";
+
+    if (!providedSignature) {
+      throw new BadRequestException("Missing Cryptomus webhook sign value.");
+    }
+
+    const { sign: _sign, ...unsignedPayload } = payload;
+    const expectedSignature = this.buildCryptomusSignature(unsignedPayload);
+
+    if (!this.constantTimeEquals(providedSignature, expectedSignature)) {
+      throw new BadRequestException("Invalid Cryptomus webhook signature.");
+    }
+  }
+
+  private async findPurchaseForCheckoutReference(reference: string) {
+    const trimmedReference = reference.trim();
+
+    if (!trimmedReference) {
+      return null;
+    }
+
+    return this.prisma.purchase.findFirst({
+      where: {
+        OR: [
+          { paymentReference: trimmedReference },
+          { paymentSessionId: trimmedReference },
+          { paystackReference: trimmedReference },
+          { paystackTransactionId: trimmedReference },
+        ],
+      },
+      include: {
+        coinPackage: true,
+        plan: true,
+      },
+    });
+  }
+
+  private assertCryptomusInvoiceMatchesPurchase(
+    invoice: CryptomusInvoice | CryptomusPaymentPayload,
+    purchase: Pick<
+      PurchaseWithRelations,
+      "amountCents" | "currency" | "paymentReference" | "paymentSessionId"
+    >,
+  ) {
+    const amount = this.getCryptomusAmount(invoice);
+    const currency = this.getCryptomusCurrency(invoice);
+    const orderId = this.getCryptomusOrderId(invoice);
+    const uuid = this.getCryptomusUuid(invoice);
+
+    if (amount !== null) {
+      const expectedAmount = Number(this.formatAmountCents(purchase.amountCents));
+
+      if (Math.abs(amount - expectedAmount) > 0.000001) {
+        throw new BadRequestException(
+          "Verified Cryptomus amount does not match the purchase.",
+        );
+      }
+    }
+
+    if (currency && currency !== purchase.currency.toUpperCase()) {
+      throw new BadRequestException(
+        "Verified Cryptomus currency does not match the purchase.",
+      );
+    }
+
+    if (
+      purchase.paymentReference &&
+      orderId &&
+      purchase.paymentReference !== orderId
+    ) {
+      throw new BadRequestException(
+        "Verified Cryptomus order_id does not match the purchase.",
+      );
+    }
+
+    if (
+      purchase.paymentSessionId &&
+      uuid &&
+      purchase.paymentSessionId !== uuid
+    ) {
+      throw new BadRequestException(
+        "Verified Cryptomus uuid does not match the purchase.",
+      );
+    }
   }
 
   private getPaystackPlanEnvFieldName(planCode: string, billing: "monthly" | "annual") {

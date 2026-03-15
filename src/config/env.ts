@@ -19,6 +19,9 @@ export type AppEnv = {
   resetVerifiedTokenTtlMinutes: number;
   resendApiKey: string;
   resendFromEmail: string;
+  cryptomusMerchantId: string | null;
+  cryptomusPaymentApiKey: string | null;
+  cryptomusCurrency: string;
   paystackSecretKey: string | null;
   paystackWebhookSecret: string | null;
   paystackCurrency: string;
@@ -107,6 +110,12 @@ function parseEnv(): AppEnv {
     resetVerifiedTokenTtlMinutes: getNumberEnv("RESET_VERIFIED_TOKEN_TTL_MINUTES", 15),
     resendApiKey: getStringEnv("RESEND_API_KEY"),
     resendFromEmail: getStringEnv("RESEND_FROM_EMAIL"),
+    cryptomusMerchantId: getOptionalStringEnv("CRYPTOMUS_MERCHANT_ID"),
+    cryptomusPaymentApiKey: getOptionalStringEnv("CRYPTOMUS_PAYMENT_API_KEY"),
+    cryptomusCurrency: getStringEnv(
+      "CRYPTOMUS_CURRENCY",
+      getStringEnv("PAYSTACK_CURRENCY", "USD"),
+    ).toUpperCase(),
     paystackSecretKey: getOptionalStringEnv("PAYSTACK_SECRET_KEY"),
     paystackWebhookSecret: getOptionalStringEnv("PAYSTACK_WEBHOOK_SECRET"),
     paystackCurrency: getStringEnv("PAYSTACK_CURRENCY", "USD").toUpperCase(),

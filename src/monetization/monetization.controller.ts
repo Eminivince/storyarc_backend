@@ -48,6 +48,7 @@ export class MonetizationController {
     return this.monetizationService.createCheckoutSession(
       request.auth!.userId,
       parseCreateCheckoutSessionBody(body),
+      request,
     );
   }
 
@@ -135,5 +136,15 @@ export class PaystackWebhookController {
     @RawBody() rawBody: Buffer | undefined,
   ) {
     return this.monetizationService.handlePaystackWebhook(rawBody, signature);
+  }
+}
+
+@Controller("monetization/cryptomus")
+export class CryptomusWebhookController {
+  constructor(private readonly monetizationService: MonetizationService) {}
+
+  @Post("webhook")
+  async handleWebhook(@RawBody() rawBody: Buffer | undefined) {
+    return this.monetizationService.handleCryptomusWebhook(rawBody);
   }
 }

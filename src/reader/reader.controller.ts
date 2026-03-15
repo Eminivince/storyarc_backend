@@ -18,12 +18,8 @@ import {
   parseCreateCommentBody,
   parseCreateBookmarkBody,
   parseCreateReadingListBody,
-  parseStoryCatalogLimitQuery,
-  parseStoryCatalogOffsetQuery,
   parseReviewLimitQuery,
   parseReviewSortQuery,
-  parseStoryRankingKindQuery,
-  parseStoryRankingLimitQuery,
   parseUpsertReviewBody,
   parseUpdateCommentBody,
   parseUpdateReadingListBody,
@@ -31,15 +27,11 @@ import {
   parseUpdateReadingProgressBody,
 } from "./reader.schemas";
 import { ReaderService } from "./reader.service";
-import { StoryRankingsService } from "./story-rankings.service";
 
 @Controller("reader")
 @UseGuards(AccessTokenGuard)
 export class ReaderController {
-  constructor(
-    private readonly readerService: ReaderService,
-    private readonly storyRankingsService: StoryRankingsService,
-  ) {}
+  constructor(private readonly readerService: ReaderService) {}
 
   @Get("dashboard")
   async getDashboard(@Req() request: AuthenticatedRequest) {
@@ -49,46 +41,6 @@ export class ReaderController {
   @Get("following")
   async getFollowingFeed(@Req() request: AuthenticatedRequest) {
     return this.readerService.getFollowingFeed(request.auth!.userId);
-  }
-
-  @Get("rankings")
-  async getStoryRankings(
-    @Query("genre") genre: string | undefined,
-    @Query("kind") kind: string | undefined,
-    @Query("limit") limit: string | undefined,
-  ) {
-    return this.storyRankingsService.getStoryRankings({
-      genre: genre?.trim() || null,
-      kind: parseStoryRankingKindQuery(kind),
-      limit: parseStoryRankingLimitQuery(limit),
-    });
-  }
-
-  @Get("stories")
-  async listStories(
-    @Query("q") query: string | undefined,
-    @Query("genre") genre: string | undefined,
-    @Query("limit") limit: string | undefined,
-    @Query("offset") offset: string | undefined,
-  ) {
-    return this.readerService.listStories({
-      genre,
-      limit: parseStoryCatalogLimitQuery(limit),
-      offset: parseStoryCatalogOffsetQuery(offset),
-      query,
-    });
-  }
-
-  @Get("search")
-  async search(
-    @Query("q") query: string | undefined,
-    @Query("limit") limit: string | undefined,
-    @Query("offset") offset: string | undefined,
-  ) {
-    return this.readerService.search(query, {
-      limit: parseStoryCatalogLimitQuery(limit),
-      offset: parseStoryCatalogOffsetQuery(offset),
-    });
   }
 
   @Get("stories/:storySlug")
