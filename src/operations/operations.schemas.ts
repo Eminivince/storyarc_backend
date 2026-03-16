@@ -11,6 +11,8 @@ import {
 
 type RawRecord = Record<string, unknown>;
 
+const ADMIN_LIST_MAX_LIMIT = 500;
+
 function getObjectBody(body: unknown): RawRecord {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     throw new BadRequestException("Request body must be a JSON object.");
@@ -169,6 +171,36 @@ function getEnumValue<T extends string>(
   }
 
   return value as T;
+}
+
+export function parseAdminListLimitQuery(value: string | undefined) {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > ADMIN_LIST_MAX_LIMIT) {
+    throw new BadRequestException(
+      `limit must be an integer between 1 and ${ADMIN_LIST_MAX_LIMIT}.`,
+    );
+  }
+
+  return parsed;
+}
+
+export function parseAdminListOffsetQuery(value: string | undefined) {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 10_000) {
+    throw new BadRequestException("offset must be an integer between 0 and 10000.");
+  }
+
+  return parsed;
 }
 
 export function parseCreateContentReportBody(body: unknown) {

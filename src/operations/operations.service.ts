@@ -135,6 +135,13 @@ const supportHelpCenterActions = [
   },
 ] as const;
 
+const ADMIN_LIST_DEFAULT_LIMIT = 200;
+
+type AdminListPagination = {
+  limit?: number | null;
+  offset?: number | null;
+};
+
 type DefaultAdminSetting = {
   description: string;
   enabled: boolean;
@@ -1396,9 +1403,14 @@ export class OperationsService {
     };
   }
 
-  async listAdminUsers(adminUserId: string) {
+  async listAdminUsers(
+    adminUserId: string,
+    pagination: AdminListPagination = {},
+  ) {
     await this.requireAdmin(adminUserId);
 
+    const limit = this.resolveAdminListLimit(pagination.limit);
+    const offset = pagination.offset ?? 0;
     const users = await this.prisma.user.findMany({
       include: {
         profile: true,
@@ -1406,10 +1418,17 @@ export class OperationsService {
       orderBy: {
         createdAt: "desc",
       },
+      skip: offset,
+      take: limit + 1,
     });
+    const hasMore = users.length > limit;
+    const slicedUsers = hasMore ? users.slice(0, limit) : users;
 
     return {
-      users: await Promise.all(users.map((user) => this.mapAdminUserSummary(user))),
+      users: await Promise.all(
+        slicedUsers.map((user) => this.mapAdminUserSummary(user)),
+      ),
+      pageInfo: this.buildAdminPageInfo(limit, offset, hasMore),
     };
   }
 
@@ -1596,9 +1615,14 @@ export class OperationsService {
     };
   }
 
-  async listAdminReports(adminUserId: string) {
+  async listAdminReports(
+    adminUserId: string,
+    pagination: AdminListPagination = {},
+  ) {
     await this.requireAdmin(adminUserId);
 
+    const limit = this.resolveAdminListLimit(pagination.limit);
+    const offset = pagination.offset ?? 0;
     const reports = await this.prisma.contentReport.findMany({
       include: {
         reporter: {
@@ -1612,12 +1636,17 @@ export class OperationsService {
       orderBy: {
         createdAt: "desc",
       },
+      skip: offset,
+      take: limit + 1,
     });
+    const hasMore = reports.length > limit;
+    const slicedReports = hasMore ? reports.slice(0, limit) : reports;
 
     return {
-      reports: reports.map((report) =>
+      reports: slicedReports.map((report) =>
         this.mapReport(report, report.story, report.chapter, report.reporter),
       ),
+      pageInfo: this.buildAdminPageInfo(limit, offset, hasMore),
     };
   }
 
@@ -1689,9 +1718,14 @@ export class OperationsService {
     };
   }
 
-  async listAdminComments(adminUserId: string) {
+  async listAdminComments(
+    adminUserId: string,
+    pagination: AdminListPagination = {},
+  ) {
     await this.requireAdmin(adminUserId);
 
+    const limit = this.resolveAdminListLimit(pagination.limit);
+    const offset = pagination.offset ?? 0;
     const comments = await this.prisma.comment.findMany({
       include: {
         chapter: true,
@@ -1714,19 +1748,28 @@ export class OperationsService {
       orderBy: {
         createdAt: "desc",
       },
-      take: 200,
+      skip: offset,
+      take: limit + 1,
     });
+    const hasMore = comments.length > limit;
+    const slicedComments = hasMore ? comments.slice(0, limit) : comments;
 
     return {
-      comments: comments.map((comment) => this.mapAdminComment(comment)),
+      comments: slicedComments.map((comment) => this.mapAdminComment(comment)),
+      pageInfo: this.buildAdminPageInfo(limit, offset, hasMore),
       summary: {
-        deletedCount: comments.filter((comment) => comment.status === CommentStatus.DELETED)
-          .length,
-        hiddenCount: comments.filter((comment) => comment.status === CommentStatus.HIDDEN)
-          .length,
-        replyCount: comments.filter((comment) => Boolean(comment.parentCommentId)).length,
-        visibleCount: comments.filter((comment) => comment.status === CommentStatus.VISIBLE)
-          .length,
+        deletedCount: slicedComments.filter(
+          (comment) => comment.status === CommentStatus.DELETED,
+        ).length,
+        hiddenCount: slicedComments.filter(
+          (comment) => comment.status === CommentStatus.HIDDEN,
+        ).length,
+        replyCount: slicedComments.filter((comment) =>
+          Boolean(comment.parentCommentId),
+        ).length,
+        visibleCount: slicedComments.filter(
+          (comment) => comment.status === CommentStatus.VISIBLE,
+        ).length,
       },
     };
   }
@@ -1820,9 +1863,14 @@ export class OperationsService {
     };
   }
 
-  async listAdminReviews(adminUserId: string) {
+  async listAdminReviews(
+    adminUserId: string,
+    pagination: AdminListPagination = {},
+  ) {
     await this.requireAdmin(adminUserId);
 
+    const limit = this.resolveAdminListLimit(pagination.limit);
+    const offset = pagination.offset ?? 0;
     const reviews = await this.prisma.review.findMany({
       include: {
         story: true,
@@ -1835,19 +1883,27 @@ export class OperationsService {
       orderBy: {
         createdAt: "desc",
       },
-      take: 200,
+      skip: offset,
+      take: limit + 1,
     });
+    const hasMore = reviews.length > limit;
+    const slicedReviews = hasMore ? reviews.slice(0, limit) : reviews;
 
     return {
-      reviews: reviews.map((review) => this.mapAdminReview(review)),
+      reviews: slicedReviews.map((review) => this.mapAdminReview(review)),
+      pageInfo: this.buildAdminPageInfo(limit, offset, hasMore),
       summary: {
-        deletedCount: reviews.filter((review) => review.status === ReviewStatus.DELETED)
+        deletedCount: slicedReviews.filter(
+          (review) => review.status === ReviewStatus.DELETED,
+        ).length,
+        hiddenCount: slicedReviews.filter(
+          (review) => review.status === ReviewStatus.HIDDEN,
+        ).length,
+        spoilerCount: slicedReviews.filter((review) => review.containsSpoilers)
           .length,
-        hiddenCount: reviews.filter((review) => review.status === ReviewStatus.HIDDEN)
-          .length,
-        spoilerCount: reviews.filter((review) => review.containsSpoilers).length,
-        visibleCount: reviews.filter((review) => review.status === ReviewStatus.VISIBLE)
-          .length,
+        visibleCount: slicedReviews.filter(
+          (review) => review.status === ReviewStatus.VISIBLE,
+        ).length,
       },
     };
   }
@@ -3590,6 +3646,19 @@ export class OperationsService {
       hour: "numeric",
       minute: "2-digit",
     });
+  }
+
+  private resolveAdminListLimit(limit?: number | null) {
+    return limit ?? ADMIN_LIST_DEFAULT_LIMIT;
+  }
+
+  private buildAdminPageInfo(limit: number, offset: number, hasMore: boolean) {
+    return {
+      hasMore,
+      limit,
+      nextOffset: hasMore ? offset + limit : null,
+      offset,
+    };
   }
 
   private formatRelativeDate(value: Date) {

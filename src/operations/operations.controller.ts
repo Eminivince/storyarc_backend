@@ -6,6 +6,7 @@ import {
   Patch,
   Post,
   Put,
+  Query,
   Req,
   UseGuards,
 } from "@nestjs/common";
@@ -26,6 +27,8 @@ import {
   parseResolveReportBody,
   parseSupportMessageBody,
   parseUpdateAdminUserBody,
+  parseAdminListLimitQuery,
+  parseAdminListOffsetQuery,
 } from "./operations.schemas";
 import { OperationsService } from "./operations.service";
 
@@ -212,8 +215,15 @@ export class OperationsController {
   }
 
   @Get("admin/users")
-  async getAdminUsers(@Req() request: AuthenticatedRequest) {
-    return this.operationsService.listAdminUsers(request.auth!.userId);
+  async getAdminUsers(
+    @Query("limit") limit: string | undefined,
+    @Query("offset") offset: string | undefined,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.operationsService.listAdminUsers(request.auth!.userId, {
+      limit: parseAdminListLimitQuery(limit),
+      offset: parseAdminListOffsetQuery(offset),
+    });
   }
 
   @Get("admin/users/:userId")
@@ -267,8 +277,15 @@ export class OperationsController {
   }
 
   @Get("admin/reports")
-  async getAdminReports(@Req() request: AuthenticatedRequest) {
-    return this.operationsService.listAdminReports(request.auth!.userId);
+  async getAdminReports(
+    @Query("limit") limit: string | undefined,
+    @Query("offset") offset: string | undefined,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.operationsService.listAdminReports(request.auth!.userId, {
+      limit: parseAdminListLimitQuery(limit),
+      offset: parseAdminListOffsetQuery(offset),
+    });
   }
 
   @Patch("admin/reports/:reportId")
@@ -285,8 +302,15 @@ export class OperationsController {
   }
 
   @Get("admin/comments")
-  async getAdminComments(@Req() request: AuthenticatedRequest) {
-    return this.operationsService.listAdminComments(request.auth!.userId);
+  async getAdminComments(
+    @Query("limit") limit: string | undefined,
+    @Query("offset") offset: string | undefined,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.operationsService.listAdminComments(request.auth!.userId, {
+      limit: parseAdminListLimitQuery(limit),
+      offset: parseAdminListOffsetQuery(offset),
+    });
   }
 
   @Patch("admin/comments/:commentId")
@@ -303,8 +327,15 @@ export class OperationsController {
   }
 
   @Get("admin/reviews")
-  async getAdminReviews(@Req() request: AuthenticatedRequest) {
-    return this.operationsService.listAdminReviews(request.auth!.userId);
+  async getAdminReviews(
+    @Query("limit") limit: string | undefined,
+    @Query("offset") offset: string | undefined,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.operationsService.listAdminReviews(request.auth!.userId, {
+      limit: parseAdminListLimitQuery(limit),
+      offset: parseAdminListOffsetQuery(offset),
+    });
   }
 
   @Patch("admin/reviews/:reviewId")

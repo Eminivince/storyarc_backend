@@ -274,12 +274,12 @@ type StoryRatingEligibility = {
 
 type RecommendationSignalSnapshot = {
   authorFollows: Array<{ targetUserId: string | null }>;
-  bookmarks: Array<{ storyId: string }>;
-  follows: Array<{ storyId: string }>;
-  ratings: Array<{ rating: number; storyId: string }>;
-  readingListItems: Array<{ storyId: string }>;
-  readingProgress: Array<{ progressPercent: number; storyId: string }>;
-  reviews: Array<{ rating: number; storyId: string }>;
+  bookmarks: Array<{ storyId: string | null }>;
+  follows: Array<{ storyId: string | null }>;
+  ratings: Array<{ rating: number; storyId: string | null }>;
+  readingListItems: Array<{ storyId: string | null }>;
+  readingProgress: Array<{ progressPercent: number; storyId: string | null }>;
+  reviews: Array<{ rating: number; storyId: string | null }>;
   selectedGenres: string[];
 };
 
