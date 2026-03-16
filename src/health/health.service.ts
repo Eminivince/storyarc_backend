@@ -15,7 +15,7 @@ export class HealthService {
     let redisStatus = "unknown";
 
     try {
-      await this.prisma.$runCommandRaw({ ping: 1 });
+      await this.prisma.$queryRaw`SELECT 1`;
       databaseStatus = "up";
       await this.redis.ping();
       redisStatus = this.redis.isUsingFallback() ? "degraded" : "up";

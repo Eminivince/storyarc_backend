@@ -11,6 +11,7 @@ import { createHash, randomBytes, randomInt } from "crypto";
 import { env } from "../config/env";
 import { PrismaService } from "../database/prisma.service";
 import { RedisService } from "../redis/redis.service";
+import { UserStatus } from "@prisma/client";
 import {
   AppUserRole,
   CreatorApplicationSnapshot,
@@ -32,6 +33,11 @@ import {
   VerifyResetCodeInput,
 } from "./auth.types";
 import { ResendEmailService } from "./resend-email.service";
+import {
+  buildSessionCacheKey,
+  CachedSessionLookup,
+  getSessionCacheTtlSeconds,
+} from "./session-cache";
 
 const HASH_ROUNDS = 12;
 const GOOGLE_OAUTH_STATE_TTL_SECONDS = 10 * 60;
@@ -43,6 +49,7 @@ type AuthUserSnapshot = {
   id: string;
   email: string;
   role: AppUserRole;
+  status: UserStatus;
   profile: UserProfileSnapshot | null;
   creatorApplication?: CreatorApplicationSnapshot | null;
 };
@@ -304,6 +311,7 @@ export class AuthService {
         id: user.id,
         email: user.email,
         role: user.role,
+        status: user.status,
         creatorApplication: null,
         profile: user.profile,
       },
@@ -348,6 +356,7 @@ export class AuthService {
         id: user.id,
         email: user.email,
         role: user.role,
+        status: user.status,
         creatorApplication: user.creatorApplication,
         profile: user.profile,
       },
@@ -365,6 +374,7 @@ export class AuthService {
         revokedAt: new Date(),
       },
     });
+    await this.clearSessionCache(sessionId);
 
     return {
       message: "Signed out successfully.",
@@ -432,6 +442,7 @@ export class AuthService {
         creatorApplication: session.user.creatorApplication,
         email: session.user.email,
         role: session.user.role,
+        status: session.user.status,
         profile: session.user.profile,
       },
       session.id,
@@ -578,6 +589,14 @@ export class AuthService {
 
     const passwordHash = await hash(input.password, HASH_ROUNDS);
     const now = new Date();
+    const sessions = await this.prisma.session.findMany({
+      where: {
+        userId: verifiedReset.userId,
+      },
+      select: {
+        id: true,
+      },
+    });
 
     await this.prisma.$transaction([
       this.prisma.credential.updateMany({
@@ -603,6 +622,7 @@ export class AuthService {
     ]);
 
     await this.redis.delete(redisKey);
+    await this.clearSessionCacheBatch(sessions.map((session) => session.id));
 
     return {
       message: "Password updated successfully.",
@@ -635,6 +655,7 @@ export class AuthService {
         id: user.id,
         email: user.email,
         role: user.role,
+        status: user.status,
         profile: user.profile,
       }),
     };
@@ -756,6 +777,7 @@ export class AuthService {
         id: updatedUser.id,
         profile: updatedUser.profile,
         role: updatedUser.role,
+        status: updatedUser.status,
       }),
       user: this.mapUser({
         creatorApplication: updatedUser.creatorApplication,
@@ -763,6 +785,7 @@ export class AuthService {
         id: updatedUser.id,
         profile: updatedUser.profile,
         role: updatedUser.role,
+        status: updatedUser.status,
       }),
     };
   }
@@ -805,6 +828,7 @@ export class AuthService {
       where: { id: sessionId },
       data: { revokedAt: new Date() },
     });
+    await this.clearSessionCache(sessionId);
 
     return {
       message: "Session revoked.",
@@ -982,6 +1006,7 @@ export class AuthService {
           creatorApplication: createdUser.creatorApplication,
           email: createdUser.email,
           role: createdUser.role,
+          status: createdUser.status,
           profile: createdUser.profile,
         },
         requestMeta,
@@ -1052,6 +1077,7 @@ export class AuthService {
         creatorApplication: syncedUser.creatorApplication,
         email: syncedUser.email,
         role: syncedUser.role,
+        status: syncedUser.status,
         profile: syncedUser.profile,
       },
       requestMeta,
@@ -1215,6 +1241,13 @@ export class AuthService {
         ipAddress: requestMeta.ipAddress,
       },
     });
+    await this.cacheSessionLookup({
+      accessTokenExpiresAt,
+      revokedAt: null,
+      sessionId,
+      userId: user.id,
+      userStatus: user.status,
+    });
 
     return {
       user: this.mapUser(user),
@@ -1242,6 +1275,43 @@ export class AuthService {
       displayName: user.profile?.displayName ?? "TaleStead User",
       onboarding: this.mapOnboarding(user.profile),
     };
+  }
+
+  private async cacheSessionLookup(input: {
+    accessTokenExpiresAt: Date;
+    revokedAt: Date | null;
+    sessionId: string;
+    userId: string;
+    userStatus: UserStatus;
+  }) {
+    const ttlSeconds = getSessionCacheTtlSeconds(input.accessTokenExpiresAt);
+
+    if (!ttlSeconds) {
+      return;
+    }
+
+    await this.redis.setJson(
+      buildSessionCacheKey(input.sessionId),
+      {
+        accessTokenExpiresAt: input.accessTokenExpiresAt.toISOString(),
+        revokedAt: input.revokedAt ? input.revokedAt.toISOString() : null,
+        userId: input.userId,
+        userStatus: input.userStatus,
+      } satisfies CachedSessionLookup,
+      ttlSeconds,
+    );
+  }
+
+  private async clearSessionCache(sessionId: string) {
+    await this.redis.delete(buildSessionCacheKey(sessionId));
+  }
+
+  private async clearSessionCacheBatch(sessionIds: string[]) {
+    await Promise.all(
+      sessionIds.map((sessionId) =>
+        this.redis.delete(buildSessionCacheKey(sessionId)),
+      ),
+    );
   }
 
   private mapAccountProfile(user: AuthUserSnapshot) {

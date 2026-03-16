@@ -7,14 +7,21 @@ import {
 import { JwtService } from "@nestjs/jwt";
 import { env } from "../../config/env";
 import { PrismaService } from "../../database/prisma.service";
+import { RedisService } from "../../redis/redis.service";
 import { AuthenticatedRequest } from "../types/request-with-auth.type";
 import { TokenPayload } from "../../auth/auth.types";
+import {
+  buildSessionCacheKey,
+  CachedSessionLookup,
+  getSessionCacheTtlSeconds,
+} from "../../auth/session-cache";
 
 @Injectable()
 export class AccessTokenGuard implements CanActivate {
   constructor(
     private readonly jwtService: JwtService,
     private readonly prisma: PrismaService,
+    private readonly redis: RedisService,
   ) {}
 
   async canActivate(context: ExecutionContext) {
@@ -45,6 +52,31 @@ export class AccessTokenGuard implements CanActivate {
       throw new UnauthorizedException("Invalid access token type.");
     }
 
+    const cacheKey = buildSessionCacheKey(payload.sessionId);
+    const cachedSession = await this.redis.getJson<CachedSessionLookup>(cacheKey);
+
+    if (cachedSession) {
+      const accessExpiresAt = new Date(cachedSession.accessTokenExpiresAt);
+      const isValid =
+        cachedSession.userId === payload.sub &&
+        cachedSession.userStatus === "ACTIVE" &&
+        !cachedSession.revokedAt &&
+        accessExpiresAt.getTime() > Date.now();
+
+      if (!isValid) {
+        await this.redis.delete(cacheKey);
+        throw new UnauthorizedException("Session is no longer active.");
+      }
+
+      request.auth = {
+        userId: payload.sub,
+        sessionId: payload.sessionId,
+        role: payload.role,
+      };
+
+      return true;
+    }
+
     const session = await this.prisma.session.findUnique({
       where: {
         id: payload.sessionId,
@@ -66,6 +98,21 @@ export class AccessTokenGuard implements CanActivate {
       session.user.status !== "ACTIVE"
     ) {
       throw new UnauthorizedException("Session is no longer active.");
+    }
+
+    const ttlSeconds = getSessionCacheTtlSeconds(session.accessTokenExpiresAt);
+
+    if (ttlSeconds) {
+      await this.redis.setJson(
+        cacheKey,
+        {
+          accessTokenExpiresAt: session.accessTokenExpiresAt.toISOString(),
+          revokedAt: null,
+          userId: session.userId,
+          userStatus: session.user.status,
+        } satisfies CachedSessionLookup,
+        ttlSeconds,
+      );
     }
 
     request.auth = {

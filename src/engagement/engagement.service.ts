@@ -19,12 +19,14 @@ import {
 } from "@prisma/client";
 import { ResendEmailService } from "../auth/resend-email.service";
 import { PrismaService } from "../database/prisma.service";
+import { RedisService } from "../redis/redis.service";
 import { isStoryLive } from "../utils/book-admin";
 
 const DAILY_CHECK_IN_REWARD = 50;
 const REFERRAL_SHARE_REWARD = 20;
 const WELCOME_NOTIFICATION_IDEMPOTENCY = "welcome";
 const LEADERBOARD_TABS = ["Weekly", "Monthly", "All Time"];
+const ENGAGEMENT_OVERVIEW_CACHE_TTL_SECONDS = 15 * 60;
 
 const missionCatalog = [
   {
@@ -160,6 +162,40 @@ type ActiveUserWithProfile = Prisma.UserGetPayload<{
   };
 }>;
 
+type EngagementOverviewResponse = {
+  claimedMissionIds: string[];
+  currentReading: Record<string, unknown> | null;
+  missions: Array<Record<string, unknown>>;
+  notificationPreferences: Record<string, boolean>;
+  notifications: {
+    items: Array<Record<string, unknown>>;
+    unreadCount: number;
+  };
+  profile: Record<string, unknown> | null;
+  profileStats: Array<{ label: string; value: string }>;
+  readingList: Array<Record<string, unknown>>;
+  recentActivity: Array<Record<string, unknown>>;
+  referrals: {
+    code: string;
+    history: Array<Record<string, unknown>>;
+    mobileCode: string;
+    rewardLabel: string;
+    totalEarned: number;
+  };
+  rewards: {
+    checkedInToday: boolean;
+    points: number;
+    streakDays: number;
+    weeklyEarned: number;
+  };
+  rewardCalendar: {
+    completedDays: number[];
+    month: string;
+    today: number;
+  };
+  streakRewards: Array<{ label: string; reward: string; unlocked: boolean }>;
+};
+
 @Injectable()
 export class EngagementService {
   private readonly logger = new Logger(EngagementService.name);
@@ -167,6 +203,7 @@ export class EngagementService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly resendEmailService: ResendEmailService,
+    private readonly redisService: RedisService,
   ) {}
 
   async getOverview(userId: string) {
@@ -175,6 +212,13 @@ export class EngagementService {
     });
 
     await this.ensureDefaults(user);
+    const cacheKey = this.getOverviewCacheKey(userId);
+    const cachedOverview =
+      await this.redisService.getJson<EngagementOverviewResponse>(cacheKey);
+
+    if (cachedOverview) {
+      return cachedOverview;
+    }
 
     const [
       accountSummary,
@@ -255,7 +299,7 @@ export class EngagementService {
       },
     });
 
-    return {
+    const response: EngagementOverviewResponse = {
       claimedMissionIds: missions
         .filter((mission) => mission.claimed)
         .map((mission) => mission.id),
@@ -308,6 +352,14 @@ export class EngagementService {
         },
       ],
     };
+
+    await this.redisService.setJson(
+      cacheKey,
+      response,
+      ENGAGEMENT_OVERVIEW_CACHE_TTL_SECONDS,
+    );
+
+    return response;
   }
 
   async claimDailyCheckIn(userId: string) {
@@ -441,6 +493,8 @@ export class EngagementService {
       });
     }
 
+    await this.clearOverviewCache(userId);
+
     return {
       message: "Daily check-in claimed.",
       overview: await this.getOverview(userId),
@@ -560,6 +614,8 @@ export class EngagementService {
       title: "Mission completed",
     });
 
+    await this.clearOverviewCache(userId);
+
     return {
       message: `${missionDefinition.title} claimed.`,
       overview: await this.getOverview(userId),
@@ -641,6 +697,8 @@ export class EngagementService {
       body: `Your TaleStead referral code was shared via ${input.channel}. ${REFERRAL_SHARE_REWARD} Arc Points were added to your rewards balance.`,
       title: "Referral activity recorded",
     });
+
+    await this.clearOverviewCache(userId);
 
     return {
       message: `Referral shared via ${input.channel}.`,
@@ -960,6 +1018,8 @@ export class EngagementService {
       update: input,
     });
 
+    await this.clearOverviewCache(userId);
+
     return {
       message: "Notification settings saved.",
       notificationPreferences: this.mapNotificationPreference(preferences),
@@ -987,6 +1047,8 @@ export class EngagementService {
       },
     });
 
+    await this.clearOverviewCache(userId);
+
     return {
       notification: this.mapAppNotification(updated),
     };
@@ -1002,6 +1064,8 @@ export class EngagementService {
         readAt: new Date(),
       },
     });
+
+    await this.clearOverviewCache(userId);
 
     return {
       message: "All notifications marked as read.",
@@ -2655,6 +2719,14 @@ export class EngagementService {
       month: "long",
       year: "numeric",
     });
+  }
+
+  private getOverviewCacheKey(userId: string) {
+    return `engagement:overview:${userId}`;
+  }
+
+  private async clearOverviewCache(userId: string) {
+    await this.redisService.delete(this.getOverviewCacheKey(userId));
   }
 
   private formatCompactNumber(value: number) {

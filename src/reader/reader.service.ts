@@ -18,6 +18,7 @@ import {
 import { PrismaService } from "../database/prisma.service";
 import { CreatorAnalyticsService } from "../analytics/creator-analytics.service";
 import { EngagementService } from "../engagement/engagement.service";
+import { RedisService } from "../redis/redis.service";
 import {
   ChapterAccessState,
   RequiredPreviousChapter,
@@ -114,6 +115,24 @@ const publishedStoryCatalogSelect = {
 type PublishedStoryCatalogRecord = Prisma.StoryGetPayload<{
   select: typeof publishedStoryCatalogSelect;
 }>;
+
+type CachedPublishedChapterRecord = {
+  chapterNumber: number;
+  publishedAt: number;
+  slug: string;
+  title: string;
+};
+
+type CachedPublishedStoryCatalogRecord = Omit<
+  PublishedStoryCatalogRecord,
+  "createdAt" | "publishedAt" | "latestChapterAt" | "liveAt" | "publishedChapters"
+> & {
+  createdAt: number;
+  publishedAt: number | null;
+  latestChapterAt: number | null;
+  liveAt: number | null;
+  publishedChapters: CachedPublishedChapterRecord[];
+};
 
 type StoryCardSource = {
   adminControl?: {
@@ -253,6 +272,21 @@ type StoryRatingEligibility = {
   ratingEligibilityMessage: string | null;
 };
 
+type RecommendationSignalSnapshot = {
+  authorFollows: Array<{ targetUserId: string | null }>;
+  bookmarks: Array<{ storyId: string }>;
+  follows: Array<{ storyId: string }>;
+  ratings: Array<{ rating: number; storyId: string }>;
+  readingListItems: Array<{ storyId: string }>;
+  readingProgress: Array<{ progressPercent: number; storyId: string }>;
+  reviews: Array<{ rating: number; storyId: string }>;
+  selectedGenres: string[];
+};
+
+const RECOMMENDATION_SIGNAL_CACHE_TTL_SECONDS = 45 * 60;
+const HOME_CATALOG_CACHE_TTL_SECONDS = 5 * 60;
+const PUBLISHED_STORY_METADATA_CACHE_TTL_SECONDS = 60 * 60;
+
 const homeCreatorBenefits = [
   {
     title: "Creator Studio",
@@ -278,12 +312,19 @@ export class ReaderService {
     private readonly monetizationService: MonetizationService,
     private readonly engagementService: EngagementService,
     private readonly creatorAnalyticsService: CreatorAnalyticsService,
+    private readonly redisService: RedisService,
   ) {}
 
   async getHomeCatalog() {
-    const stories = await this.getPublishedStories({
-      limit: 24,
-    });
+    const stories = await this.getPublishedStories(
+      {
+        limit: 24,
+      },
+      {
+        cacheKeyLabel: "home",
+        cacheTtlSeconds: HOME_CATALOG_CACHE_TTL_SECONDS,
+      },
+    );
 
     if (stories.length === 0) {
       return {
@@ -309,7 +350,13 @@ export class ReaderService {
 
   async getDashboard(userId: string) {
     const [stories, continueReading] = await Promise.all([
-      this.getPublishedStories(),
+      this.getPublishedStories(
+        {},
+        {
+          cacheKeyLabel: "dashboard",
+          cacheTtlSeconds: HOME_CATALOG_CACHE_TTL_SECONDS,
+        },
+      ),
       this.getContinueReading(userId),
     ]);
 
@@ -2312,13 +2359,36 @@ export class ReaderService {
       }));
   }
 
-  private async getPublishedStories(input: {
-    genre?: string;
-    limit?: number | null;
-    offset?: number | null;
-    query?: string;
-  } = {}): Promise<PublishedStoryCatalogRecord[]> {
+  private async getPublishedStories(
+    input: {
+      genre?: string;
+      limit?: number | null;
+      offset?: number | null;
+      query?: string;
+    } = {},
+    options?: {
+      cacheKeyLabel?: string;
+      cacheTtlSeconds?: number;
+    },
+  ): Promise<PublishedStoryCatalogRecord[]> {
+    const cacheKeyLabel = options?.cacheKeyLabel ?? "metadata";
+    const cacheTtlSeconds =
+      options?.cacheTtlSeconds ?? PUBLISHED_STORY_METADATA_CACHE_TTL_SECONDS;
+    const cacheKey = this.getPublishedStoriesCacheKey(input, cacheKeyLabel);
+    const cachedStories =
+      await this.redisService.getJson<CachedPublishedStoryCatalogRecord[]>(cacheKey);
+
+    if (cachedStories) {
+      return this.hydratePublishedStoryCatalog(cachedStories);
+    }
+
     const { stories } = await this.queryPublishedStories(input);
+
+    await this.redisService.setJson(
+      cacheKey,
+      this.serializePublishedStoryCatalog(stories),
+      cacheTtlSeconds,
+    );
 
     return stories;
   }
@@ -2359,6 +2429,59 @@ export class ReaderService {
       },
       stories: hasMore && limit !== null ? stories.slice(0, limit) : stories,
     };
+  }
+
+  private getPublishedStoriesCacheKey(
+    input: {
+      genre?: string;
+      limit?: number | null;
+      offset?: number | null;
+      query?: string;
+    },
+    cacheKeyLabel: string,
+  ) {
+    const normalizedGenre = this.normalizeOptionalQuery(input.genre) ?? "all";
+    const normalizedQuery = this.normalizeOptionalQuery(input.query) ?? "all";
+    const limit = input.limit ?? "all";
+    const offset = input.offset ?? 0;
+
+    return `reader:published-stories:${cacheKeyLabel}:${normalizedGenre}:${normalizedQuery}:${limit}:${offset}`;
+  }
+
+  private serializePublishedStoryCatalog(
+    stories: PublishedStoryCatalogRecord[],
+  ): CachedPublishedStoryCatalogRecord[] {
+    return stories.map((story) => ({
+      ...story,
+      createdAt: story.createdAt.getTime(),
+      latestChapterAt: story.latestChapterAt ? story.latestChapterAt.getTime() : null,
+      liveAt: story.liveAt ? story.liveAt.getTime() : null,
+      publishedAt: story.publishedAt ? story.publishedAt.getTime() : null,
+      publishedChapters: story.publishedChapters.map((chapter) => ({
+        chapterNumber: chapter.chapterNumber,
+        publishedAt: chapter.publishedAt.getTime(),
+        slug: chapter.slug,
+        title: chapter.title,
+      })),
+    }));
+  }
+
+  private hydratePublishedStoryCatalog(
+    stories: CachedPublishedStoryCatalogRecord[],
+  ): PublishedStoryCatalogRecord[] {
+    return stories.map((story) => ({
+      ...story,
+      createdAt: new Date(story.createdAt),
+      latestChapterAt: story.latestChapterAt ? new Date(story.latestChapterAt) : null,
+      liveAt: story.liveAt ? new Date(story.liveAt) : null,
+      publishedAt: story.publishedAt ? new Date(story.publishedAt) : null,
+      publishedChapters: story.publishedChapters.map((chapter) => ({
+        chapterNumber: chapter.chapterNumber,
+        publishedAt: new Date(chapter.publishedAt),
+        slug: chapter.slug,
+        title: chapter.title,
+      })),
+    }));
   }
 
   private async getRecommendedStoryCards(input: {
@@ -2417,159 +2540,108 @@ export class ReaderService {
     const storyById = new Map(
       input.stories.map((story) => [story.id, story] as const),
     );
-    const [
-      profile,
-      readingProgress,
+    const cacheKey = this.getRecommendationSignalsCacheKey(input.userId);
+    let signalSnapshot =
+      await this.redisService.getJson<RecommendationSignalSnapshot>(cacheKey);
+
+    if (!signalSnapshot) {
+      signalSnapshot = await this.loadRecommendationSignalSnapshot(input.userId);
+      await this.redisService.setJson(
+        cacheKey,
+        signalSnapshot,
+        RECOMMENDATION_SIGNAL_CACHE_TTL_SECONDS,
+      );
+    }
+
+    const {
+      authorFollows,
       bookmarks,
       follows,
-      authorFollows,
       ratings,
-      reviews,
       readingListItems,
-    ] = await Promise.all([
-      this.prisma.profile.findUnique({
-        where: { userId: input.userId },
-        select: { selectedGenres: true },
-      }),
-      this.prisma.readingProgress.findMany({
-        where: {
-          userId: input.userId,
-        },
-        select: {
-          progressPercent: true,
-          storyId: true,
-        },
-      }),
-      this.prisma.bookmark.findMany({
-        where: {
-          userId: input.userId,
-        },
-        select: {
-          storyId: true,
-        },
-      }),
-      this.prisma.follow.findMany({
-        where: {
-          targetType: FollowTargetType.STORY,
-          userId: input.userId,
-        },
-        select: {
-          storyId: true,
-        },
-      }),
-      this.prisma.follow.findMany({
-        where: {
-          targetType: FollowTargetType.AUTHOR,
-          targetUserId: {
-            not: null,
-          },
-          userId: input.userId,
-        },
-        select: {
-          targetUserId: true,
-        },
-      }),
-      this.prisma.storyRating.findMany({
-        where: {
-          userId: input.userId,
-        },
-        select: {
-          rating: true,
-          storyId: true,
-        },
-      }),
-      this.prisma.review.findMany({
-        where: {
-          status: ReviewStatus.VISIBLE,
-          userId: input.userId,
-        },
-        select: {
-          rating: true,
-          storyId: true,
-        },
-      }),
-      this.prisma.readingListItem.findMany({
-        where: {
-          readingList: {
-            userId: input.userId,
-          },
-        },
-        select: {
-          storyId: true,
-        },
-      }),
-    ]);
-
-    const selectedGenres = profile?.selectedGenres ?? [];
+      readingProgress,
+      reviews,
+      selectedGenres,
+    } = signalSnapshot;
     const engagedStoryIds = new Set<string>();
     const seedStoryWeights = new Map<string, number>();
     const genreAffinity = new Map<string, number>();
     const tagAffinity = new Map<string, number>();
     const authorAffinity = new Map<string, number>();
 
-    const markStorySeen = (storyId: string | null | undefined) => {
-      if (!storyId || !storyById.has(storyId)) {
+    const applyStorySignal = (
+      storyId: string | null | undefined,
+      weight: number,
+    ) => {
+      if (!storyId) {
+        return;
+      }
+
+      const story = storyById.get(storyId);
+
+      if (!story) {
         return;
       }
 
       engagedStoryIds.add(storyId);
-    };
-    const addSeedStoryWeight = (storyId: string | null | undefined, amount: number) => {
-      if (!storyId || !storyById.has(storyId) || amount <= 0) {
+
+      if (weight <= 0) {
         return;
       }
 
-      engagedStoryIds.add(storyId);
-      this.addWeightedValue(seedStoryWeights, storyId, amount);
+      this.addWeightedValue(seedStoryWeights, storyId, weight);
+
+      for (const genreSlug of story.genreSlugs) {
+        this.addWeightedValue(
+          genreAffinity,
+          this.normalizeTerm(genreSlug),
+          weight * 1.45,
+        );
+      }
+
+      for (const tagSlug of story.tagSlugs) {
+        this.addWeightedValue(tagAffinity, this.normalizeTerm(tagSlug), weight);
+      }
+
+      if (story.authorId) {
+        this.addWeightedValue(authorAffinity, story.authorId, weight * 0.9);
+      }
     };
 
     for (const item of readingProgress) {
-      markStorySeen(item.storyId);
-      addSeedStoryWeight(
-        item.storyId,
+      const weight =
         item.progressPercent >= 90
           ? 3.8
           : item.progressPercent >= 65
             ? 3
             : item.progressPercent >= 35
               ? 2.2
-              : 1.2,
-      );
+              : 1.2;
+      applyStorySignal(item.storyId, weight);
     }
 
     for (const item of bookmarks) {
-      markStorySeen(item.storyId);
-      addSeedStoryWeight(item.storyId, 1.8);
+      applyStorySignal(item.storyId, 1.8);
     }
 
     for (const item of readingListItems) {
-      markStorySeen(item.storyId);
-      addSeedStoryWeight(item.storyId, 1.5);
+      applyStorySignal(item.storyId, 1.5);
     }
 
     for (const item of follows) {
-      markStorySeen(item.storyId);
-      addSeedStoryWeight(item.storyId, 2.6);
+      applyStorySignal(item.storyId, 2.6);
     }
 
     for (const item of ratings) {
-      markStorySeen(item.storyId);
-
-      if (item.rating >= 4) {
-        addSeedStoryWeight(item.storyId, 2.4 + (item.rating - 4) * 0.8);
-      } else if (item.rating === 3) {
-        addSeedStoryWeight(item.storyId, 1.4);
-      }
+      const weight =
+        item.rating >= 4 ? 2.4 + (item.rating - 4) * 0.8 : item.rating === 3 ? 1.4 : 0;
+      applyStorySignal(item.storyId, weight);
     }
 
     for (const item of reviews) {
-      markStorySeen(item.storyId);
-
-      if (item.rating >= 4) {
-        addSeedStoryWeight(item.storyId, 3 + (item.rating - 4) * 0.8);
-      } else if (item.rating === 3) {
-        addSeedStoryWeight(item.storyId, 1.8);
-      }
+      const weight =
+        item.rating >= 4 ? 3 + (item.rating - 4) * 0.8 : item.rating === 3 ? 1.8 : 0;
+      applyStorySignal(item.storyId, weight);
     }
 
     for (const selectedGenre of selectedGenres) {
@@ -2586,34 +2658,6 @@ export class ReaderService {
       }
 
       this.addWeightedValue(authorAffinity, authorFollow.targetUserId, 3.8);
-    }
-
-    for (const [storyId, weight] of seedStoryWeights.entries()) {
-      const story = storyById.get(storyId);
-
-      if (!story) {
-        continue;
-      }
-
-      for (const genreSlug of story.genreSlugs) {
-        this.addWeightedValue(
-          genreAffinity,
-          this.normalizeTerm(genreSlug),
-          weight * 1.45,
-        );
-      }
-
-      for (const tagSlug of story.tagSlugs) {
-        this.addWeightedValue(
-          tagAffinity,
-          this.normalizeTerm(tagSlug),
-          weight,
-        );
-      }
-
-      if (story.authorId) {
-        this.addWeightedValue(authorAffinity, story.authorId, weight * 0.9);
-      }
     }
 
     const collaborativeSeedEntries: Array<[string, number]> = [
@@ -2640,6 +2684,108 @@ export class ReaderService {
       sourceStory: input.sourceStory,
       selectedGenres,
       tagAffinity,
+    };
+  }
+
+  private getRecommendationSignalsCacheKey(userId: string) {
+    return `reader:recommendation-signals:${userId}`;
+  }
+
+  private async loadRecommendationSignalSnapshot(
+    userId: string,
+  ): Promise<RecommendationSignalSnapshot> {
+    const [
+      profile,
+      readingProgress,
+      bookmarks,
+      follows,
+      authorFollows,
+      ratings,
+      reviews,
+      readingListItems,
+    ] = await Promise.all([
+      this.prisma.profile.findUnique({
+        where: { userId },
+        select: { selectedGenres: true },
+      }),
+      this.prisma.readingProgress.findMany({
+        where: {
+          userId,
+        },
+        select: {
+          progressPercent: true,
+          storyId: true,
+        },
+      }),
+      this.prisma.bookmark.findMany({
+        where: {
+          userId,
+        },
+        select: {
+          storyId: true,
+        },
+      }),
+      this.prisma.follow.findMany({
+        where: {
+          targetType: FollowTargetType.STORY,
+          userId,
+        },
+        select: {
+          storyId: true,
+        },
+      }),
+      this.prisma.follow.findMany({
+        where: {
+          targetType: FollowTargetType.AUTHOR,
+          targetUserId: {
+            not: null,
+          },
+          userId,
+        },
+        select: {
+          targetUserId: true,
+        },
+      }),
+      this.prisma.storyRating.findMany({
+        where: {
+          userId,
+        },
+        select: {
+          rating: true,
+          storyId: true,
+        },
+      }),
+      this.prisma.review.findMany({
+        where: {
+          status: ReviewStatus.VISIBLE,
+          userId,
+        },
+        select: {
+          rating: true,
+          storyId: true,
+        },
+      }),
+      this.prisma.readingListItem.findMany({
+        where: {
+          readingList: {
+            userId,
+          },
+        },
+        select: {
+          storyId: true,
+        },
+      }),
+    ]);
+
+    return {
+      authorFollows,
+      bookmarks,
+      follows,
+      ratings,
+      readingListItems,
+      readingProgress,
+      reviews,
+      selectedGenres: profile?.selectedGenres ?? [],
     };
   }
 

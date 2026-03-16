@@ -22,6 +22,7 @@ import {
 import { AuthenticatedRequest } from "../common/types/request-with-auth.type";
 import { env } from "../config/env";
 import { PrismaService } from "../database/prisma.service";
+import { RedisService } from "../redis/redis.service";
 import {
   RequiredPreviousChapter,
   resolveChapterAccessState,
@@ -169,6 +170,36 @@ const PAYMENT_PROVIDER = {
 type CheckoutProvider =
   (typeof PAYMENT_PROVIDER)[keyof typeof PAYMENT_PROVIDER];
 
+type CheckoutProviderValue = "cryptomus" | "paystack";
+
+type MonetizationCatalogResponse = {
+  checkoutProvider: CheckoutProviderValue;
+  currency: string;
+  coinPackages: Array<{
+    code: string;
+    coins: number;
+    bonusCoins: number;
+    name: string;
+    priceCents: number;
+    totalCoins: number;
+  }>;
+  plans: Array<{
+    code: string;
+    description: string | null;
+    monthlyCoinGrant: number;
+    monthlyPriceCents: number;
+    name: string;
+    yearlyPriceCents: number | null;
+  }>;
+  gifts: Array<{
+    code: string;
+    coins: number;
+    description: string;
+    icon: string;
+    name: string;
+  }>;
+};
+
 type StoryAccessContext = {
   adminControl?: {
     defaultPremiumWindowHours: number;
@@ -266,6 +297,7 @@ const CRYPTOMUS_REFUNDED_STATUSES = new Set([
   "refund_paid",
   "refund_process",
 ]);
+const CATALOG_CACHE_TTL_SECONDS = 60 * 60;
 
 @Injectable()
 export class MonetizationService implements OnModuleInit {
@@ -275,7 +307,10 @@ export class MonetizationService implements OnModuleInit {
   private catalogBootstrapped = false;
   private catalogBootstrapPromise: Promise<void> | null = null;
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly redisService: RedisService,
+  ) {}
 
   async onModuleInit() {
     await this.cleanupLegacyStripeIndexes();
@@ -286,6 +321,14 @@ export class MonetizationService implements OnModuleInit {
   async getCatalog() {
     await this.ensureCatalogBootstrapped();
     const checkoutProvider = this.getCheckoutProviderValue();
+    const currency = this.getCheckoutCurrency();
+    const cacheKey = this.getCatalogCacheKey(checkoutProvider, currency);
+    const cachedCatalog =
+      await this.redisService.getJson<MonetizationCatalogResponse>(cacheKey);
+
+    if (cachedCatalog) {
+      return cachedCatalog;
+    }
 
     const [coinPackages, plans] = await Promise.all([
       this.prisma.coinPackage.findMany({
@@ -311,9 +354,9 @@ export class MonetizationService implements OnModuleInit {
       return monthlySupported && yearlySupported;
     });
 
-    return {
+    const response: MonetizationCatalogResponse = {
       checkoutProvider,
-      currency: this.getCheckoutCurrency(),
+      currency,
       coinPackages: supportedCoinPackages.map((item) => ({
         code: item.code,
         coins: item.coins,
@@ -338,6 +381,14 @@ export class MonetizationService implements OnModuleInit {
         name: gift.name,
       })),
     };
+
+    await this.redisService.setJson(
+      cacheKey,
+      response,
+      CATALOG_CACHE_TTL_SECONDS,
+    );
+
+    return response;
   }
 
   async getStatus(userId: string) {
@@ -1667,144 +1718,15 @@ export class MonetizationService implements OnModuleInit {
   }
 
   private async cleanupLegacyStripeIndexes() {
-    const collections = ["purchases", "subscriptions", "plans", "coin_packages"];
-
-    for (const collection of collections) {
-      const indexes = await this.listCollectionIndexes(collection);
-
-      if (!indexes) {
-        continue;
-      }
-
-      for (const index of indexes) {
-        const name = typeof index.name === "string" ? index.name : "";
-        const keyNames = Object.keys(index.key ?? {});
-        const isLegacyStripeIndex =
-          name.toLowerCase().includes("stripe") ||
-          keyNames.some((key) => key.toLowerCase().includes("stripe"));
-
-        if (!isLegacyStripeIndex) {
-          continue;
-        }
-
-        try {
-          await this.prisma.$runCommandRaw({
-            dropIndexes: collection,
-            index: name,
-          });
-          this.logger.warn(
-            `Dropped legacy Stripe index ${name} from ${collection}.`,
-          );
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          this.logger.warn(
-            `Failed to drop legacy Stripe index ${name} from ${collection}: ${message}`,
-          );
-        }
-      }
-    }
+    // Mongo-specific index cleanup no longer applies to PostgreSQL.
   }
 
   private async ensureSparseChapterEntitlementIndexes() {
-    const collection = "chapter_entitlements";
-    const sparseUniqueIndexName = "chapter_entitlements_adUnlockRecordId_key";
-    const indexes = await this.listCollectionIndexes(collection);
-
-    if (!indexes) {
-      return;
-    }
-
-    const existingIndex = indexes.find((index) => {
-      const key = index.key ?? {};
-
-      return (
-        (typeof index.name === "string" && index.name === sparseUniqueIndexName) ||
-        (Object.keys(key).length === 1 && key.adUnlockRecordId === 1)
-      );
-    });
-
-    if (
-      existingIndex &&
-      existingIndex.name === sparseUniqueIndexName &&
-      existingIndex.unique === true &&
-      existingIndex.sparse === true
-    ) {
-      return;
-    }
-
-    if (existingIndex?.name) {
-      try {
-        await this.prisma.$runCommandRaw({
-          dropIndexes: collection,
-          index: existingIndex.name,
-        });
-        this.logger.warn(
-          `Dropped non-sparse chapter entitlement index ${existingIndex.name}.`,
-        );
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        this.logger.warn(
-          `Failed to drop chapter entitlement index ${existingIndex.name}: ${message}`,
-        );
-        return;
-      }
-    }
-
-    try {
-      await this.prisma.$runCommandRaw({
-        createIndexes: collection,
-        indexes: [
-          {
-            key: {
-              adUnlockRecordId: 1,
-            },
-            name: sparseUniqueIndexName,
-            sparse: true,
-            unique: true,
-          },
-        ],
-      });
-      this.logger.log(
-        "Ensured sparse unique index on chapter_entitlements.adUnlockRecordId.",
-      );
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.logger.warn(
-        `Failed to create sparse chapter entitlement index ${sparseUniqueIndexName}: ${message}`,
-      );
-    }
+    // Mongo-specific sparse index checks no longer apply to PostgreSQL.
   }
 
   private async listCollectionIndexes(collection: string) {
-    try {
-      const result = (await this.prisma.$runCommandRaw({
-        listIndexes: collection,
-        cursor: {},
-      })) as {
-        cursor?: {
-          firstBatch?: Array<{
-            key?: Record<string, unknown>;
-            name?: string;
-            sparse?: boolean;
-            unique?: boolean;
-          }>;
-        };
-      };
-
-      return result.cursor?.firstBatch ?? [];
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-
-      if (
-        message.includes("ns does not exist") ||
-        message.includes("NamespaceNotFound")
-      ) {
-        return null;
-      }
-
-      this.logger.warn(`Unable to inspect indexes for ${collection}: ${message}`);
-      return null;
-    }
+    return null;
   }
 
   private async processPaystackTransaction(
@@ -3391,7 +3313,7 @@ export class MonetizationService implements OnModuleInit {
     );
   }
 
-  private getCheckoutProviderValue() {
+  private getCheckoutProviderValue(): CheckoutProviderValue {
     return this.getConfiguredCheckoutProvider() === PAYMENT_PROVIDER.CRYPTOMUS
       ? "cryptomus"
       : "paystack";
@@ -3401,6 +3323,10 @@ export class MonetizationService implements OnModuleInit {
     return this.getConfiguredCheckoutProvider() === PAYMENT_PROVIDER.CRYPTOMUS
       ? env.cryptomusCurrency
       : env.paystackCurrency;
+  }
+
+  private getCatalogCacheKey(checkoutProvider: CheckoutProviderValue, currency: string) {
+    return `monetization:catalog:${checkoutProvider}:${currency}`;
   }
 
   private assertSupportedCheckoutAmount(

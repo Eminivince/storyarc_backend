@@ -19,7 +19,6 @@
   "keywords": [
     "nestjs",
     "prisma",
-    "mongodb",
     "redis"
   ],
   "author": "",

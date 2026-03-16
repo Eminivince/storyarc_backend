@@ -482,7 +482,7 @@ export class StudioService {
             id: existingChapter.id,
           },
           data: {
-            arcId: this.normalizeObjectId(input.arcId),
+            arcId: this.normalizeId(input.arcId),
             authorNote: input.authorsNote || null,
             bodyDraft: normalizedBody,
             chapterNumber,
@@ -497,7 +497,7 @@ export class StudioService {
             slug: chapterSlug,
             status: existingChapter.status === "PUBLISHED" ? "PUBLISHED" : "DRAFT",
             title: input.title,
-            volumeId: this.normalizeObjectId(input.volumeId),
+            volumeId: this.normalizeId(input.volumeId),
             wordCount: this.getWordCount(normalizedBody),
           },
           include: {
@@ -514,7 +514,7 @@ export class StudioService {
         })
       : await this.prisma.chapter.create({
           data: {
-            arcId: this.normalizeObjectId(input.arcId),
+            arcId: this.normalizeId(input.arcId),
             authorNote: input.authorsNote || null,
             bodyDraft: normalizedBody,
             chapterNumber,
@@ -530,7 +530,7 @@ export class StudioService {
             status: "DRAFT",
             storyId: story.id,
             title: input.title,
-            volumeId: this.normalizeObjectId(input.volumeId),
+            volumeId: this.normalizeId(input.volumeId),
             wordCount: this.getWordCount(normalizedBody),
           },
           include: {
@@ -636,7 +636,7 @@ export class StudioService {
     const story = await this.getStoryRecord(userId, storySlug);
 
     for (const volumeInput of input.volumes) {
-      const volumeId = this.normalizeObjectId(volumeInput.id);
+      const volumeId = this.normalizeId(volumeInput.id);
       const volume =
         volumeId &&
         (await this.prisma.storyVolume.findFirst({
@@ -668,7 +668,7 @@ export class StudioService {
           });
 
       for (const arcInput of volumeInput.arcs) {
-        const arcId = this.normalizeObjectId(arcInput.id);
+        const arcId = this.normalizeId(arcInput.id);
         const arc =
           arcId &&
           (await this.prisma.storyArc.findFirst({
@@ -1149,8 +1149,8 @@ export class StudioService {
     return nextSlug;
   }
 
-  private normalizeObjectId(value: string | null) {
-    return value && /^[a-f0-9]{24}$/i.test(value) ? value : null;
+  private normalizeId(value: string | null) {
+    return value && value.trim() ? value.trim() : null;
   }
 
   private toSlug(value: string) {

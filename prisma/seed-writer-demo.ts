@@ -17,7 +17,7 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const prisma = new PrismaClient();
-const HASH_ROUNDS = 12;
+const HASH_ROUNDS = 3;
 
 const writerSeed = {
   bio:
@@ -2205,19 +2205,18 @@ async function main() {
   const storySeeds = getStoriesToSeed(config);
   console.log("[seed] Config: stories=" + config.storyCount + ", readers=" + config.readerCount);
 
-  await ensureBookPlatformPolicy();
-  await ensureGenresAndTags(storySeeds);
+  // Ensure shared platform configuration in parallel
+  await Promise.all([ensureBookPlatformPolicy(), ensureGenresAndTags(storySeeds)]);
 
   const writer = await upsertWriterAccount();
   console.log("[seed] Seeding stories in batches...");
-  const seededStories = await seedStoriesInBatches(
-    writer.id,
-    storySeeds,
-    config.storySeedConcurrency,
-  );
+  // Seed stories and prepare load-test readers in parallel
+  const [seededStories, loadReaders] = await Promise.all([
+    seedStoriesInBatches(writer.id, storySeeds, config.storySeedConcurrency),
+    upsertLoadTestReaders(config),
+  ]);
   const seededStoryRecords = await getSeededStoryRecords(storySeeds);
   console.log("[seed] Fetched", seededStoryRecords.length, "seeded story records.");
-  const loadReaders = await upsertLoadTestReaders(config);
   console.log("[seed] Seeding reader load data (follows, progress, bookmarks, etc.)...");
   const readerLoadSummary = await seedReaderLoadData({
     config,

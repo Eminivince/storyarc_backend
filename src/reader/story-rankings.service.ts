@@ -4,6 +4,7 @@ import {
   OnModuleDestroy,
   OnModuleInit,
 } from "@nestjs/common";
+import { createHash } from "crypto";
 import {
   CommentStatus,
   FollowTargetType,
@@ -37,12 +38,38 @@ type RankingSnapshotRecord = Prisma.StoryRankingSnapshotGetPayload<{
       };
       include: {
         story: {
-          include: {
-            adminControl: true;
-            assets: true;
+          select: {
+            adminControl: {
+              select: {
+                visibilityState: true;
+              };
+            };
+            assets: {
+              select: {
+                bannerImageUrl: true;
+                cardImageUrl: true;
+                coverImageUrl: true;
+              };
+            };
+            authorName: true;
+            genreSlugs: true;
+            isLive: true;
+            shortSynopsis: true;
+            slug: true;
+            status: true;
+            title: true;
             publishedChapters: {
               orderBy: {
                 chapterNumber: "asc";
+              };
+              select: {
+                slug: true;
+              };
+              take: 1;
+            };
+            _count: {
+              select: {
+                publishedChapters: true;
               };
             };
           };
@@ -70,6 +97,27 @@ type StoryMetricRecord = {
   totalFollowers: number;
   totalReads: number;
   writtenReviewCount: number;
+};
+
+type CachedStoryMetricRecord = Omit<
+  StoryMetricRecord,
+  | "story"
+  | "latestChapterAt"
+  | "recentBookmarkDates"
+  | "recentChapterDates"
+  | "recentCommentDates"
+  | "recentFollowDates"
+  | "recentRatingDates"
+  | "recentReviewDates"
+> & {
+  latestChapterAt: number | null;
+  recentBookmarkDates: number[];
+  recentChapterDates: number[];
+  recentCommentDates: number[];
+  recentFollowDates: number[];
+  recentRatingDates: number[];
+  recentReviewDates: number[];
+  storyId: string;
 };
 
 type StoryMetricRow = StoryMetricRecord & {
@@ -150,6 +198,8 @@ const STORY_RANKING_CONFIG_BY_KIND = new Map(
 const RANKING_REFRESH_INTERVAL_MS = 15 * 60 * 1000;
 const RANKING_STALE_AFTER_MS = 75 * 60 * 1000;
 const RANKING_RESPONSE_CACHE_TTL_SECONDS = 5 * 60;
+const GENRE_LIST_CACHE_TTL_SECONDS = 24 * 60 * 60;
+const STORY_METRICS_CACHE_TTL_SECONDS = 12 * 60;
 const MAX_QUERY_LIMIT = 50;
 
 @Injectable()
@@ -219,10 +269,7 @@ export class StoryRankingsService implements OnModuleDestroy, OnModuleInit {
       snapshot = await this.getLatestSnapshot(config.kind);
     }
 
-    const genres = await this.prisma.genre.findMany({
-      orderBy: { name: "asc" },
-      select: { name: true, slug: true },
-    });
+    const genres = await this.getCachedGenreList();
 
     const normalizedGenre = this.normalizeOptionalQuery(input.genre);
     const filteredEntries = (snapshot?.entries ?? []).filter((entry) => {
@@ -242,10 +289,7 @@ export class StoryRankingsService implements OnModuleDestroy, OnModuleInit {
     });
 
     const response = {
-      genres: genres.map((genre) => ({
-        label: genre.name,
-        slug: genre.slug,
-      })),
+      genres,
       ranking: {
         activityWindowLabel: this.getActivityWindowLabel(config.activityWindowDays),
         description: config.description,
@@ -381,6 +425,18 @@ export class StoryRankingsService implements OnModuleDestroy, OnModuleInit {
     }
 
     const storyIds = stories.map((story) => story.id);
+    const cacheKey = this.getStoryMetricsCacheKey(storyIds);
+    const cachedMetrics = await this.redisService.getJson<CachedStoryMetricRecord[]>(
+      cacheKey,
+    );
+
+    if (cachedMetrics) {
+      const hydratedMetrics = this.hydrateStoryMetricRecords(stories, cachedMetrics);
+
+      if (hydratedMetrics.length > 0) {
+        return hydratedMetrics;
+      }
+    }
     const maxActivityWindowDays = Math.max(
       ...STORY_RANKING_CONFIG.map((config) => config.activityWindowDays),
     );
@@ -505,7 +561,7 @@ export class StoryRankingsService implements OnModuleDestroy, OnModuleInit {
     const priorMean = totalRatingCount > 0 ? totalWeightedRating / totalRatingCount : 4;
     const priorWeight = 5;
 
-    return stories.map((story) => {
+    const metrics = stories.map((story) => {
       const firstChapter = story.publishedChapters[0] ?? null;
       const latestChapter =
         story.publishedChapters[story.publishedChapters.length - 1] ?? null;
@@ -546,6 +602,117 @@ export class StoryRankingsService implements OnModuleDestroy, OnModuleInit {
         writtenReviewCount: reviewEventsByStory.get(story.id)?.length ?? 0,
       };
     });
+
+    await this.redisService.setJson(
+      cacheKey,
+      this.serializeStoryMetricRecords(metrics),
+      STORY_METRICS_CACHE_TTL_SECONDS,
+    );
+
+    return metrics;
+  }
+
+  private getStoryMetricsCacheKey(storyIds: string[]) {
+    const digest = createHash("sha1")
+      .update([...storyIds].sort().join("|"))
+      .digest("hex");
+
+    return `reader:rankings:metrics:${digest}`;
+  }
+
+  private getGenreListCacheKey() {
+    return "reader:rankings:genres";
+  }
+
+  private async getCachedGenreList() {
+    const cacheKey = this.getGenreListCacheKey();
+    const cachedGenres = await this.redisService.getJson<
+      Array<{ label: string; slug: string }>
+    >(cacheKey);
+
+    if (cachedGenres) {
+      return cachedGenres;
+    }
+
+    const genres = await this.prisma.genre.findMany({
+      orderBy: { name: "asc" },
+      select: { name: true, slug: true },
+    });
+    const mappedGenres = genres.map((genre) => ({
+      label: genre.name,
+      slug: genre.slug,
+    }));
+
+    await this.redisService.setJson(
+      cacheKey,
+      mappedGenres,
+      GENRE_LIST_CACHE_TTL_SECONDS,
+    );
+
+    return mappedGenres;
+  }
+
+  private serializeStoryMetricRecords(
+    metrics: StoryMetricRecord[],
+  ): CachedStoryMetricRecord[] {
+    return metrics.map((metric) => ({
+      ageDays: metric.ageDays,
+      averageRating: metric.averageRating,
+      bayesianRating: metric.bayesianRating,
+      chapterCount: metric.chapterCount,
+      firstChapterSlug: metric.firstChapterSlug,
+      latestChapterAt:
+        metric.latestChapterAt === null ? null : metric.latestChapterAt.getTime(),
+      ratingCount: metric.ratingCount,
+      recentBookmarkDates: metric.recentBookmarkDates.map((date) => date.getTime()),
+      recentChapterDates: metric.recentChapterDates.map((date) => date.getTime()),
+      recentCommentDates: metric.recentCommentDates.map((date) => date.getTime()),
+      recentFollowDates: metric.recentFollowDates.map((date) => date.getTime()),
+      recentRatingDates: metric.recentRatingDates.map((date) => date.getTime()),
+      recentReviewDates: metric.recentReviewDates.map((date) => date.getTime()),
+      storyId: metric.story.id,
+      totalFollowers: metric.totalFollowers,
+      totalReads: metric.totalReads,
+      writtenReviewCount: metric.writtenReviewCount,
+    }));
+  }
+
+  private hydrateStoryMetricRecords(
+    stories: RankingStoryRecord[],
+    cachedMetrics: CachedStoryMetricRecord[],
+  ): StoryMetricRecord[] {
+    const storyById = new Map(stories.map((story) => [story.id, story] as const));
+
+    return cachedMetrics.reduce<StoryMetricRecord[]>((records, metric) => {
+      const story = storyById.get(metric.storyId);
+
+      if (!story) {
+        return records;
+      }
+
+      records.push({
+        ageDays: metric.ageDays,
+        averageRating: metric.averageRating,
+        bayesianRating: metric.bayesianRating,
+        chapterCount: metric.chapterCount,
+        firstChapterSlug: metric.firstChapterSlug,
+        latestChapterAt:
+          metric.latestChapterAt === null ? null : new Date(metric.latestChapterAt),
+        ratingCount: metric.ratingCount,
+        recentBookmarkDates: metric.recentBookmarkDates.map((date) => new Date(date)),
+        recentChapterDates: metric.recentChapterDates.map((date) => new Date(date)),
+        recentCommentDates: metric.recentCommentDates.map((date) => new Date(date)),
+        recentFollowDates: metric.recentFollowDates.map((date) => new Date(date)),
+        recentRatingDates: metric.recentRatingDates.map((date) => new Date(date)),
+        recentReviewDates: metric.recentReviewDates.map((date) => new Date(date)),
+        story,
+        totalFollowers: metric.totalFollowers,
+        totalReads: metric.totalReads,
+        writtenReviewCount: metric.writtenReviewCount,
+      });
+
+      return records;
+    }, []);
   }
 
   private buildRankingRows(
@@ -858,12 +1025,38 @@ export class StoryRankingsService implements OnModuleDestroy, OnModuleInit {
           },
           include: {
             story: {
-              include: {
-                adminControl: true,
-                assets: true,
+              select: {
+                adminControl: {
+                  select: {
+                    visibilityState: true,
+                  },
+                },
+                assets: {
+                  select: {
+                    bannerImageUrl: true,
+                    cardImageUrl: true,
+                    coverImageUrl: true,
+                  },
+                },
+                authorName: true,
+                genreSlugs: true,
+                isLive: true,
+                shortSynopsis: true,
+                slug: true,
+                status: true,
+                title: true,
                 publishedChapters: {
                   orderBy: {
                     chapterNumber: "asc",
+                  },
+                  select: {
+                    slug: true,
+                  },
+                  take: 1,
+                },
+                _count: {
+                  select: {
+                    publishedChapters: true,
                   },
                 },
               },
@@ -894,7 +1087,7 @@ export class StoryRankingsService implements OnModuleDestroy, OnModuleInit {
     return {
       authorName: entry.story.authorName,
       averageRating: Number(entry.averageRating.toFixed(1)),
-      chapterCount: entry.story.publishedChapters.length,
+      chapterCount: entry.story._count.publishedChapters,
       coverImage:
         entry.story.assets?.coverImageUrl ??
         entry.story.assets?.cardImageUrl ??
