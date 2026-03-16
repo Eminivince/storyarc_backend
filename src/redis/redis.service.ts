@@ -33,6 +33,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   async onModuleInit() {
     try {
       await this.client.connect();
+      this.logger.log("Redis connected.");
     } catch (error) {
       if (!this.canUseFallback(error)) {
         throw error;

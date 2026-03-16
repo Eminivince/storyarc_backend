@@ -854,6 +854,7 @@ function buildChapterParagraphs(
 }
 
 async function ensureBookPlatformPolicy() {
+  console.log("[seed] Ensuring book platform policy...");
   const existingPolicy = await prisma.bookPlatformPolicy.findUnique({
     where: {
       key: "default",
@@ -871,6 +872,7 @@ async function ensureBookPlatformPolicy() {
         defaultReleaseMode: AdminBookReleaseMode.PREMIUM_WINDOW,
       },
     });
+    console.log("[seed] Book platform policy updated.");
     return;
   }
 
@@ -882,9 +884,11 @@ async function ensureBookPlatformPolicy() {
       key: "default",
     },
   });
+  console.log("[seed] Book platform policy created.");
 }
 
 async function ensureGenresAndTags(storySeeds: StorySeed[]) {
+  console.log("[seed] Ensuring genres and tags...");
   const genreSlugs = new Set(storySeeds.flatMap((story) => story.genreSlugs));
   const tagSlugs = new Set(storySeeds.flatMap((story) => story.tagSlugs));
 
@@ -944,9 +948,11 @@ async function ensureGenresAndTags(storySeeds: StorySeed[]) {
       },
     });
   }
+  console.log("[seed] Genres and tags ensured.");
 }
 
 async function upsertWriterAccount() {
+  console.log("[seed] Upserting writer account...");
   const passwordHash = await hash(writerSeed.password, HASH_ROUNDS);
   const now = new Date();
 
@@ -1076,14 +1082,17 @@ async function upsertWriterAccount() {
     });
   }
 
+  console.log("[seed] Writer account ready:", writerSeed.email);
   return user;
 }
 
 async function upsertLoadTestReaders(config: WriterSeedConfig) {
   if (config.readerCount === 0) {
+    console.log("[seed] Skipping load readers (readerCount=0).");
     return [] as SeededLoadReader[];
   }
 
+  console.log("[seed] Upserting load test readers...");
   const passwordHash = await hash(loadReaderSeed.password, HASH_ROUNDS);
   const now = new Date();
   const readers: SeededLoadReader[] = [];
@@ -1193,10 +1202,11 @@ async function upsertLoadTestReaders(config: WriterSeedConfig) {
 
     readers.push(...batchReaders);
     console.log(
-      `Prepared ${Math.min(startIndex + batchReaders.length, config.readerCount)}/${config.readerCount} load readers...`,
+      `[seed] Prepared ${Math.min(startIndex + batchReaders.length, config.readerCount)}/${config.readerCount} load readers...`,
     );
   }
 
+  console.log("[seed] Load test readers ready.");
   return readers;
 }
 
@@ -1692,6 +1702,7 @@ async function seedReaderLoadData(input: {
   writerId: string;
 }) {
   if (input.readers.length === 0 || input.seededStories.length === 0) {
+    console.log("[seed] Skipping reader load data (no readers or no stories).");
     return {
       bookmarks: 0,
       chapterReadEvents: 0,
@@ -2181,7 +2192,7 @@ async function seedStoriesInBatches(
     seededStories.push(...results);
 
     console.log(
-      `Seeded ${Math.min(index + batch.length, storySeeds.length)}/${storySeeds.length} stories...`,
+      `[seed] Seeded ${Math.min(index + batch.length, storySeeds.length)}/${storySeeds.length} stories...`,
     );
   }
 
@@ -2189,20 +2200,25 @@ async function seedStoriesInBatches(
 }
 
 async function main() {
+  console.log("[seed] Starting writer seed script...");
   const config = getWriterSeedConfig();
   const storySeeds = getStoriesToSeed(config);
+  console.log("[seed] Config: stories=" + config.storyCount + ", readers=" + config.readerCount);
 
   await ensureBookPlatformPolicy();
   await ensureGenresAndTags(storySeeds);
 
   const writer = await upsertWriterAccount();
+  console.log("[seed] Seeding stories in batches...");
   const seededStories = await seedStoriesInBatches(
     writer.id,
     storySeeds,
     config.storySeedConcurrency,
   );
   const seededStoryRecords = await getSeededStoryRecords(storySeeds);
+  console.log("[seed] Fetched", seededStoryRecords.length, "seeded story records.");
   const loadReaders = await upsertLoadTestReaders(config);
+  console.log("[seed] Seeding reader load data (follows, progress, bookmarks, etc.)...");
   const readerLoadSummary = await seedReaderLoadData({
     config,
     readers: loadReaders,
@@ -2210,6 +2226,8 @@ async function main() {
     writerId: writer.id,
   });
 
+  console.log("[seed] Reader load data done.");
+  console.log("[seed] --- Writer seed complete ---");
   console.log("Seeded demo writer account.");
   console.log(`Email: ${writerSeed.email}`);
   console.log(`Password: ${writerSeed.password}`);
