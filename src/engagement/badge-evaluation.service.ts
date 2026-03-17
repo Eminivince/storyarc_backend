@@ -1,7 +1,8 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { forwardRef, Inject, Injectable, Logger } from "@nestjs/common";
 import { UserBadge } from "@prisma/client";
 import { PrismaService } from "../database/prisma.service";
 import { RedisService } from "../redis/redis.service";
+import { ActivityFeedService } from "./activity-feed.service";
 
 @Injectable()
 export class BadgeEvaluationService {
@@ -10,6 +11,8 @@ export class BadgeEvaluationService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
+    @Inject(forwardRef(() => ActivityFeedService))
+    private readonly activityFeedService: ActivityFeedService,
   ) {}
 
   async evaluateBadges(userId: string): Promise<UserBadge[]> {
@@ -90,6 +93,15 @@ export class BadgeEvaluationService {
         }
 
         newlyEarned.push(userBadge);
+
+        this.activityFeedService
+          .recordActivity(userId, "EARNED_BADGE", {
+            badgeKey: definition.key,
+            badgeTitle: definition.title,
+            rarity: definition.rarity,
+          })
+          .catch(() => undefined);
+
         this.logger.log(
           `User ${userId} earned badge: ${definition.key}`,
         );

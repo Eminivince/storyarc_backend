@@ -17,6 +17,7 @@ import {
 } from "@prisma/client";
 import { PrismaService } from "../database/prisma.service";
 import { CreatorAnalyticsService } from "../analytics/creator-analytics.service";
+import { ActivityFeedService } from "../engagement/activity-feed.service";
 import { BadgeEvaluationService } from "../engagement/badge-evaluation.service";
 import { ChallengeService } from "../engagement/challenge.service";
 import { EngagementService } from "../engagement/engagement.service";
@@ -313,6 +314,7 @@ export class ReaderService {
     private readonly prisma: PrismaService,
     private readonly monetizationService: MonetizationService,
     private readonly engagementService: EngagementService,
+    private readonly activityFeedService: ActivityFeedService,
     private readonly badgeEvaluationService: BadgeEvaluationService,
     private readonly challengeService: ChallengeService,
     private readonly creatorAnalyticsService: CreatorAnalyticsService,
@@ -1305,6 +1307,9 @@ export class ReaderService {
       this.challengeService
         .incrementChallengeProgress(userId, "REVIEWS_WRITTEN", 1)
         .catch(() => undefined);
+      this.activityFeedService
+        .recordActivity(userId, "REVIEWED_STORY", { rating: input.rating }, story.id)
+        .catch(() => undefined);
     }
 
     return {
@@ -1994,6 +1999,13 @@ export class ReaderService {
       this.challengeService
         .incrementChallengeProgress(userId, "CHAPTERS_READ", 1)
         .catch(() => undefined);
+
+      // Activity feed: record STARTED_STORY for first chapter, generic for rest
+      if (chapter.chapterNumber === 1) {
+        this.activityFeedService
+          .recordActivity(userId, "STARTED_STORY", { chapterTitle: chapter.title }, story.id)
+          .catch(() => undefined);
+      }
     }
 
     return {

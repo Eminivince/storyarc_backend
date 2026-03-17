@@ -26,6 +26,7 @@ import {
   parseShareReferralBody,
   parseVotePollBody,
 } from "./engagement.schemas";
+import { ActivityFeedService } from "./activity-feed.service";
 import { ChallengeService } from "./challenge.service";
 import { EngagementService } from "./engagement.service";
 import { PointShopService } from "./point-shop.service";
@@ -54,6 +55,7 @@ export class EngagementController {
     private readonly reactionService: ReactionService,
     private readonly challengeService: ChallengeService,
     private readonly pointShopService: PointShopService,
+    private readonly activityFeedService: ActivityFeedService,
   ) {}
 
   @Get("overview")
@@ -388,5 +390,33 @@ export class EngagementController {
   @Get("shop/my-items")
   async getMyShopItems(@Req() request: AuthenticatedRequest) {
     return this.pointShopService.getUserItems(request.auth!.userId);
+  }
+
+  // ── activity feed ──────────────────────────────────────────────────
+
+  @Get("activity-feed")
+  async getActivityFeed(
+    @Query("cursor") cursor: string | undefined,
+    @Query("limit") limit: string | undefined,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.activityFeedService.getActivityFeed(
+      request.auth!.userId,
+      cursor?.trim() || undefined,
+      limit ? Math.min(parseInt(limit, 10) || 20, 50) : 20,
+    );
+  }
+
+  @Get("activity-feed/me")
+  async getOwnActivity(
+    @Query("cursor") cursor: string | undefined,
+    @Query("limit") limit: string | undefined,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.activityFeedService.getOwnActivity(
+      request.auth!.userId,
+      cursor?.trim() || undefined,
+      limit ? Math.min(parseInt(limit, 10) || 20, 50) : 20,
+    );
   }
 }

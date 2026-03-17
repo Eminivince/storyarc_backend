@@ -391,6 +391,7 @@ model User {
   chapterReactions            ChapterReaction[]
   challengeProgress           UserChallengeProgress[]
   pointShopPurchases          UserPointShopPurchase[]
+  activityFeedEvents          ActivityFeedEvent[]
 
   @@map("users")
 }
@@ -648,6 +649,7 @@ model Story {
   chapterReadEvents     ChapterReadEvent[]
   analyticsDaily        StoryAnalyticsDaily[]
   chapterAnalyticsDaily ChapterAnalyticsDaily[]
+  activityFeedEvents    ActivityFeedEvent[]
 
   @@index([authorId])
   @@index([featured, status])
@@ -2071,4 +2073,31 @@ model UserPointShopPurchase {
   @@index([userId, isActive])
   @@index([expiresAt, isActive])
   @@map("user_point_shop_purchases")
+}
+
+// ─── Activity Feed ───────────────────────────────────────────────────
+
+enum ActivityEventType {
+  STARTED_STORY
+  FINISHED_STORY
+  REVIEWED_STORY
+  ADDED_TO_LIST
+  REACHED_MILESTONE
+  EARNED_BADGE
+}
+
+model ActivityFeedEvent {
+  id        String            @id @default(cuid())
+  userId    String
+  eventType ActivityEventType
+  metadata  Json?
+  storyId   String?
+  chapterId String?
+  createdAt DateTime          @default(now())
+  user      User              @relation(fields: [userId], references: [id])
+  story     Story?            @relation(fields: [storyId], references: [id])
+
+  @@index([userId, createdAt])
+  @@index([createdAt])
+  @@map("activity_feed_events")
 }
