@@ -21,97 +21,160 @@ import { ResendEmailService } from "../auth/resend-email.service";
 import { PrismaService } from "../database/prisma.service";
 import { RedisService } from "../redis/redis.service";
 import { isStoryLive } from "../utils/book-admin";
+import { BadgeEvaluationService } from "./badge-evaluation.service";
 
 const DAILY_CHECK_IN_REWARD = 50;
 const REFERRAL_SHARE_REWARD = 20;
+const REWARD_SETTINGS_CACHE_TTL = 300; // 5 minutes
 const WELCOME_NOTIFICATION_IDEMPOTENCY = "welcome";
 const LEADERBOARD_TABS = ["Weekly", "Monthly", "All Time"];
 const ENGAGEMENT_OVERVIEW_CACHE_TTL_SECONDS = 15 * 60;
+const STREAK_SHIELD_COST = 500;
+const MAX_STREAK_SHIELDS = 2;
+const READING_TIME_DAILY_CAP_MINUTES = 100;
+const READING_TIME_POINTS_PER_5MIN = 10;
+const READING_TIME_MIN_HEARTBEAT_GAP_SECONDS = 180; // 3 minutes
+const MISSION_BOARD_SIZE = 8;
+
+const WHEEL_SLICES = [
+  { label: "25 Points",    basePoints: 25,  weight: 25 },
+  { label: "50 Points",    basePoints: 50,  weight: 30 },
+  { label: "75 Points",    basePoints: 75,  weight: 20 },
+  { label: "100 Points",   basePoints: 100, weight: 12 },
+  { label: "150 Points",   basePoints: 150, weight: 7  },
+  { label: "2× Bonus",     basePoints: 100, weight: 4  },
+  { label: "250 Points",   basePoints: 250, weight: 1.5 },
+  { label: "Jackpot 500",  basePoints: 500, weight: 0.5 },
+] as const;
+
+const STREAK_MULTIPLIER_TIERS = [
+  { minDays: 90, multiplier: 4.0 },
+  { minDays: 60, multiplier: 3.0 },
+  { minDays: 30, multiplier: 2.5 },
+  { minDays: 14, multiplier: 2.0 },
+  { minDays: 7, multiplier: 1.5 },
+  { minDays: 3, multiplier: 1.2 },
+] as const;
+
+const READER_TITLE_TIERS = [
+  { minPoints: 250_000, title: "Legendary Reader" },
+  { minPoints: 100_000, title: "Grand Archivist" },
+  { minPoints: 60_000, title: "Reading Sage" },
+  { minPoints: 30_000, title: "Story Connoisseur" },
+  { minPoints: 15_000, title: "Literary Enthusiast" },
+  { minPoints: 5_000, title: "Bookworm" },
+  { minPoints: 2_000, title: "Avid Reader" },
+  { minPoints: 500, title: "Casual Reader" },
+] as const;
 
 const missionCatalog = [
   {
     actionHref: "/account/rewards",
     actionLabel: "Check In",
+    category: "general",
     description: "Keep your streak alive and collect your daily TaleStead reward.",
     group: "READER",
     icon: "today",
     key: "daily-check-in",
     metricType: "DAILY_CHECK_IN",
+    minStreak: 0,
+    poolOnly: false,
     recurrence: "DAILY",
     rewardPoints: DAILY_CHECK_IN_REWARD,
     sortOrder: 1,
     targetValue: 1,
     title: "Daily Check-in",
+    weight: 10,
   },
   {
     actionHref: "/dashboard",
     actionLabel: "Read",
+    category: "reading",
     description: "Read three chapters today to deepen your reading momentum.",
     group: "READER",
     icon: "menu_book",
     key: "deep-dive",
     metricType: "READ_CHAPTERS",
+    minStreak: 0,
+    poolOnly: false,
     recurrence: "DAILY",
     rewardPoints: 80,
     sortOrder: 2,
     targetValue: 3,
     title: "Deep Dive",
+    weight: 10,
   },
   {
     actionHref: "/dashboard",
     actionLabel: "Bookmark",
+    category: "reading",
     description: "Bookmark a chapter today so your library stays organized.",
     group: "READER",
     icon: "bookmark",
     key: "active-critic",
     metricType: "BOOKMARK_CHAPTERS",
+    minStreak: 0,
+    poolOnly: false,
     recurrence: "DAILY",
     rewardPoints: 40,
     sortOrder: 3,
     targetValue: 1,
     title: "Active Critic",
+    weight: 10,
   },
   {
     actionHref: "/account/referrals",
     actionLabel: "Invite",
+    category: "social",
     description: "Share TaleStead with a friend and extend the world beyond your shelf.",
     group: "READER",
     icon: "share",
     key: "share-results",
     metricType: "SHARE_REFERRAL",
+    minStreak: 0,
+    poolOnly: false,
     recurrence: "DAILY",
     rewardPoints: REFERRAL_SHARE_REWARD,
     sortOrder: 4,
     targetValue: 1,
     title: "Share Results",
+    weight: 10,
   },
   {
     actionHref: "/creator/dashboard",
     actionLabel: "Write",
+    category: "creator",
     description: "Write or revise at least 1,200 words in your story studio today.",
     group: "AUTHOR",
     icon: "edit_note",
     key: "writer-flow",
     metricType: "WRITE_WORDS",
+    minStreak: 0,
+    poolOnly: false,
     recurrence: "DAILY",
     rewardPoints: 120,
     sortOrder: 5,
     targetValue: 1200,
     title: "Writer Flow",
+    weight: 10,
   },
   {
     actionHref: "/account/profile/edit",
     actionLabel: "Complete",
+    category: "general",
     description: "Finish your profile so readers and creators know who you are.",
     group: "READER",
     icon: "person",
     key: "profile-complete",
     metricType: "COMPLETE_PROFILE",
+    minStreak: 0,
+    poolOnly: false,
     recurrence: "ONE_TIME",
     rewardPoints: 60,
     sortOrder: 6,
     targetValue: 1,
     title: "Profile Complete",
+    weight: 10,
   },
 ] as const;
 
@@ -121,11 +184,11 @@ type NotificationPreferencesInput = {
   appStreakAlerts: boolean;
   appSystemUpdates: boolean;
   emailMarketing: boolean;
+  emailNewChapters: boolean;
   emailNewComments: boolean;
   emailSecurityAlerts: boolean;
   emailWeeklyDigest: boolean;
   pushCommentReplies: boolean;
-  pushDirectMessages: boolean;
   pushNewStories: boolean;
   pushStoryComments: boolean;
 };
@@ -150,6 +213,12 @@ type PollInput = {
 type ShareReferralInput = {
   channel: string;
   inviteeEmail: string | null;
+};
+
+type ReadingTimeInput = {
+  storySlug: string;
+  chapterSlug: string;
+  minutesRead: number;
 };
 
 type VotePollInput = {
@@ -184,8 +253,12 @@ type EngagementOverviewResponse = {
   };
   rewards: {
     checkedInToday: boolean;
+    nextMultiplierAt: number | null;
     points: number;
+    readerTitle: string;
     streakDays: number;
+    streakMultiplier: number;
+    streakShields: number;
     weeklyEarned: number;
   };
   rewardCalendar: {
@@ -196,6 +269,11 @@ type EngagementOverviewResponse = {
   streakRewards: Array<{ label: string; reward: string; unlocked: boolean }>;
 };
 
+type EngagementNotificationsResponse = {
+  items: Array<Record<string, unknown>>;
+  unreadCount: number;
+};
+
 @Injectable()
 export class EngagementService {
   private readonly logger = new Logger(EngagementService.name);
@@ -204,6 +282,7 @@ export class EngagementService {
     private readonly prisma: PrismaService,
     private readonly resendEmailService: ResendEmailService,
     private readonly redisService: RedisService,
+    private readonly badgeEvaluationService: BadgeEvaluationService,
   ) {}
 
   async getOverview(userId: string) {
@@ -320,13 +399,17 @@ export class EngagementService {
         code: referralCode?.code ?? "",
         history: referralEvents.map((event) => this.mapReferralEvent(event)),
         mobileCode: referralCode?.code ?? "",
-        rewardLabel: `${REFERRAL_SHARE_REWARD} Arc Points`,
+        rewardLabel: `${REFERRAL_SHARE_REWARD} Arc Points`, // static default for overview display
         totalEarned: totalReferralEarned._sum.deltaPoints ?? 0,
       },
       rewards: {
         checkedInToday: this.isToday(currentRewardWallet.lastCheckInAt),
         points: currentRewardWallet.balancePoints,
         streakDays: currentRewardWallet.streakDays,
+        streakMultiplier: (currentRewardWallet as Record<string, unknown>).streakMultiplier as number ?? 1.0,
+        streakShields: (currentRewardWallet as Record<string, unknown>).streakShields as number ?? 0,
+        nextMultiplierAt: this.getNextMultiplierDays(currentRewardWallet.streakDays),
+        readerTitle: this.getReaderTitle(currentRewardWallet.balancePoints),
         weeklyEarned: weeklyRewardPoints._sum.deltaPoints ?? 0,
       },
       rewardCalendar: {
@@ -358,6 +441,25 @@ export class EngagementService {
       response,
       ENGAGEMENT_OVERVIEW_CACHE_TTL_SECONDS,
     );
+
+    return response;
+  }
+
+  async getNotifications(userId: string) {
+    await this.getActiveUser(userId);
+
+    const appNotifications = await this.prisma.appNotification.findMany({
+      where: { userId },
+      orderBy: {
+        createdAt: "desc",
+      },
+      take: 20,
+    });
+
+    const response: EngagementNotificationsResponse = {
+      items: appNotifications.map((item) => this.mapAppNotification(item)),
+      unreadCount: appNotifications.filter((item) => item.readAt === null).length,
+    };
 
     return response;
   }
@@ -394,8 +496,29 @@ export class EngagementService {
       previousCheckInAt !== null &&
       previousCheckInAt >= yesterdayRange.start &&
       previousCheckInAt < yesterdayRange.end;
-    const streakDays = isConsecutive ? rewardWallet.streakDays + 1 : 1;
-    const nextBalance = rewardWallet.balancePoints + DAILY_CHECK_IN_REWARD;
+
+    let streakDays: number;
+    let usedStreakShield = false;
+    const currentShields = (rewardWallet as Record<string, unknown>).streakShields as number ?? 0;
+
+    if (isConsecutive) {
+      streakDays = rewardWallet.streakDays + 1;
+    } else if (
+      previousCheckInAt !== null &&
+      previousCheckInAt < yesterdayRange.start &&
+      currentShields > 0
+    ) {
+      // Missed yesterday but have a streak shield — preserve streak
+      streakDays = rewardWallet.streakDays + 1;
+      usedStreakShield = true;
+    } else {
+      streakDays = 1;
+    }
+
+    const multiplier = this.getStreakMultiplier(streakDays);
+    const wheelResult = this.spinRewardWheel(streakDays);
+    const checkInReward = wheelResult.finalPoints;
+    const nextBalance = rewardWallet.balancePoints + checkInReward;
     const now = new Date();
     const cycleKey = this.getDailyCycleKey(now);
     const missionDefinition = await this.prisma.missionDefinition.findUnique({
@@ -408,8 +531,18 @@ export class EngagementService {
       await tx.dailyCheckIn.create({
         data: {
           checkedInAt: now,
-          rewardPoints: DAILY_CHECK_IN_REWARD,
+          rewardPoints: checkInReward,
           userId,
+        },
+      });
+
+      await tx.dailyRewardOutcome.create({
+        data: {
+          basePoints: wheelResult.basePoints,
+          finalPoints: wheelResult.finalPoints,
+          label: wheelResult.label,
+          userId,
+          wheelIndex: wheelResult.wheelIndex,
         },
       });
 
@@ -421,17 +554,24 @@ export class EngagementService {
           balancePoints: nextBalance,
           lastCheckInAt: now,
           streakDays,
+          streakMultiplier: multiplier,
+          ...(usedStreakShield
+            ? {
+                streakShields: currentShields - 1,
+                lastStreakShieldUsedAt: now,
+              }
+            : {}),
         },
       });
 
       await tx.rewardLedgerEntry.create({
         data: {
           balanceAfter: nextBalance,
-          deltaPoints: DAILY_CHECK_IN_REWARD,
+          deltaPoints: checkInReward,
           entryType: "CREDIT",
-          idempotencyKey: `daily-check-in:${userId}:${cycleKey}`,
-          note: `Daily check-in reward for ${cycleKey}`,
-          reason: "DAILY_CHECK_IN",
+          idempotencyKey: `daily-wheel-spin:${userId}:${cycleKey}`,
+          note: `Daily wheel spin: ${wheelResult.label} for ${cycleKey} (${multiplier}x multiplier)`,
+          reason: "DAILY_WHEEL_SPIN",
           rewardWalletId: rewardWallet.id,
           userId,
         },
@@ -476,7 +616,7 @@ export class EngagementService {
 
       await tx.appNotification.create({
         data: {
-          body: `Your streak is now ${streakDays} day${streakDays === 1 ? "" : "s"} and ${DAILY_CHECK_IN_REWARD} Arc Points were added to your rewards wallet.`,
+          body: `Your streak is now ${streakDays} day${streakDays === 1 ? "" : "s"} and ${checkInReward} Arc Points were added to your rewards wallet.`,
           ctaHref: "/account/rewards",
           ctaLabel: "Open Rewards",
           title: "Daily check-in complete",
@@ -495,9 +635,20 @@ export class EngagementService {
 
     await this.clearOverviewCache(userId);
 
+    this.badgeEvaluationService.evaluateBadges(userId).catch((err) => {
+      this.logger.error(`Badge evaluation failed after check-in: ${err instanceof Error ? err.message : String(err)}`);
+    });
+
     return {
       message: "Daily check-in claimed.",
       overview: await this.getOverview(userId),
+      wheelResult: {
+        basePoints: wheelResult.basePoints,
+        finalPoints: wheelResult.finalPoints,
+        label: wheelResult.label,
+        streakMultiplier: multiplier,
+        wheelIndex: wheelResult.wheelIndex,
+      },
     };
   }
 
@@ -616,6 +767,10 @@ export class EngagementService {
 
     await this.clearOverviewCache(userId);
 
+    this.badgeEvaluationService.evaluateBadges(userId).catch((err) => {
+      this.logger.error(`Badge evaluation failed after mission claim: ${err instanceof Error ? err.message : String(err)}`);
+    });
+
     return {
       message: `${missionDefinition.title} claimed.`,
       overview: await this.getOverview(userId),
@@ -629,11 +784,12 @@ export class EngagementService {
 
     await this.ensureDefaults(user);
 
-    const [rewardWallet, referralCode] = await Promise.all([
+    const [rewardWallet, referralCode, referralReward] = await Promise.all([
       this.requireRewardWallet(userId),
       this.requireReferralCode(userId),
+      this.getReferralShareReward(),
     ]);
-    const nextBalance = rewardWallet.balancePoints + REFERRAL_SHARE_REWARD;
+    const nextBalance = rewardWallet.balancePoints + referralReward;
     const now = new Date();
 
     await this.prisma.$transaction(async (tx) => {
@@ -643,7 +799,7 @@ export class EngagementService {
           inviteeEmail: input.inviteeEmail,
           inviterUserId: userId,
           referralCodeId: referralCode.id,
-          rewardPoints: REFERRAL_SHARE_REWARD,
+          rewardPoints: referralReward,
           status: "SHARED",
         },
       });
@@ -660,7 +816,7 @@ export class EngagementService {
       await tx.rewardLedgerEntry.create({
         data: {
           balanceAfter: nextBalance,
-          deltaPoints: REFERRAL_SHARE_REWARD,
+          deltaPoints: referralReward,
           entryType: "CREDIT",
           idempotencyKey: `referral-share:${event.id}`,
           note: `Referral shared via ${input.channel}`,
@@ -683,7 +839,7 @@ export class EngagementService {
 
       await tx.appNotification.create({
         data: {
-          body: `${REFERRAL_SHARE_REWARD} Arc Points were added for sharing your referral code via ${input.channel}.`,
+          body: `${referralReward} Arc Points were added for sharing your referral code via ${input.channel}.`,
           ctaHref: "/account/referrals",
           ctaLabel: "View Referrals",
           title: "Referral shared",
@@ -694,7 +850,7 @@ export class EngagementService {
     });
 
     await this.maybeSendNotificationEmail(user, "REFERRAL", {
-      body: `Your TaleStead referral code was shared via ${input.channel}. ${REFERRAL_SHARE_REWARD} Arc Points were added to your rewards balance.`,
+      body: `Your TaleStead referral code was shared via ${input.channel}. ${referralReward} Arc Points were added to your rewards balance.`,
       title: "Referral activity recorded",
     });
 
@@ -1072,6 +1228,332 @@ export class EngagementService {
     };
   }
 
+  async purchaseStreakShield(userId: string) {
+    await this.getActiveUser(userId);
+
+    const rewardWallet = await this.requireRewardWallet(userId);
+    const currentShields = rewardWallet.streakShields;
+
+    if (currentShields >= MAX_STREAK_SHIELDS) {
+      throw new BadRequestException(`Maximum of ${MAX_STREAK_SHIELDS} streak shields allowed.`);
+    }
+
+    if (rewardWallet.balancePoints < STREAK_SHIELD_COST) {
+      throw new BadRequestException(`Insufficient points. Streak shield costs ${STREAK_SHIELD_COST} points.`);
+    }
+
+    const nextBalance = rewardWallet.balancePoints - STREAK_SHIELD_COST;
+    const now = new Date();
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.rewardWallet.update({
+        where: { userId },
+        data: {
+          balancePoints: nextBalance,
+          streakShields: currentShields + 1,
+        },
+      });
+
+      await tx.rewardLedgerEntry.create({
+        data: {
+          balanceAfter: nextBalance,
+          deltaPoints: -STREAK_SHIELD_COST,
+          entryType: "DEBIT",
+          idempotencyKey: `streak-shield:${userId}:${now.getTime()}`,
+          note: "Streak shield purchased",
+          reason: "STREAK_SHIELD_PURCHASE",
+          rewardWalletId: rewardWallet.id,
+          userId,
+        },
+      });
+    });
+
+    await this.clearOverviewCache(userId);
+
+    return {
+      message: "Streak shield purchased.",
+      shields: currentShields + 1,
+      balance: nextBalance,
+    };
+  }
+
+  async recordReadingTime(userId: string, input: ReadingTimeInput) {
+    await this.getActiveUser(userId);
+
+    const { minutesRead } = input;
+
+    if (minutesRead < 1 || minutesRead > 30) {
+      throw new BadRequestException("minutesRead must be between 1 and 30.");
+    }
+
+    // Anti-cheat: check heartbeat gap
+    const lastHeartbeatKey = `reading-time:last:${userId}`;
+    const lastHeartbeat = await this.redisService.getJson<number>(lastHeartbeatKey);
+    const now = Date.now();
+
+    if (lastHeartbeat && now - lastHeartbeat < READING_TIME_MIN_HEARTBEAT_GAP_SECONDS * 1000) {
+      throw new BadRequestException("Reading time heartbeat sent too frequently.");
+    }
+
+    // Daily cap check
+    const dateKey = new Date().toISOString().slice(0, 10);
+    const dailyCapKey = `reading-time:daily:${userId}:${dateKey}`;
+    const currentDailyMinutes = (await this.redisService.getJson<number>(dailyCapKey)) ?? 0;
+
+    if (currentDailyMinutes + minutesRead > READING_TIME_DAILY_CAP_MINUTES) {
+      return {
+        pointsEarned: 0,
+        dailyMinutesUsed: currentDailyMinutes,
+        dailyMinutesRemaining: Math.max(0, READING_TIME_DAILY_CAP_MINUTES - currentDailyMinutes),
+        dailyCapMinutes: READING_TIME_DAILY_CAP_MINUTES,
+      };
+    }
+
+    const basePoints = Math.floor(minutesRead / 5) * READING_TIME_POINTS_PER_5MIN;
+
+    if (basePoints <= 0) {
+      // Update daily counter and heartbeat, but no points
+      await this.redisService.setJson(dailyCapKey, currentDailyMinutes + minutesRead, 86400);
+      await this.redisService.setJson(lastHeartbeatKey, now, 300);
+
+      return {
+        pointsEarned: 0,
+        dailyMinutesUsed: currentDailyMinutes + minutesRead,
+        dailyMinutesRemaining: READING_TIME_DAILY_CAP_MINUTES - currentDailyMinutes - minutesRead,
+        dailyCapMinutes: READING_TIME_DAILY_CAP_MINUTES,
+      };
+    }
+
+    const rewardWallet = await this.requireRewardWallet(userId);
+    const multiplier = rewardWallet.streakMultiplier ?? 1.0;
+    const pointsEarned = Math.round(basePoints * multiplier);
+    const nextBalance = rewardWallet.balancePoints + pointsEarned;
+    const timestamp = new Date();
+    const fiveMinBlock = Math.floor(timestamp.getTime() / (5 * 60 * 1000));
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.rewardWallet.update({
+        where: { userId },
+        data: { balancePoints: nextBalance },
+      });
+
+      await tx.rewardLedgerEntry.create({
+        data: {
+          balanceAfter: nextBalance,
+          deltaPoints: pointsEarned,
+          entryType: "CREDIT",
+          idempotencyKey: `reading-time:${userId}:${dateKey}:${fiveMinBlock}`,
+          note: `Reading time: ${minutesRead} min (${multiplier}x multiplier)`,
+          reason: "READING_TIME",
+          rewardWalletId: rewardWallet.id,
+          userId,
+        },
+      });
+
+      await tx.userActivityEvent.create({
+        data: {
+          happenedAt: timestamp,
+          numericValue: minutesRead,
+          referenceId: `${input.storySlug}:${input.chapterSlug}`,
+          type: "READING_TIME",
+          userId,
+        },
+      });
+    });
+
+    // Update Redis counters
+    await this.redisService.setJson(dailyCapKey, currentDailyMinutes + minutesRead, 86400);
+    await this.redisService.setJson(lastHeartbeatKey, now, 300);
+
+    await this.clearOverviewCache(userId);
+
+    this.badgeEvaluationService.evaluateBadges(userId).catch((err) => {
+      this.logger.error(`Badge evaluation failed after reading time: ${err instanceof Error ? err.message : String(err)}`);
+    });
+
+    const newDailyUsed = currentDailyMinutes + minutesRead;
+
+    return {
+      pointsEarned,
+      dailyMinutesUsed: newDailyUsed,
+      dailyMinutesRemaining: READING_TIME_DAILY_CAP_MINUTES - newDailyUsed,
+      dailyCapMinutes: READING_TIME_DAILY_CAP_MINUTES,
+    };
+  }
+
+  async getBadges(userId: string) {
+    await this.getActiveUser(userId);
+
+    const [definitions, userBadges, rewardWallet] = await Promise.all([
+      this.prisma.badgeDefinition.findMany({
+        where: { isActive: true },
+        orderBy: [{ category: "asc" }, { sortOrder: "asc" }],
+      }),
+      this.prisma.userBadge.findMany({
+        where: { userId },
+        include: { badgeDefinition: true },
+      }),
+      this.prisma.rewardWallet.findUnique({ where: { userId } }),
+    ]);
+
+    const earnedBadgeIds = new Set(userBadges.map((ub) => ub.badgeDefinitionId));
+
+    return {
+      badges: definitions.map((def) => ({
+        id: def.id,
+        key: def.key,
+        title: def.title,
+        description: def.description,
+        category: def.category,
+        iconUrl: def.iconUrl,
+        rarity: def.rarity,
+        rewardPoints: def.rewardPoints,
+        earned: earnedBadgeIds.has(def.id),
+        earnedAt: userBadges.find((ub) => ub.badgeDefinitionId === def.id)?.earnedAt ?? null,
+        featured: userBadges.find((ub) => ub.badgeDefinitionId === def.id)?.featured ?? false,
+      })),
+      readerTitle: this.getReaderTitle(rewardWallet?.balancePoints ?? 0),
+      earnedCount: userBadges.length,
+      totalCount: definitions.length,
+    };
+  }
+
+  async toggleBadgeFeatured(userId: string, badgeId: string) {
+    const userBadge = await this.prisma.userBadge.findFirst({
+      where: { id: badgeId, userId },
+    });
+
+    if (!userBadge) {
+      throw new NotFoundException("Badge not found.");
+    }
+
+    if (!userBadge.featured) {
+      // Check max 3 featured
+      const featuredCount = await this.prisma.userBadge.count({
+        where: { userId, featured: true },
+      });
+
+      if (featuredCount >= 3) {
+        throw new BadRequestException("Maximum of 3 featured badges allowed.");
+      }
+    }
+
+    const updated = await this.prisma.userBadge.update({
+      where: { id: badgeId },
+      data: { featured: !userBadge.featured },
+    });
+
+    return {
+      featured: updated.featured,
+      message: updated.featured ? "Badge featured." : "Badge unfeatured.",
+    };
+  }
+
+  async getCreatorScorecard(userId: string) {
+    const now = new Date();
+    const currentWeekStart = this.getStartOfWeek(now);
+
+    const scorecards = await this.prisma.creatorScorecard.findMany({
+      where: { userId },
+      orderBy: { weekStart: "desc" },
+      take: 4,
+    });
+
+    // Build current partial week stats live
+    const currentWeekEnd = new Date(currentWeekStart);
+    currentWeekEnd.setDate(currentWeekEnd.getDate() + 7);
+    const currentWeekStats = await this.aggregateCreatorStats(userId, currentWeekStart, currentWeekEnd);
+
+    const previousScorecard = scorecards[0] ?? null;
+
+    return {
+      currentWeek: {
+        ...currentWeekStats,
+        weekStart: currentWeekStart.toISOString(),
+        weekEnd: currentWeekEnd.toISOString(),
+      },
+      history: scorecards.map((sc) => ({
+        avgRating: sc.avgRating,
+        avgRetention: sc.avgRetention,
+        chaptersPublished: sc.chaptersPublished,
+        newFollowers: sc.newFollowers,
+        revenueEarned: sc.revenueEarned,
+        totalComments: sc.totalComments,
+        totalReaders: sc.totalReaders,
+        totalViews: sc.totalViews,
+        weekEnd: sc.weekEnd.toISOString(),
+        weekStart: sc.weekStart.toISOString(),
+      })),
+      trends: previousScorecard
+        ? {
+            comments: this.getTrendDirection(currentWeekStats.totalComments, previousScorecard.totalComments),
+            followers: this.getTrendDirection(currentWeekStats.newFollowers, previousScorecard.newFollowers),
+            readers: this.getTrendDirection(currentWeekStats.totalReaders, previousScorecard.totalReaders),
+            views: this.getTrendDirection(currentWeekStats.totalViews, previousScorecard.totalViews),
+          }
+        : null,
+    };
+  }
+
+  private getTrendDirection(current: number, previous: number): string {
+    if (current > previous) return "up";
+    if (current < previous) return "down";
+    return "flat";
+  }
+
+  private async aggregateCreatorStats(userId: string, weekStart: Date, weekEnd: Date) {
+    const [totalViews, totalReaders, newFollowers, chaptersPublished, avgRating, totalComments] = await Promise.all([
+      this.prisma.chapterReadEvent.count({
+        where: {
+          story: { authorId: userId },
+          createdAt: { gte: weekStart, lt: weekEnd },
+        },
+      }),
+      this.prisma.chapterReadEvent.groupBy({
+        by: ["userId"],
+        where: {
+          story: { authorId: userId },
+          createdAt: { gte: weekStart, lt: weekEnd },
+        },
+      }).then((groups) => groups.length),
+      this.prisma.follow.count({
+        where: {
+          targetType: "AUTHOR",
+          targetUserId: userId,
+          createdAt: { gte: weekStart, lt: weekEnd },
+        },
+      }),
+      this.prisma.publishedChapter.count({
+        where: {
+          story: { authorId: userId },
+          publishedAt: { gte: weekStart, lt: weekEnd },
+        },
+      }),
+      this.prisma.review.aggregate({
+        _avg: { rating: true },
+        where: {
+          story: { authorId: userId },
+          createdAt: { gte: weekStart, lt: weekEnd },
+        },
+      }).then((agg) => agg._avg.rating ?? 0),
+      this.prisma.comment.count({
+        where: {
+          story: { authorId: userId },
+          createdAt: { gte: weekStart, lt: weekEnd },
+        },
+      }),
+    ]);
+
+    return {
+      avgRating: Math.round(avgRating * 10) / 10,
+      chaptersPublished,
+      newFollowers,
+      totalComments,
+      totalReaders,
+      totalViews,
+    };
+  }
+
   async notifyFollowersOfPublishedChapter(input: {
     authorId: string | null;
     authorName: string;
@@ -1149,7 +1631,7 @@ export class EngagementService {
             },
           });
 
-          if (user.notificationPreference?.emailNewComments ?? true) {
+          if (user.notificationPreference?.emailNewChapters ?? true) {
             await this.resendEmailService
               .sendNotificationEmail({
                 email: user.email,
@@ -1400,15 +1882,19 @@ export class EngagementService {
           actionHref: mission.actionHref,
           actionLabel: mission.actionLabel,
           active: true,
+          category: mission.category,
           description: mission.description,
           group: mission.group,
           icon: mission.icon,
           metricType: mission.metricType,
+          minStreak: mission.minStreak,
+          poolOnly: mission.poolOnly,
           recurrence: mission.recurrence,
           rewardPoints: mission.rewardPoints,
           sortOrder: mission.sortOrder,
           targetValue: mission.targetValue,
           title: mission.title,
+          weight: mission.weight,
         },
       });
     }
@@ -1439,6 +1925,106 @@ export class EngagementService {
     });
   }
 
+  private async generateDailyMissionBoard(userId: string, streakDays: number, userRole: string): Promise<void> {
+    const cycleKey = this.getDailyCycleKey();
+    const existing = await this.prisma.dailyMissionBoard.findFirst({
+      where: { userId, cycleKey },
+    });
+
+    if (existing) {
+      return;
+    }
+
+    const lockKey = `mission-board:${userId}:${cycleKey}`;
+    const lockToken = await this.redisService.acquireLock(lockKey, 60);
+
+    if (!lockToken) {
+      return;
+    }
+
+    try {
+      const allMissions = await this.prisma.missionDefinition.findMany({
+        where: { active: true },
+      });
+
+      const dailyCheckIn = allMissions.find((m) => m.key === "daily-check-in");
+      const alwaysOn = allMissions.filter((m) => !m.poolOnly && m.key !== "daily-check-in" && m.recurrence === "DAILY");
+      const poolMissions = allMissions.filter((m) => m.poolOnly && m.minStreak <= streakDays);
+      const isCreator = userRole === "CREATOR" || userRole === "ADMIN";
+      const eligiblePool = poolMissions.filter(
+        (m) => m.group === "READER" || (m.group === "AUTHOR" && isCreator),
+      );
+      const oneTimeMissions = allMissions.filter((m) => !m.poolOnly && m.recurrence === "ONE_TIME");
+
+      const boardMissions: { missionId: string; slotIndex: number }[] = [];
+      const usedIds = new Set<string>();
+
+      // Slot 0: daily-check-in
+      if (dailyCheckIn) {
+        boardMissions.push({ missionId: dailyCheckIn.id, slotIndex: 0 });
+        usedIds.add(dailyCheckIn.id);
+      }
+
+      // Slots 1-2: always-on missions
+      const shuffledAlwaysOn = alwaysOn
+        .filter((m) => !usedIds.has(m.id))
+        .sort(() => Math.random() - 0.5);
+
+      for (let i = 0; i < Math.min(2, shuffledAlwaysOn.length); i++) {
+        boardMissions.push({ missionId: shuffledAlwaysOn[i].id, slotIndex: boardMissions.length });
+        usedIds.add(shuffledAlwaysOn[i].id);
+      }
+
+      // Slots 3-7: weighted random from pool
+      const remaining = eligiblePool.filter((m) => !usedIds.has(m.id));
+      const slotsNeeded = MISSION_BOARD_SIZE - boardMissions.length;
+
+      for (let i = 0; i < slotsNeeded && remaining.length > 0; i++) {
+        const totalWeight = remaining.reduce((sum, m) => sum + m.weight, 0);
+        let random = Math.random() * totalWeight;
+        let picked = 0;
+
+        for (let j = 0; j < remaining.length; j++) {
+          random -= remaining[j].weight;
+
+          if (random <= 0) {
+            picked = j;
+            break;
+          }
+        }
+
+        boardMissions.push({ missionId: remaining[picked].id, slotIndex: boardMissions.length });
+        usedIds.add(remaining[picked].id);
+        remaining.splice(picked, 1);
+      }
+
+      // Fill remaining slots with one-time missions if pool is too small
+      if (boardMissions.length < MISSION_BOARD_SIZE) {
+        const fillMissions = oneTimeMissions.filter((m) => !usedIds.has(m.id));
+
+        for (let i = 0; i < fillMissions.length && boardMissions.length < MISSION_BOARD_SIZE; i++) {
+          boardMissions.push({ missionId: fillMissions[i].id, slotIndex: boardMissions.length });
+          usedIds.add(fillMissions[i].id);
+        }
+      }
+
+      await this.prisma.$transaction(
+        boardMissions.map((slot) =>
+          this.prisma.dailyMissionBoard.create({
+            data: {
+              cycleKey,
+              missionDefinitionId: slot.missionId,
+              slotIndex: slot.slotIndex,
+              userId,
+            },
+          }),
+        ),
+      );
+    } finally {
+      await this.redisService.releaseLock(lockKey, lockToken);
+    }
+  }
+
   private async buildMissionPayload(
     user: Prisma.UserGetPayload<{
       include: {
@@ -1446,15 +2032,27 @@ export class EngagementService {
       };
     }>,
   ) {
-    const missionDefinitions = await this.prisma.missionDefinition.findMany({
-      where: {
-        active: true,
-      },
-      orderBy: {
-        sortOrder: "asc",
-      },
+    const wallet = await this.prisma.rewardWallet.findUnique({ where: { userId: user.id } });
+    const streakDays = wallet?.streakDays ?? 0;
+
+    await this.generateDailyMissionBoard(user.id, streakDays, user.role);
+
+    const cycleKey = this.getDailyCycleKey();
+    const boardSlots = await this.prisma.dailyMissionBoard.findMany({
+      where: { userId: user.id, cycleKey },
+      include: { missionDefinition: true },
+      orderBy: { slotIndex: "asc" },
     });
-    const cycleKeys = new Set(["lifetime", this.getDailyCycleKey()]);
+
+    // Fall back to all active missions if board is empty (e.g. no pool missions seeded yet)
+    const missionDefinitions = boardSlots.length > 0
+      ? boardSlots.map((s) => s.missionDefinition)
+      : await this.prisma.missionDefinition.findMany({
+          where: { active: true },
+          orderBy: { sortOrder: "asc" },
+        });
+
+    const cycleKeys = new Set(["lifetime", cycleKey]);
     const states = await this.prisma.userMissionState.findMany({
       where: {
         cycleKey: {
@@ -1476,9 +2074,9 @@ export class EngagementService {
     return Promise.all(
       missionDefinitions.map(async (mission) => {
         const progress = await this.calculateMissionProgress(user, mission);
-        const cycleKey =
-          mission.recurrence === "DAILY" ? this.getDailyCycleKey() : "lifetime";
-        const state = stateMap.get(`${mission.id}:${cycleKey}`) ?? null;
+        const missionCycleKey =
+          mission.recurrence === "DAILY" ? cycleKey : "lifetime";
+        const state = stateMap.get(`${mission.id}:${missionCycleKey}`) ?? null;
         const claimed = Boolean(state?.claimedAt);
 
         return {
@@ -1490,6 +2088,7 @@ export class EngagementService {
           icon: mission.icon,
           id: mission.key,
           claimed,
+          poolOnly: mission.poolOnly,
           reward: mission.rewardPoints,
           target: mission.targetValue,
           title: mission.title,
@@ -1616,6 +2215,80 @@ export class EngagementService {
         return {
           completedAt: isComplete ? now : null,
           currentValue: isComplete ? 1 : 0,
+        };
+      }
+      case "REVIEW_STORY": {
+        const reviewCount = await this.prisma.review.count({
+          where: {
+            createdAt: {
+              gte: todayRange.start,
+              lt: todayRange.end,
+            },
+            userId: user.id,
+          },
+        });
+
+        return {
+          completedAt: reviewCount >= missionDefinition.targetValue ? now : null,
+          currentValue: reviewCount,
+        };
+      }
+      case "READING_TIME_MINUTES": {
+        const readingEvents = await this.prisma.userActivityEvent.findMany({
+          where: {
+            happenedAt: {
+              gte: todayRange.start,
+              lt: todayRange.end,
+            },
+            type: "READING_TIME",
+            userId: user.id,
+          },
+          select: {
+            numericValue: true,
+          },
+        });
+        const totalMinutes = readingEvents.reduce(
+          (sum, event) => sum + event.numericValue,
+          0,
+        );
+
+        return {
+          completedAt: totalMinutes >= missionDefinition.targetValue ? now : null,
+          currentValue: totalMinutes,
+        };
+      }
+      case "FOLLOW_STORIES": {
+        const storyFollowCount = await this.prisma.follow.count({
+          where: {
+            createdAt: {
+              gte: todayRange.start,
+              lt: todayRange.end,
+            },
+            targetType: "STORY",
+            userId: user.id,
+          },
+        });
+
+        return {
+          completedAt: storyFollowCount >= missionDefinition.targetValue ? now : null,
+          currentValue: storyFollowCount,
+        };
+      }
+      case "FOLLOW_AUTHORS": {
+        const authorFollowCount = await this.prisma.follow.count({
+          where: {
+            createdAt: {
+              gte: todayRange.start,
+              lt: todayRange.end,
+            },
+            targetType: "AUTHOR",
+            userId: user.id,
+          },
+        });
+
+        return {
+          completedAt: authorFollowCount >= missionDefinition.targetValue ? now : null,
+          currentValue: authorFollowCount,
         };
       }
       default:
@@ -1879,6 +2552,10 @@ export class EngagementService {
     });
 
     for (const user of users) {
+      if (await this.isNotificationRateLimited(user.id)) {
+        continue;
+      }
+
       const notification = await this.prisma.appNotification.create({
         data: {
           body: payload.body,
@@ -2263,11 +2940,11 @@ export class EngagementService {
       appStreakAlerts: preference?.appStreakAlerts ?? true,
       appSystemUpdates: preference?.appSystemUpdates ?? true,
       emailMarketing: preference?.emailMarketing ?? false,
+      emailNewChapters: preference?.emailNewChapters ?? true,
       emailNewComments: preference?.emailNewComments ?? true,
       emailSecurityAlerts: preference?.emailSecurityAlerts ?? true,
       emailWeeklyDigest: preference?.emailWeeklyDigest ?? true,
       pushCommentReplies: preference?.pushCommentReplies ?? true,
-      pushDirectMessages: preference?.pushDirectMessages ?? false,
       pushNewStories: preference?.pushNewStories ?? true,
       pushStoryComments: preference?.pushStoryComments ?? true,
     };
@@ -2776,5 +3453,98 @@ export class EngagementService {
     const today = this.getDayRange();
 
     return value >= today.start && value < today.end;
+  }
+
+  private async getConfiguredReward(
+    settingKey: string,
+    defaultValue: number,
+  ): Promise<number> {
+    const cacheKey = `admin-setting:${settingKey}`;
+    const cached = await this.redisService.getJson<number>(cacheKey);
+    if (cached !== null) return cached;
+
+    const setting = await this.prisma.adminSetting.findUnique({
+      where: { key: settingKey },
+    });
+
+    const value = setting?.valueCents ?? defaultValue;
+    await this.redisService.setJson(cacheKey, value, REWARD_SETTINGS_CACHE_TTL);
+    return value;
+  }
+
+  private async getDailyCheckInReward(): Promise<number> {
+    return this.getConfiguredReward("dailyCheckInReward", DAILY_CHECK_IN_REWARD);
+  }
+
+  private async getReferralShareReward(): Promise<number> {
+    return this.getConfiguredReward("referralShareReward", REFERRAL_SHARE_REWARD);
+  }
+
+  private async isNotificationRateLimited(userId: string): Promise<boolean> {
+    const MAX_DAILY_NOTIFICATIONS = 50;
+    const dateKey = new Date().toISOString().split("T")[0];
+    const redisKey = `notifications:daily:${userId}:${dateKey}`;
+    const count = await this.redisService.increment(redisKey, 86400);
+    return count > MAX_DAILY_NOTIFICATIONS;
+  }
+
+  private getStreakMultiplier(streakDays: number): number {
+    for (const tier of STREAK_MULTIPLIER_TIERS) {
+      if (streakDays >= tier.minDays) {
+        return tier.multiplier;
+      }
+    }
+    return 1.0;
+  }
+
+  private spinRewardWheel(streakDays: number): {
+    label: string;
+    basePoints: number;
+    finalPoints: number;
+    wheelIndex: number;
+  } {
+    const totalWeight = WHEEL_SLICES.reduce((sum, s) => sum + s.weight, 0);
+    let random = Math.random() * totalWeight;
+    let wheelIndex = 0;
+
+    for (let i = 0; i < WHEEL_SLICES.length; i++) {
+      random -= WHEEL_SLICES[i].weight;
+
+      if (random <= 0) {
+        wheelIndex = i;
+        break;
+      }
+    }
+
+    const slice = WHEEL_SLICES[wheelIndex];
+    const multiplier = this.getStreakMultiplier(streakDays);
+    const finalPoints = Math.round(slice.basePoints * multiplier);
+
+    return {
+      basePoints: slice.basePoints,
+      finalPoints,
+      label: slice.label,
+      wheelIndex,
+    };
+  }
+
+  private getNextMultiplierDays(streakDays: number): number | null {
+    // Find the next tier above current
+    const sortedAsc = [...STREAK_MULTIPLIER_TIERS].reverse();
+    for (const tier of sortedAsc) {
+      if (streakDays < tier.minDays) {
+        return tier.minDays - streakDays;
+      }
+    }
+    return null; // Already at max tier
+  }
+
+  getReaderTitle(balancePoints: number): string {
+    for (const tier of READER_TITLE_TIERS) {
+      if (balancePoints >= tier.minPoints) {
+        return tier.title;
+      }
+    }
+    return "New Reader";
   }
 }

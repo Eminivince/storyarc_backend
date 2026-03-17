@@ -32,7 +32,6 @@ enum ChapterStatus {
   DRAFT
   SCHEDULED
   PUBLISHED
-  ARCHIVED
 }
 
 enum CreatorApplicationStatus {
@@ -120,11 +119,15 @@ enum RewardLedgerEntryType {
 
 enum RewardLedgerReason {
   DAILY_CHECK_IN
+  DAILY_WHEEL_SPIN
   MISSION_CLAIM
   REFERRAL_SHARE
   REFERRAL_COMPLETION
   LEADERBOARD_REWARD
   ADMIN_ADJUSTMENT
+  READING_TIME
+  BADGE_EARNED
+  STREAK_SHIELD_PURCHASE
 }
 
 enum MissionGroup {
@@ -139,6 +142,10 @@ enum MissionMetricType {
   SHARE_REFERRAL
   WRITE_WORDS
   COMPLETE_PROFILE
+  REVIEW_STORY
+  READING_TIME_MINUTES
+  FOLLOW_STORIES
+  FOLLOW_AUTHORS
 }
 
 enum MissionRecurrence {
@@ -188,6 +195,15 @@ enum UserActivityEventType {
   SHARE_REFERRAL
   WRITE_WORDS
   COMPLETE_PROFILE
+  READING_TIME
+}
+
+enum BadgeRarity {
+  COMMON
+  UNCOMMON
+  RARE
+  EPIC
+  LEGENDARY
 }
 
 enum ReportTargetType {
@@ -260,6 +276,14 @@ enum CreatorPayoutStatus {
   PENDING
   IN_REVIEW
   RELEASED
+  REJECTED
+}
+
+enum RefundStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  PROCESSED
 }
 
 enum AdminBookVisibilityState {
@@ -289,10 +313,15 @@ model User {
   role                        UserRole                        @default(READER)
   status                      UserStatus                      @default(ACTIVE)
   emailVerifiedAt             DateTime?
+  tosAcceptedAt               DateTime?
+  tosVersion                  String?
+  birthYear                   Int?
+  ageVerifiedAt               DateTime?
   createdAt                   DateTime                        @default(now())
   updatedAt                   DateTime                        @updatedAt
   profile                     Profile?
   credential                  Credential?
+  totpCredential              TotpCredential?
   sessions                    Session[]
   passwordResetTokens         PasswordResetToken[]
   creatorApplication          CreatorApplication?             @relation("CreatorApplicant")
@@ -346,6 +375,16 @@ model User {
   moderatedComments           Comment[]                       @relation("CommentModerator")
   moderatedReviews            Review[]                        @relation("ReviewModerator")
   chapterReadEvents           ChapterReadEvent[]
+  refundRequests              RefundRequest[]
+  fcmTokens                   FcmToken[]
+  taxForms                    TaxForm[]
+  reviewVotes                 ReviewVote[]
+  bookmarkFolders             BookmarkFolder[]
+  userBadges                  UserBadge[]
+  retentionEvents             RetentionEvent[]
+  dailyRewardOutcomes         DailyRewardOutcome[]
+  dailyMissionBoards          DailyMissionBoard[]
+  creatorScorecards           CreatorScorecard[]
 
   @@map("users")
 }
@@ -568,6 +607,7 @@ model Story {
   maturityRating        String                  @default("16+")
   targetAudience        String                  @default("Young Adult")
   featured              Boolean                 @default(false)
+  deletedAt             DateTime?
   genreSlugs            String[]                @default([])
   tagSlugs              String[]                @default([])
   totalReads            Int                     @default(0)
@@ -603,6 +643,7 @@ model Story {
   analyticsDaily        StoryAnalyticsDaily[]
   chapterAnalyticsDaily ChapterAnalyticsDaily[]
 
+  @@index([authorId])
   @@index([featured, status])
   @@index([genreSlugs], type: Gin)
   @@index([tagSlugs], type: Gin)
@@ -798,11 +839,13 @@ model Bookmark {
   userId             String
   storyId            String
   publishedChapterId String
+  folderId           String?
   createdAt          DateTime         @default(now())
   updatedAt          DateTime         @updatedAt
   user               User             @relation(fields: [userId], references: [id])
   story              Story            @relation(fields: [storyId], references: [id])
   chapter            PublishedChapter @relation(fields: [publishedChapterId], references: [id])
+  folder             BookmarkFolder?  @relation(fields: [folderId], references: [id])
 
   @@unique([userId, publishedChapterId])
   @@index([userId, createdAt])
@@ -869,11 +912,13 @@ model Review {
   moderationNotes        String?
   moderatedByAdminUserId String?
   moderatedAt            DateTime?
+  helpfulCount           Int          @default(0)
   createdAt              DateTime     @default(now())
   updatedAt              DateTime     @updatedAt
   user                   User         @relation("StoryReviewer", fields: [userId], references: [id])
   story                  Story        @relation(fields: [storyId], references: [id])
   moderatedByAdminUser   User?        @relation("ReviewModerator", fields: [moderatedByAdminUserId], references: [id])
+  votes                  ReviewVote[]
 
   @@unique([userId, storyId])
   @@index([storyId, status, createdAt])
@@ -905,6 +950,7 @@ model ChapterReadEvent {
   @@index([storyId, readDate])
   @@index([publishedChapterId, readDate])
   @@index([userId, readDate])
+  @@index([createdAt])
   @@map("chapter_read_events")
 }
 
@@ -1026,6 +1072,7 @@ model Purchase {
   coinPackage              CoinPackage?         @relation(fields: [coinPackageId], references: [id])
   walletLedgerEntries      WalletLedgerEntry[]
   chapterEntitlements      ChapterEntitlement[]
+  refundRequests           RefundRequest[]
 
   @@index([userId, createdAt])
   @@index([paymentReference])
@@ -1149,15 +1196,18 @@ model GiftTransaction {
 }
 
 model RewardWallet {
-  id            String              @id @default(cuid())
-  userId        String              @unique
-  balancePoints Int                 @default(0)
-  streakDays    Int                 @default(0)
-  lastCheckInAt DateTime?
-  createdAt     DateTime            @default(now())
-  updatedAt     DateTime            @updatedAt
-  user          User                @relation(fields: [userId], references: [id])
-  ledgerEntries RewardLedgerEntry[]
+  id                    String              @id @default(cuid())
+  userId                String              @unique
+  balancePoints         Int                 @default(0)
+  streakDays            Int                 @default(0)
+  lastCheckInAt         DateTime?
+  streakMultiplier      Float               @default(1.0)
+  streakShields         Int                 @default(0)
+  lastStreakShieldUsedAt DateTime?
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+  user                  User                @relation(fields: [userId], references: [id])
+  ledgerEntries         RewardLedgerEntry[]
 
   @@map("reward_wallets")
 }
@@ -1211,10 +1261,15 @@ model MissionDefinition {
   actionHref          String?
   active              Boolean             @default(true)
   sortOrder           Int                 @default(0)
+  poolOnly            Boolean             @default(false)
+  weight              Int                 @default(10)
+  minStreak           Int                 @default(0)
+  category            String              @default("general")
   createdAt           DateTime            @default(now())
   updatedAt           DateTime            @updatedAt
   states              UserMissionState[]
   rewardLedgerEntries RewardLedgerEntry[]
+  dailyMissionBoards  DailyMissionBoard[]
 
   @@index([group, recurrence, sortOrder])
   @@map("mission_definitions")
@@ -1399,12 +1454,12 @@ model PollVote {
 model NotificationPreference {
   id                  String   @id @default(cuid())
   userId              String   @unique
+  emailNewChapters    Boolean  @default(true)
   emailNewComments    Boolean  @default(true)
   emailWeeklyDigest   Boolean  @default(true)
   emailSecurityAlerts Boolean  @default(true)
   emailMarketing      Boolean  @default(false)
   pushNewStories      Boolean  @default(true)
-  pushDirectMessages  Boolean  @default(false)
   pushStoryComments   Boolean  @default(true)
   pushCommentReplies  Boolean  @default(true)
   appAchievements     Boolean  @default(true)
@@ -1482,6 +1537,7 @@ model AppNotification {
   user      User             @relation(fields: [userId], references: [id])
 
   @@index([userId, createdAt])
+  @@index([createdAt])
   @@map("app_notifications")
 }
 
@@ -1560,14 +1616,17 @@ model SupportMessage {
 }
 
 model CreatorPayout {
-  id            String              @id @default(cuid())
-  creatorUserId String
-  periodLabel   String
-  amountCents   Int
-  status        CreatorPayoutStatus @default(PENDING)
-  createdAt     DateTime            @default(now())
-  updatedAt     DateTime            @updatedAt
-  creator       User                @relation(fields: [creatorUserId], references: [id])
+  id                     String              @id @default(cuid())
+  creatorUserId          String
+  periodLabel            String
+  amountCents            Int
+  status                 CreatorPayoutStatus @default(PENDING)
+  reviewNotes            String?
+  reviewedByAdminUserId  String?
+  releasedByAdminUserId  String?
+  createdAt              DateTime            @default(now())
+  updatedAt              DateTime            @updatedAt
+  creator                User                @relation(fields: [creatorUserId], references: [id])
 
   @@index([status, updatedAt])
   @@index([creatorUserId, updatedAt])
@@ -1616,4 +1675,243 @@ model PaystackWebhookEvent {
   createdAt        DateTime @default(now())
 
   @@map("paystack_webhook_events")
+}
+
+// --- Phase 1: Security ---
+
+model TotpCredential {
+  id              String    @id @default(cuid())
+  userId          String    @unique
+  encryptedSecret String
+  verified        Boolean   @default(false)
+  enabledAt       DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  user            User      @relation(fields: [userId], references: [id])
+
+  @@map("totp_credentials")
+}
+
+// --- Phase 2: Monetization ---
+
+model RefundRequest {
+  id           String       @id @default(cuid())
+  purchaseId   String
+  userId       String
+  reason       String
+  status       RefundStatus @default(PENDING)
+  amountCents  Int
+  reviewedAt   DateTime?
+  reviewedById String?
+  reviewNotes  String?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  purchase     Purchase     @relation(fields: [purchaseId], references: [id])
+  user         User         @relation(fields: [userId], references: [id])
+
+  @@index([userId, createdAt])
+  @@index([status])
+  @@map("refund_requests")
+}
+
+// --- Phase 3: Engagement ---
+
+model FcmToken {
+  id        String   @id @default(cuid())
+  userId    String
+  token     String   @unique
+  device    String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@map("fcm_tokens")
+}
+
+// --- Phase 4: Creator Tools ---
+
+model TaxForm {
+  id          String    @id @default(cuid())
+  userId      String
+  formType    String
+  formData    Json
+  status      String    @default("PENDING")
+  submittedAt DateTime?
+  reviewedAt  DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  user        User      @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@map("tax_forms")
+}
+
+// --- Phase 5: Discovery ---
+
+model ReviewVote {
+  id        String   @id @default(cuid())
+  userId    String
+  reviewId  String
+  helpful   Boolean
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id])
+  review    Review   @relation(fields: [reviewId], references: [id])
+
+  @@unique([userId, reviewId])
+  @@map("review_votes")
+}
+
+model BookmarkFolder {
+  id        String     @id @default(cuid())
+  userId    String
+  name      String
+  sortOrder Int        @default(0)
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+  user      User       @relation(fields: [userId], references: [id])
+  bookmarks Bookmark[]
+
+  @@index([userId, sortOrder])
+  @@map("bookmark_folders")
+}
+
+// --- Phase 6: Admin ---
+
+model HelpCenterCategory {
+  id          String              @id @default(cuid())
+  title       String
+  description String
+  icon        String
+  sortOrder   Int                 @default(0)
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+  articles    HelpCenterArticle[]
+
+  @@map("help_center_categories")
+}
+
+model HelpCenterArticle {
+  id         String             @id @default(cuid())
+  categoryId String
+  title      String
+  excerpt    String
+  body       String?
+  tag        String?
+  sortOrder  Int                @default(0)
+  published  Boolean            @default(true)
+  createdAt  DateTime           @default(now())
+  updatedAt  DateTime           @updatedAt
+  category   HelpCenterCategory @relation(fields: [categoryId], references: [id])
+
+  @@index([categoryId, sortOrder])
+  @@map("help_center_articles")
+}
+
+// --- Phase 7: Retention Engine ---
+
+model BadgeDefinition {
+  id               String      @id @default(cuid())
+  key              String      @unique
+  title            String
+  description      String
+  category         String
+  iconUrl          String      @default("")
+  rarity           BadgeRarity @default(COMMON)
+  requirementType  String
+  requirementValue Int
+  rewardPoints     Int         @default(0)
+  sortOrder        Int         @default(0)
+  isActive         Boolean     @default(true)
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+  userBadges       UserBadge[]
+
+  @@index([category, sortOrder])
+  @@map("badge_definitions")
+}
+
+model UserBadge {
+  id                String          @id @default(cuid())
+  userId            String
+  badgeDefinitionId String
+  earnedAt          DateTime        @default(now())
+  featured          Boolean         @default(false)
+  createdAt         DateTime        @default(now())
+  user              User            @relation(fields: [userId], references: [id])
+  badgeDefinition   BadgeDefinition @relation(fields: [badgeDefinitionId], references: [id])
+
+  @@unique([userId, badgeDefinitionId])
+  @@index([userId, earnedAt])
+  @@map("user_badges")
+}
+
+model RetentionEvent {
+  id             String    @id @default(cuid())
+  userId         String
+  eventType      String
+  channelType    String
+  relatedStoryId String?
+  metadata       Json?
+  clickedAt      DateTime?
+  sentAt         DateTime  @default(now())
+  createdAt      DateTime  @default(now())
+  user           User      @relation(fields: [userId], references: [id])
+
+  @@index([userId, sentAt])
+  @@index([eventType, sentAt])
+  @@map("retention_events")
+}
+
+model DailyRewardOutcome {
+  id          String   @id @default(cuid())
+  userId      String
+  label       String
+  basePoints  Int
+  finalPoints Int
+  wheelIndex  Int
+  spunAt      DateTime @default(now())
+  createdAt   DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id])
+
+  @@index([userId, spunAt])
+  @@map("daily_reward_outcomes")
+}
+
+model DailyMissionBoard {
+  id                  String            @id @default(cuid())
+  userId              String
+  cycleKey            String
+  missionDefinitionId String
+  slotIndex           Int
+  createdAt           DateTime          @default(now())
+  user                User              @relation(fields: [userId], references: [id])
+  missionDefinition   MissionDefinition @relation(fields: [missionDefinitionId], references: [id])
+
+  @@unique([userId, cycleKey, slotIndex])
+  @@unique([userId, cycleKey, missionDefinitionId])
+  @@index([userId, cycleKey])
+  @@map("daily_mission_boards")
+}
+
+model CreatorScorecard {
+  id                String    @id @default(cuid())
+  userId            String
+  weekStart         DateTime
+  weekEnd           DateTime
+  totalViews        Int       @default(0)
+  totalReaders      Int       @default(0)
+  newFollowers      Int       @default(0)
+  chaptersPublished Int       @default(0)
+  avgRetention      Float     @default(0)
+  avgRating         Float     @default(0)
+  totalComments     Int       @default(0)
+  revenueEarned     Int       @default(0)
+  emailSentAt       DateTime?
+  createdAt         DateTime  @default(now())
+  user              User      @relation(fields: [userId], references: [id])
+
+  @@unique([userId, weekStart])
+  @@index([userId, weekStart])
+  @@map("creator_scorecards")
 }

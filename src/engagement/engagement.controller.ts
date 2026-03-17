@@ -17,6 +17,7 @@ import {
   parseCreatePollBody,
   parseLeaderboardPeriodQuery,
   parseNotificationPreferencesBody,
+  parseReadingTimeBody,
   parseShareReferralBody,
   parseVotePollBody,
 } from "./engagement.schemas";
@@ -39,6 +40,11 @@ export class EngagementController {
   @Get("overview")
   async getOverview(@Req() request: AuthenticatedRequest) {
     return this.engagementService.getOverview(request.auth!.userId);
+  }
+
+  @Get("notifications")
+  async getNotifications(@Req() request: AuthenticatedRequest) {
+    return this.engagementService.getNotifications(request.auth!.userId);
   }
 
   @Post("check-in")
@@ -154,5 +160,43 @@ export class EngagementController {
   @Post("notifications/read-all")
   async markAllNotificationsRead(@Req() request: AuthenticatedRequest) {
     return this.engagementService.markAllNotificationsRead(request.auth!.userId);
+  }
+
+  @Post("streak-shield/purchase")
+  async purchaseStreakShield(@Req() request: AuthenticatedRequest) {
+    return this.engagementService.purchaseStreakShield(request.auth!.userId);
+  }
+
+  @Post("reading-time")
+  async recordReadingTime(
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.engagementService.recordReadingTime(
+      request.auth!.userId,
+      parseReadingTimeBody(body),
+    );
+  }
+
+  @Get("creator-scorecard")
+  async getCreatorScorecard(@Req() request: AuthenticatedRequest) {
+    assertCreatorRole(request);
+    return this.engagementService.getCreatorScorecard(request.auth!.userId);
+  }
+
+  @Get("badges")
+  async getBadges(@Req() request: AuthenticatedRequest) {
+    return this.engagementService.getBadges(request.auth!.userId);
+  }
+
+  @Put("badges/:badgeId/feature")
+  async toggleBadgeFeatured(
+    @Param("badgeId") badgeId: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.engagementService.toggleBadgeFeatured(
+      request.auth!.userId,
+      badgeId,
+    );
   }
 }
