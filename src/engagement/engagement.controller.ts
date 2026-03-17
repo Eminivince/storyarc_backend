@@ -20,10 +20,13 @@ import {
   parseNotificationPreferencesBody,
   parseParagraphIndexParam,
   parseReactionBody,
+  parseAdminCreateChallengeBody,
+  parseAdminUpdateChallengeBody,
   parseReadingTimeBody,
   parseShareReferralBody,
   parseVotePollBody,
 } from "./engagement.schemas";
+import { ChallengeService } from "./challenge.service";
 import { EngagementService } from "./engagement.service";
 import { ReactionService } from "./reaction.service";
 
@@ -36,12 +39,19 @@ function assertCreatorRole(request: AuthenticatedRequest) {
   }
 }
 
+function assertAdminRole(request: AuthenticatedRequest) {
+  if (request.auth?.role !== "ADMIN") {
+    throw new ForbiddenException("Admin access is required.");
+  }
+}
+
 @Controller("engagement")
 @UseGuards(AccessTokenGuard)
 export class EngagementController {
   constructor(
     private readonly engagementService: EngagementService,
     private readonly reactionService: ReactionService,
+    private readonly challengeService: ChallengeService,
   ) {}
 
   @Get("overview")
@@ -301,5 +311,60 @@ export class EngagementController {
       storySlug,
       chapterSlug,
     );
+  }
+
+  // ── challenges ─────────────────────────────────────────────────────
+
+  @Get("challenges")
+  async getActiveChallenges(@Req() request: AuthenticatedRequest) {
+    return this.challengeService.getActiveChallenges(request.auth!.userId);
+  }
+
+  @Post("challenges/:challengeId/claim")
+  async claimChallengeReward(
+    @Param("challengeId") challengeId: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.challengeService.claimChallengeReward(
+      request.auth!.userId,
+      challengeId,
+    );
+  }
+
+  @Get("challenges/:challengeId/leaderboard")
+  async getChallengeLeaderboard(
+    @Param("challengeId") challengeId: string,
+  ) {
+    return this.challengeService.getChallengeLeaderboard(challengeId);
+  }
+
+  @Post("admin/challenges")
+  async adminCreateChallenge(
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    assertAdminRole(request);
+    return this.challengeService.adminCreateChallenge(
+      parseAdminCreateChallengeBody(body),
+    );
+  }
+
+  @Put("admin/challenges/:id")
+  async adminUpdateChallenge(
+    @Param("id") id: string,
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    assertAdminRole(request);
+    return this.challengeService.adminUpdateChallenge(
+      id,
+      parseAdminUpdateChallengeBody(body),
+    );
+  }
+
+  @Get("admin/challenges")
+  async adminListChallenges(@Req() request: AuthenticatedRequest) {
+    assertAdminRole(request);
+    return this.challengeService.adminListChallenges();
   }
 }

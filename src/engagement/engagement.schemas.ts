@@ -1,5 +1,5 @@
 import { BadRequestException } from "@nestjs/common";
-import { LeaderboardPeriod, ReactionType } from "@prisma/client";
+import { ChallengeMetric, ChallengeType, LeaderboardPeriod, ReactionType } from "@prisma/client";
 
 type RawRecord = Record<string, unknown>;
 
@@ -264,5 +264,80 @@ export function parseReadingTimeBody(body: unknown) {
     storySlug: getStringValue(record, "storySlug", { maxLength: 120 }),
     chapterSlug: getStringValue(record, "chapterSlug", { maxLength: 120 }),
     minutesRead: Math.floor(minutesRead),
+  };
+}
+
+// ── Challenge parsers ────────────────────────────────────────────────
+
+const VALID_CHALLENGE_TYPES: ChallengeType[] = ["SEASONAL", "WEEKLY", "SPECIAL"];
+const VALID_CHALLENGE_METRICS: ChallengeMetric[] = [
+  "CHAPTERS_READ",
+  "READING_TIME_MINUTES",
+  "STORIES_COMPLETED",
+  "REVIEWS_WRITTEN",
+  "COMMENTS_WRITTEN",
+  "DAYS_STREAK",
+  "BOOKS_STARTED",
+];
+
+export function parseAdminCreateChallengeBody(body: unknown) {
+  const record = getObjectBody(body);
+
+  const type = getStringValue(record, "type", { maxLength: 20 });
+
+  if (!VALID_CHALLENGE_TYPES.includes(type as ChallengeType)) {
+    throw new BadRequestException(
+      `type must be one of: ${VALID_CHALLENGE_TYPES.join(", ")}.`,
+    );
+  }
+
+  const targetMetric = getStringValue(record, "targetMetric", { maxLength: 40 });
+
+  if (!VALID_CHALLENGE_METRICS.includes(targetMetric as ChallengeMetric)) {
+    throw new BadRequestException(
+      `targetMetric must be one of: ${VALID_CHALLENGE_METRICS.join(", ")}.`,
+    );
+  }
+
+  const targetValue = record.targetValue;
+
+  if (typeof targetValue !== "number" || !Number.isInteger(targetValue) || targetValue < 1) {
+    throw new BadRequestException("targetValue must be a positive integer.");
+  }
+
+  const rewardPoints = record.rewardPoints;
+
+  if (typeof rewardPoints !== "number" || !Number.isInteger(rewardPoints) || rewardPoints < 0) {
+    throw new BadRequestException("rewardPoints must be a non-negative integer.");
+  }
+
+  return {
+    title: getStringValue(record, "title", { maxLength: 200, minLength: 3 }),
+    description: getStringValue(record, "description", { maxLength: 1000, minLength: 5 }),
+    type: type as ChallengeType,
+    targetValue,
+    targetMetric: targetMetric as ChallengeMetric,
+    rewardPoints,
+    rewardBadgeId: getOptionalStringValue(record, "rewardBadgeId", 60),
+    startsAt: getStringValue(record, "startsAt", { maxLength: 40 }),
+    endsAt: getStringValue(record, "endsAt", { maxLength: 40 }),
+  };
+}
+
+export function parseAdminUpdateChallengeBody(body: unknown) {
+  const record = getObjectBody(body);
+
+  return {
+    title: record.title !== undefined ? getStringValue(record, "title", { maxLength: 200 }) : undefined,
+    description: record.description !== undefined ? getStringValue(record, "description", { maxLength: 1000 }) : undefined,
+    isActive: record.isActive !== undefined ? getBooleanValue(record, "isActive") : undefined,
+    rewardPoints: record.rewardPoints !== undefined ? (() => {
+      const val = record.rewardPoints;
+      if (typeof val !== "number" || !Number.isInteger(val) || val < 0) {
+        throw new BadRequestException("rewardPoints must be a non-negative integer.");
+      }
+      return val;
+    })() : undefined,
+    endsAt: record.endsAt !== undefined ? getStringValue(record, "endsAt", { maxLength: 40 }) : undefined,
   };
 }

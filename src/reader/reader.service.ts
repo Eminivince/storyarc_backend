@@ -18,6 +18,7 @@ import {
 import { PrismaService } from "../database/prisma.service";
 import { CreatorAnalyticsService } from "../analytics/creator-analytics.service";
 import { BadgeEvaluationService } from "../engagement/badge-evaluation.service";
+import { ChallengeService } from "../engagement/challenge.service";
 import { EngagementService } from "../engagement/engagement.service";
 import { RedisService } from "../redis/redis.service";
 import {
@@ -313,6 +314,7 @@ export class ReaderService {
     private readonly monetizationService: MonetizationService,
     private readonly engagementService: EngagementService,
     private readonly badgeEvaluationService: BadgeEvaluationService,
+    private readonly challengeService: ChallengeService,
     private readonly creatorAnalyticsService: CreatorAnalyticsService,
     private readonly redisService: RedisService,
   ) {}
@@ -1299,6 +1301,12 @@ export class ReaderService {
 
     await this.recalculateStoryRatingSummary(story.id);
 
+    if (!existingReview) {
+      this.challengeService
+        .incrementChallengeProgress(userId, "REVIEWS_WRITTEN", 1)
+        .catch(() => undefined);
+    }
+
     return {
       message: existingReview ? "Review updated." : "Review published.",
       review: this.mapStoryReview(review, userId, {
@@ -1669,6 +1677,9 @@ export class ReaderService {
       .catch(() => undefined);
 
     this.badgeEvaluationService.evaluateBadges(userId).catch(() => undefined);
+    this.challengeService
+      .incrementChallengeProgress(userId, "COMMENTS_WRITTEN", 1)
+      .catch(() => undefined);
 
     return {
       comment: this.mapCommentNode(comment, userId, []),
@@ -1977,9 +1988,12 @@ export class ReaderService {
       });
     }
 
-    // Trigger badge evaluation on chapter completion
+    // Trigger badge evaluation + challenge progress on chapter completion
     if (nextProgressPercent >= 95) {
       this.badgeEvaluationService.evaluateBadges(userId).catch(() => undefined);
+      this.challengeService
+        .incrementChallengeProgress(userId, "CHAPTERS_READ", 1)
+        .catch(() => undefined);
     }
 
     return {

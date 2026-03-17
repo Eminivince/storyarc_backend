@@ -7,6 +7,7 @@ import { EngagementController } from "./engagement.controller";
 import { EngagementService } from "./engagement.service";
 import { CreatorScorecardService } from "./creator-scorecard.service";
 import { DataCleanupService } from "./data-cleanup.service";
+import { ChallengeService } from "./challenge.service";
 import { ReactionService } from "./reaction.service";
 import { RetentionNotificationService } from "./retention-notification.service";
 import { WeeklyDigestService } from "./weekly-digest.service";
@@ -17,6 +18,7 @@ import { WeeklyDigestService } from "./weekly-digest.service";
   providers: [
     EngagementService,
     BadgeEvaluationService,
+    ChallengeService,
     CreatorScorecardService,
     EmailQueueService,
     ReactionService,
@@ -24,6 +26,6 @@ import { WeeklyDigestService } from "./weekly-digest.service";
     WeeklyDigestService,
     DataCleanupService,
   ],
-  exports: [EngagementService, BadgeEvaluationService, EmailQueueService, ReactionService],
+  exports: [EngagementService, BadgeEvaluationService, ChallengeService, EmailQueueService, ReactionService],
 })
 export class EngagementModule {}

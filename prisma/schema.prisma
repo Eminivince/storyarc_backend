@@ -128,6 +128,7 @@ enum RewardLedgerReason {
   READING_TIME
   BADGE_EARNED
   STREAK_SHIELD_PURCHASE
+  CHALLENGE_CLAIM
 }
 
 enum MissionGroup {
@@ -387,6 +388,7 @@ model User {
   creatorScorecards           CreatorScorecard[]
   paragraphReactions          ParagraphReaction[]
   chapterReactions            ChapterReaction[]
+  challengeProgress           UserChallengeProgress[]
 
   @@map("users")
 }
@@ -1829,7 +1831,8 @@ model BadgeDefinition {
   isActive         Boolean     @default(true)
   createdAt        DateTime    @default(now())
   updatedAt        DateTime    @updatedAt
-  userBadges       UserBadge[]
+  userBadges         UserBadge[]
+  readingChallenges  ReadingChallenge[]
 
   @@index([category, sortOrder])
   @@map("badge_definitions")
@@ -1958,4 +1961,59 @@ model ChapterReaction {
   @@unique([userId, publishedChapterId])
   @@index([publishedChapterId, reactionType])
   @@map("chapter_reactions")
+}
+
+// ─── Reading Challenges / Seasonal Events ────────────────────────────
+
+enum ChallengeType {
+  SEASONAL
+  WEEKLY
+  SPECIAL
+}
+
+enum ChallengeMetric {
+  CHAPTERS_READ
+  READING_TIME_MINUTES
+  STORIES_COMPLETED
+  REVIEWS_WRITTEN
+  COMMENTS_WRITTEN
+  DAYS_STREAK
+  BOOKS_STARTED
+}
+
+model ReadingChallenge {
+  id            String                  @id @default(cuid())
+  title         String
+  description   String
+  type          ChallengeType
+  targetValue   Int
+  targetMetric  ChallengeMetric
+  rewardPoints  Int
+  rewardBadgeId String?
+  startsAt      DateTime
+  endsAt        DateTime
+  isActive      Boolean                 @default(true)
+  createdAt     DateTime                @default(now())
+  updatedAt     DateTime                @updatedAt
+  rewardBadge   BadgeDefinition?        @relation(fields: [rewardBadgeId], references: [id])
+  userProgress  UserChallengeProgress[]
+
+  @@index([isActive, startsAt, endsAt])
+  @@map("reading_challenges")
+}
+
+model UserChallengeProgress {
+  id           String           @id @default(cuid())
+  userId       String
+  challengeId  String
+  currentValue Int              @default(0)
+  completedAt  DateTime?
+  claimedAt    DateTime?
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+  user         User             @relation(fields: [userId], references: [id])
+  challenge    ReadingChallenge @relation(fields: [challengeId], references: [id])
+
+  @@unique([userId, challengeId])
+  @@map("user_challenge_progress")
 }

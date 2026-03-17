@@ -1,6 +1,8 @@
 import {
   BadRequestException,
+  forwardRef,
   ForbiddenException,
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
@@ -22,6 +24,7 @@ import { PrismaService } from "../database/prisma.service";
 import { RedisService } from "../redis/redis.service";
 import { isStoryLive } from "../utils/book-admin";
 import { BadgeEvaluationService } from "./badge-evaluation.service";
+import { ChallengeService } from "./challenge.service";
 
 const DAILY_CHECK_IN_REWARD = 50;
 const REFERRAL_SHARE_REWARD = 20;
@@ -283,6 +286,8 @@ export class EngagementService {
     private readonly resendEmailService: ResendEmailService,
     private readonly redisService: RedisService,
     private readonly badgeEvaluationService: BadgeEvaluationService,
+    @Inject(forwardRef(() => ChallengeService))
+    private readonly challengeService: ChallengeService,
   ) {}
 
   async getOverview(userId: string) {
@@ -1370,6 +1375,12 @@ export class EngagementService {
     this.badgeEvaluationService.evaluateBadges(userId).catch((err) => {
       this.logger.error(`Badge evaluation failed after reading time: ${err instanceof Error ? err.message : String(err)}`);
     });
+
+    this.challengeService
+      .incrementChallengeProgress(userId, "READING_TIME_MINUTES", minutesRead)
+      .catch((err) => {
+        this.logger.error(`Challenge progress failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
 
     const newDailyUsed = currentDailyMinutes + minutesRead;
 
