@@ -28,6 +28,7 @@ import {
 } from "./engagement.schemas";
 import { ChallengeService } from "./challenge.service";
 import { EngagementService } from "./engagement.service";
+import { PointShopService } from "./point-shop.service";
 import { ReactionService } from "./reaction.service";
 
 function assertCreatorRole(request: AuthenticatedRequest) {
@@ -52,6 +53,7 @@ export class EngagementController {
     private readonly engagementService: EngagementService,
     private readonly reactionService: ReactionService,
     private readonly challengeService: ChallengeService,
+    private readonly pointShopService: PointShopService,
   ) {}
 
   @Get("overview")
@@ -366,5 +368,25 @@ export class EngagementController {
   async adminListChallenges(@Req() request: AuthenticatedRequest) {
     assertAdminRole(request);
     return this.challengeService.adminListChallenges();
+  }
+
+  // ── point shop ─────────────────────────────────────────────────────
+
+  @Get("shop")
+  async getShopCatalog() {
+    return this.pointShopService.getShopCatalog();
+  }
+
+  @Post("shop/:itemId/purchase")
+  async purchaseShopItem(
+    @Param("itemId") itemId: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.pointShopService.purchaseItem(request.auth!.userId, itemId);
+  }
+
+  @Get("shop/my-items")
+  async getMyShopItems(@Req() request: AuthenticatedRequest) {
+    return this.pointShopService.getUserItems(request.auth!.userId);
   }
 }

@@ -8,6 +8,7 @@ import { EngagementService } from "./engagement.service";
 import { CreatorScorecardService } from "./creator-scorecard.service";
 import { DataCleanupService } from "./data-cleanup.service";
 import { ChallengeService } from "./challenge.service";
+import { PointShopService } from "./point-shop.service";
 import { ReactionService } from "./reaction.service";
 import { RetentionNotificationService } from "./retention-notification.service";
 import { WeeklyDigestService } from "./weekly-digest.service";
@@ -21,6 +22,7 @@ import { WeeklyDigestService } from "./weekly-digest.service";
     ChallengeService,
     CreatorScorecardService,
     EmailQueueService,
+    PointShopService,
     ReactionService,
     RetentionNotificationService,
     WeeklyDigestService,

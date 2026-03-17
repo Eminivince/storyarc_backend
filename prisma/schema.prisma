@@ -129,6 +129,7 @@ enum RewardLedgerReason {
   BADGE_EARNED
   STREAK_SHIELD_PURCHASE
   CHALLENGE_CLAIM
+  SHOP_PURCHASE
 }
 
 enum MissionGroup {
@@ -389,6 +390,7 @@ model User {
   paragraphReactions          ParagraphReaction[]
   chapterReactions            ChapterReaction[]
   challengeProgress           UserChallengeProgress[]
+  pointShopPurchases          UserPointShopPurchase[]
 
   @@map("users")
 }
@@ -2016,4 +2018,57 @@ model UserChallengeProgress {
 
   @@unique([userId, challengeId])
   @@map("user_challenge_progress")
+}
+
+// ─── Point Shop ──────────────────────────────────────────────────────
+
+enum ShopItemCategory {
+  AVATAR_FRAME
+  PROFILE_BADGE
+  THEME
+  READING_EFFECT
+  TITLE
+}
+
+enum ShopItemDuration {
+  PERMANENT
+  TIMED
+  SINGLE_USE
+}
+
+model PointShopItem {
+  id           String                  @id @default(cuid())
+  key          String                  @unique
+  title        String
+  description  String
+  category     ShopItemCategory
+  iconUrl      String?
+  cost         Int
+  durationType ShopItemDuration
+  durationDays Int?
+  maxPurchases Int?
+  isActive     Boolean                 @default(true)
+  sortOrder    Int                     @default(0)
+  createdAt    DateTime                @default(now())
+  updatedAt    DateTime                @updatedAt
+  purchases    UserPointShopPurchase[]
+
+  @@index([isActive, category, sortOrder])
+  @@map("point_shop_items")
+}
+
+model UserPointShopPurchase {
+  id          String        @id @default(cuid())
+  userId      String
+  itemId      String
+  purchasedAt DateTime      @default(now())
+  expiresAt   DateTime?
+  isActive    Boolean       @default(true)
+  createdAt   DateTime      @default(now())
+  user        User          @relation(fields: [userId], references: [id])
+  item        PointShopItem @relation(fields: [itemId], references: [id])
+
+  @@index([userId, isActive])
+  @@index([expiresAt, isActive])
+  @@map("user_point_shop_purchases")
 }
