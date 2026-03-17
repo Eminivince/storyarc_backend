@@ -37,6 +37,7 @@ export class ReaderPublicController {
   async listStories(
     @Query("q") query: string | undefined,
     @Query("genre") genre: string | undefined,
+    @Query("tags") tags: string | undefined,
     @Query("limit") limit: string | undefined,
     @Query("offset") offset: string | undefined,
   ) {
@@ -45,6 +46,7 @@ export class ReaderPublicController {
       limit: parseStoryCatalogLimitQuery(limit),
       offset: parseStoryCatalogOffsetQuery(offset),
       query,
+      tags: tags ? tags.split(",").map((t) => t.trim()).filter(Boolean) : undefined,
     });
   }
 

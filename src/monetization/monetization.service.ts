@@ -22,6 +22,8 @@ import {
 import { AuthenticatedRequest } from "../common/types/request-with-auth.type";
 import { env } from "../config/env";
 import { PrismaService } from "../database/prisma.service";
+import { PrismaClient } from "@prisma/client";
+import { ResendEmailService } from "../auth/resend-email.service";
 import { RedisService } from "../redis/redis.service";
 import {
   RequiredPreviousChapter,
@@ -310,6 +312,7 @@ export class MonetizationService implements OnModuleInit {
   constructor(
     private readonly prisma: PrismaService,
     private readonly redisService: RedisService,
+    private readonly emailService: ResendEmailService,
   ) {}
 
   async onModuleInit() {
@@ -842,7 +845,12 @@ export class MonetizationService implements OnModuleInit {
       };
     }
 
+    const MAX_BATCH_UNLOCK_SIZE = 50;
     const option = this.resolveBatchUnlockOption(context.eligibleCandidates, input.mode);
+
+    if (option && option.chapters.length > MAX_BATCH_UNLOCK_SIZE) {
+      option.chapters = option.chapters.slice(0, MAX_BATCH_UNLOCK_SIZE);
+    }
 
     if (!option || option.chapters.length === 0) {
       return {
@@ -1050,100 +1058,6 @@ export class MonetizationService implements OnModuleInit {
       message: this.getBatchUnlockMessage(executedOption),
       status: await this.getStatus(userId),
       unlockedChapterCount: executedOption.chapters.length,
-    };
-  }
-
-  async unlockChapterWithAd(userId: string, input: ChapterUnlockInput) {
-    const { chapter, story } = await this.getPublishedChapterBySlugs(
-      input.storySlug,
-      input.chapterSlug,
-    );
-    const effectiveChapter = this.resolveEffectiveChapter(chapter, story);
-
-    if (!effectiveChapter.isCurrentlyPremium) {
-      return {
-        chapterKey: this.toChapterKey(input.storySlug, input.chapterSlug),
-        message: "This chapter is already free to read.",
-      };
-    }
-
-    const access = await this.getChapterAccessDecision(userId, {
-      chapter,
-      isChapterPremium: effectiveChapter.isCurrentlyPremium,
-      story,
-    });
-
-    if (access.accessState === "SEQUENCE_BLOCKED") {
-      throw new BadRequestException(
-        this.getSequentialAccessMessage(access.requiredPreviousChapter),
-      );
-    }
-
-    if (access.accessState === "READABLE") {
-      return {
-        chapterKey: this.toChapterKey(input.storySlug, input.chapterSlug),
-        message: "Chapter access is already active.",
-      };
-    }
-
-    try {
-      await this.prisma.$transaction(async (tx) => {
-        const existingEntitlement = await tx.chapterEntitlement.findUnique({
-          where: {
-            userId_publishedChapterId: {
-              publishedChapterId: chapter.id,
-              userId,
-            },
-          },
-        });
-
-        if (existingEntitlement) {
-          return;
-        }
-
-        const adUnlockRecord = await tx.adUnlockRecord.create({
-          data: {
-            chapter: {
-              connect: { id: chapter.id },
-            },
-            idempotencyKey: input.idempotencyKey,
-            story: {
-              connect: { id: chapter.storyId },
-            },
-            user: {
-              connect: { id: userId },
-            },
-          },
-        });
-
-        await tx.chapterEntitlement.create({
-          data: {
-            adUnlockRecord: {
-              connect: { id: adUnlockRecord.id },
-            },
-            chapter: {
-              connect: { id: chapter.id },
-            },
-            source: ChapterEntitlementSource.AD_UNLOCK,
-            story: {
-              connect: { id: chapter.storyId },
-            },
-            user: {
-              connect: { id: userId },
-            },
-          },
-        });
-      });
-    } catch (error) {
-      if (!this.isUniqueConstraintError(error)) {
-        throw error;
-      }
-    }
-
-    return {
-      chapterKey: this.toChapterKey(input.storySlug, input.chapterSlug),
-      message: "Ad unlock recorded. Chapter access is now active.",
-      status: await this.getStatus(userId),
     };
   }
 
@@ -1695,7 +1609,29 @@ export class MonetizationService implements OnModuleInit {
       return this.catalogBootstrapPromise;
     }
 
-    this.catalogBootstrapPromise = ensureDefaultMonetizationCatalog(this.prisma, {
+    const directUrl = process.env.DIRECT_URL?.trim() || "";
+    const pooledUrl = process.env.DATABASE_URL?.trim() || "";
+    const baseUrl = directUrl || pooledUrl;
+
+    if (!baseUrl) {
+      this.logger.warn(
+        "Skipping monetization catalog bootstrap: DIRECT_URL or DATABASE_URL must be set.",
+      );
+      this.catalogBootstrapped = true;
+      return;
+    }
+
+    const separator = baseUrl.includes("?") ? "&" : "?";
+    const seedUrl = `${baseUrl}${separator}connection_limit=1`;
+    const seedPrisma = new PrismaClient({
+      datasources: {
+        db: {
+          url: seedUrl,
+        },
+      },
+    });
+
+    this.catalogBootstrapPromise = ensureDefaultMonetizationCatalog(seedPrisma, {
       codes: {
         arcaneAnnualPlanCode: env.paystackPlanArcaneAnnual ?? null,
         arcaneMonthlyPlanCode: env.paystackPlanArcaneMonthly ?? null,
@@ -1710,8 +1646,19 @@ export class MonetizationService implements OnModuleInit {
           `Monetization catalog ready with ${planCodes.length} plans and ${coinPackageCodes.length} coin packages.`,
         );
       })
-      .finally(() => {
+      .catch((error) => {
+        this.logger.error(
+          "Failed to bootstrap monetization catalog",
+          error instanceof Error ? error.stack : error,
+        );
+      })
+      .finally(async () => {
         this.catalogBootstrapPromise = null;
+        try {
+          await seedPrisma.$disconnect();
+        } catch {
+          // ignore
+        }
       });
 
     return this.catalogBootstrapPromise;
@@ -1748,10 +1695,12 @@ export class MonetizationService implements OnModuleInit {
 
     if (resolvedPurchase.kind === PurchaseKind.COINS) {
       await this.completeCoinPurchase(resolvedPurchase, transaction);
+      await this.trySendPurchaseReceipt(resolvedPurchase);
       return;
     }
 
     await this.completeSubscriptionPurchase(resolvedPurchase, transaction);
+    await this.trySendPurchaseReceipt(resolvedPurchase);
   }
 
   private async syncNonSuccessfulPurchase(
@@ -1805,10 +1754,12 @@ export class MonetizationService implements OnModuleInit {
 
     if (resolvedPurchase.kind === PurchaseKind.COINS) {
       await this.completeCryptomusCoinPurchase(resolvedPurchase, invoice);
+      await this.trySendPurchaseReceipt(resolvedPurchase);
       return;
     }
 
     await this.completeCryptomusSubscriptionPurchase(resolvedPurchase, invoice);
+    await this.trySendPurchaseReceipt(resolvedPurchase);
   }
 
   private async syncNonSuccessfulCryptomusPurchase(
@@ -4333,5 +4284,141 @@ export class MonetizationService implements OnModuleInit {
       error instanceof Prisma.PrismaClientKnownRequestError &&
       error.code === "P2002"
     );
+  }
+
+  // --- Phase 2A: Refund Flow ---
+
+  async requestRefund(userId: string, purchaseId: string, reason: string) {
+    const purchase = await this.prisma.purchase.findUnique({
+      where: { id: purchaseId },
+    });
+
+    if (!purchase || purchase.userId !== userId) {
+      throw new NotFoundException("Purchase not found.");
+    }
+
+    if (purchase.status !== "COMPLETED") {
+      throw new BadRequestException("Only completed purchases can be refunded.");
+    }
+
+    const existingRefund = await this.prisma.refundRequest.findFirst({
+      where: { purchaseId, status: { in: ["PENDING", "APPROVED"] } },
+    });
+
+    if (existingRefund) {
+      throw new ConflictException("A refund request already exists for this purchase.");
+    }
+
+    const refundRequest = await this.prisma.refundRequest.create({
+      data: {
+        purchaseId,
+        userId,
+        reason,
+        amountCents: purchase.amountCents,
+      },
+    });
+
+    return { refundRequest };
+  }
+
+  // --- Phase 2B: Subscription Cancel ---
+
+  async cancelSubscription(userId: string) {
+    const subscription = await this.prisma.subscription.findFirst({
+      where: { userId, status: "ACTIVE" },
+      orderBy: { updatedAt: "desc" },
+    });
+
+    if (!subscription) {
+      throw new NotFoundException("No active subscription found.");
+    }
+
+    if (subscription.cancelAtPeriodEnd) {
+      return { message: "Subscription is already set to cancel at period end." };
+    }
+
+    // If Paystack subscription, disable it via API
+    if (subscription.paystackSubscriptionCode) {
+      try {
+        await fetch("https://api.paystack.co/subscription/disable", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${env.paystackSecretKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            code: subscription.paystackSubscriptionCode,
+            token: subscription.paystackSubscriptionCode,
+          }),
+        });
+      } catch (error) {
+        this.logger.error(
+          `Failed to disable Paystack subscription ${subscription.paystackSubscriptionCode}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+
+    await this.prisma.subscription.update({
+      where: { id: subscription.id },
+      data: { cancelAtPeriodEnd: true },
+    });
+
+    return { message: "Subscription will be canceled at the end of the current billing period." };
+  }
+
+  async changeSubscriptionPlan(
+    userId: string,
+    newPlanId: string,
+    _billingInterval: string,
+  ) {
+    // Cancel current subscription
+    await this.cancelSubscription(userId);
+
+    // Return info for the client to initiate a new checkout
+    const plan = await this.prisma.plan.findUnique({
+      where: { id: newPlanId },
+    });
+
+    if (!plan || !plan.active) {
+      throw new NotFoundException("Plan not found or inactive.");
+    }
+
+    return {
+      message: "Current subscription will be canceled. Please create a new checkout session for the new plan.",
+      newPlanId: plan.id,
+      newPlanName: plan.name,
+    };
+  }
+
+  private async trySendPurchaseReceipt(purchase: PurchaseWithRelations) {
+    try {
+      const user = await this.prisma.user.findUnique({
+        where: { id: purchase.userId },
+        include: { profile: true },
+      });
+
+      if (!user?.email) return;
+
+      const itemName =
+        purchase.coinPackage?.name ?? purchase.plan?.name ?? purchase.kind;
+      const amountCents = purchase.coinPackage?.priceCents ?? purchase.plan?.monthlyPriceCents ?? 0;
+      const amountFormatted = new Intl.NumberFormat("en-US", {
+        style: "currency",
+        currency: "USD",
+      }).format(amountCents / 100);
+      const purchaseDate = (purchase.completedAt ?? purchase.createdAt)
+        .toISOString()
+        .split("T")[0];
+
+      await this.emailService.sendPurchaseReceipt({
+        email: user.email,
+        userName: user.profile?.displayName ?? user.email,
+        itemName,
+        amountFormatted,
+        purchaseDate,
+      });
+    } catch {
+      // Non-critical: don't fail purchase completion if email fails
+    }
   }
 }

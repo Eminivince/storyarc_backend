@@ -4,12 +4,12 @@ import { LeaderboardPeriod } from "@prisma/client";
 type RawRecord = Record<string, unknown>;
 
 const NOTIFICATION_KEYS = [
+  "emailNewChapters",
   "emailNewComments",
   "emailWeeklyDigest",
   "emailSecurityAlerts",
   "emailMarketing",
   "pushNewStories",
-  "pushDirectMessages",
   "pushStoryComments",
   "pushCommentReplies",
   "appAchievements",
@@ -208,5 +208,25 @@ export function parseVotePollBody(body: unknown) {
     optionId: getStringValue(record, "optionId", {
       maxLength: 80,
     }),
+  };
+}
+
+export function parseReadingTimeBody(body: unknown) {
+  const record = getObjectBody(body);
+
+  const minutesRead = record.minutesRead;
+
+  if (typeof minutesRead !== "number" || !Number.isFinite(minutesRead)) {
+    throw new BadRequestException("minutesRead must be a number.");
+  }
+
+  if (minutesRead < 1 || minutesRead > 30) {
+    throw new BadRequestException("minutesRead must be between 1 and 30.");
+  }
+
+  return {
+    storySlug: getStringValue(record, "storySlug", { maxLength: 120 }),
+    chapterSlug: getStringValue(record, "chapterSlug", { maxLength: 120 }),
+    minutesRead: Math.floor(minutesRead),
   };
 }

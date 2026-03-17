@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   UnauthorizedException,
@@ -663,6 +664,65 @@ export class CreatorFinanceService {
     }
 
     return `${status.charAt(0)}${status.slice(1).toLowerCase()}`;
+  }
+
+  async getTaxForm(userId: string) {
+    const taxForm = await this.prisma.taxForm.findFirst({
+      where: { userId },
+      orderBy: { createdAt: "desc" },
+    });
+
+    if (!taxForm) {
+      return { taxForm: null };
+    }
+
+    return {
+      taxForm: {
+        id: taxForm.id,
+        formType: taxForm.formType,
+        status: taxForm.status,
+        submittedAt: taxForm.submittedAt?.toISOString() ?? null,
+        reviewedAt: taxForm.reviewedAt?.toISOString() ?? null,
+      },
+    };
+  }
+
+  async submitTaxForm(
+    userId: string,
+    input: { formType: string; formData: object },
+  ) {
+    if (input.formType !== "W9" && input.formType !== "W8BEN") {
+      throw new BadRequestException("formType must be W9 or W8BEN.");
+    }
+
+    const existingPending = await this.prisma.taxForm.findFirst({
+      where: { userId, status: "PENDING" },
+    });
+
+    if (existingPending) {
+      throw new ConflictException(
+        "You already have a pending tax form. Please wait for it to be reviewed.",
+      );
+    }
+
+    const taxForm = await this.prisma.taxForm.create({
+      data: {
+        userId,
+        formType: input.formType,
+        formData: input.formData,
+        status: "PENDING",
+        submittedAt: new Date(),
+      },
+    });
+
+    return {
+      message: "Tax form submitted for review.",
+      taxForm: {
+        id: taxForm.id,
+        formType: taxForm.formType,
+        status: taxForm.status,
+      },
+    };
   }
 
   private formatCurrency(valueCents: number) {

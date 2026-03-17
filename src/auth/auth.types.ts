@@ -126,3 +126,26 @@ export type VerifiedResetPayload = {
   userId: string;
   passwordResetTokenId: string;
 };
+
+export type TotpVerifySetupInput = {
+  code: string;
+};
+
+export type TotpChallengeInput = {
+  challengeToken: string;
+  code: string;
+};
+
+export type TotpDisableInput = {
+  password: string;
+  code: string;
+};
+
+export type DeleteAccountInput = {
+  password: string;
+};
+
+export type RegisterFcmTokenInput = {
+  token: string;
+  device?: string;
+};

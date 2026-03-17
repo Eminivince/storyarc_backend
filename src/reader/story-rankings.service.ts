@@ -4,6 +4,7 @@ import {
   OnModuleDestroy,
   OnModuleInit,
 } from "@nestjs/common";
+import { PrismaClient } from "@prisma/client";
 import { createHash } from "crypto";
 import {
   CommentStatus,
@@ -371,25 +372,47 @@ export class StoryRankingsService implements OnModuleDestroy, OnModuleInit {
   }
 
   private async rebuildSnapshots(source: string) {
+    const directUrl = process.env.DIRECT_URL?.trim() || "";
+    const pooledUrl = process.env.DATABASE_URL?.trim() || "";
+    const seedUrl = directUrl || pooledUrl;
+
+    if (!seedUrl) {
+      this.logger.warn(
+        "Skipping story ranking snapshot rebuild: DIRECT_URL or DATABASE_URL must be set.",
+      );
+      return;
+    }
+
+    const seedPrisma = new PrismaClient({
+      datasources: {
+        db: {
+          url: seedUrl,
+        },
+      },
+    });
+
     const now = new Date();
-    const stories = await this.getRankableStories();
-    const metrics = await this.collectStoryMetrics(stories, now);
+    const stories = await this.getRankableStories(seedPrisma);
+    const metrics = await this.collectStoryMetrics(seedPrisma, stories, now);
 
     for (const config of STORY_RANKING_CONFIG) {
       const rows = this.buildRankingRows(config, metrics);
       const window = this.getSnapshotWindow(config, now);
 
-      await this.upsertSnapshot(config, window, rows);
+      await this.upsertSnapshot(seedPrisma, config, window, rows);
     }
+
+    await seedPrisma.$disconnect();
 
     this.logger.log(
       `Story ranking snapshots refreshed during ${source} for ${stories.length} stories.`,
     );
   }
 
-  private async getRankableStories() {
-    const stories = await this.prisma.story.findMany({
+  private async getRankableStories(db: PrismaClient) {
+    const stories = await db.story.findMany({
       where: {
+        deletedAt: null,
         status: {
           in: [StoryStatus.PUBLISHED, StoryStatus.COMPLETED, StoryStatus.HIATUS],
         },
@@ -417,6 +440,7 @@ export class StoryRankingsService implements OnModuleDestroy, OnModuleInit {
   }
 
   private async collectStoryMetrics(
+    db: PrismaClient,
     stories: RankingStoryRecord[],
     now: Date,
   ): Promise<StoryMetricRecord[]> {
@@ -450,7 +474,7 @@ export class StoryRankingsService implements OnModuleDestroy, OnModuleInit {
       recentBookmarkEvents,
       recentRatingEvents,
     ] = await Promise.all([
-      this.prisma.review.findMany({
+      db.review.findMany({
         where: {
           status: ReviewStatus.VISIBLE,
           storyId: {
@@ -462,7 +486,7 @@ export class StoryRankingsService implements OnModuleDestroy, OnModuleInit {
           storyId: true,
         },
       }),
-      this.prisma.follow.findMany({
+      db.follow.findMany({
         where: {
           storyId: {
             in: storyIds,
@@ -474,7 +498,7 @@ export class StoryRankingsService implements OnModuleDestroy, OnModuleInit {
           storyId: true,
         },
       }),
-      this.prisma.publishedChapter.findMany({
+      db.publishedChapter.findMany({
         where: {
           publishedAt: {
             gte: recentWindowStart,
@@ -488,7 +512,7 @@ export class StoryRankingsService implements OnModuleDestroy, OnModuleInit {
           storyId: true,
         },
       }),
-      this.prisma.comment.findMany({
+      db.comment.findMany({
         where: {
           createdAt: {
             gte: recentWindowStart,
@@ -503,7 +527,7 @@ export class StoryRankingsService implements OnModuleDestroy, OnModuleInit {
           storyId: true,
         },
       }),
-      this.prisma.bookmark.findMany({
+      db.bookmark.findMany({
         where: {
           createdAt: {
             gte: recentWindowStart,
@@ -517,7 +541,7 @@ export class StoryRankingsService implements OnModuleDestroy, OnModuleInit {
           storyId: true,
         },
       }),
-      this.prisma.storyRating.findMany({
+      db.storyRating.findMany({
         where: {
           storyId: {
             in: storyIds,
@@ -898,6 +922,7 @@ export class StoryRankingsService implements OnModuleDestroy, OnModuleInit {
   }
 
   private async upsertSnapshot(
+    db: PrismaClient,
     config: RankingSnapshotConfig,
     window: {
       endsAt: Date;
@@ -905,7 +930,7 @@ export class StoryRankingsService implements OnModuleDestroy, OnModuleInit {
     },
     rows: RankedStoryRow[],
   ) {
-    const existing = await this.prisma.storyRankingSnapshot.findFirst({
+    const existing = await db.storyRankingSnapshot.findFirst({
       where: {
         endsAt: window.endsAt,
         kind: config.kind,
@@ -917,7 +942,7 @@ export class StoryRankingsService implements OnModuleDestroy, OnModuleInit {
     });
 
     if (existing) {
-      await this.prisma.storyRankingEntry.deleteMany({
+      await db.storyRankingEntry.deleteMany({
         where: {
           storyRankingSnapshotId: existing.id,
         },
@@ -926,7 +951,7 @@ export class StoryRankingsService implements OnModuleDestroy, OnModuleInit {
       if (rows.length > 0) {
         await Promise.all(
           rows.map((row) =>
-            this.prisma.storyRankingEntry.create({
+            db.storyRankingEntry.create({
               data: {
                 averageRating: row.averageRating,
                 rank: row.rank,
@@ -949,7 +974,7 @@ export class StoryRankingsService implements OnModuleDestroy, OnModuleInit {
         );
       }
 
-      await this.prisma.storyRankingSnapshot.update({
+      await db.storyRankingSnapshot.update({
         where: {
           id: existing.id,
         },
@@ -962,7 +987,7 @@ export class StoryRankingsService implements OnModuleDestroy, OnModuleInit {
       return;
     }
 
-    await this.prisma.storyRankingSnapshot.create({
+    await db.storyRankingSnapshot.create({
       data: {
         endsAt: window.endsAt,
         kind: config.kind,

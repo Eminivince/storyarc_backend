@@ -340,13 +340,14 @@ export function parseReviewSortQuery(value: string | undefined): ReviewSort {
   if (
     normalized === "recent" ||
     normalized === "highest" ||
-    normalized === "lowest"
+    normalized === "lowest" ||
+    normalized === "most_helpful"
   ) {
     return normalized;
   }
 
   throw new BadRequestException(
-    "sort must be recent, highest, or lowest.",
+    "sort must be recent, highest, lowest, or most_helpful.",
   );
 }
 

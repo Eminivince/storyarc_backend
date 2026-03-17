@@ -442,4 +442,100 @@ export class OperationsController {
       parseSupportMessageBody(body).body,
     );
   }
+
+  // --- Admin Refunds ---
+
+  @Get("admin/refunds")
+  async listAdminRefunds(@Req() request: AuthenticatedRequest) {
+    return this.operationsService.listAdminRefunds(request.auth!.userId);
+  }
+
+  @Patch("admin/refunds/:refundId")
+  async resolveAdminRefund(
+    @Param("refundId") refundId: string,
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    const record = body as Record<string, unknown>;
+    const action = record.action as string;
+    const notes = (record.notes as string) ?? null;
+    return this.operationsService.resolveAdminRefund(
+      request.auth!.userId,
+      refundId,
+      action,
+      notes,
+    );
+  }
+
+  // --- Admin Payouts ---
+
+  @Patch("admin/payouts/:payoutId/status")
+  async updatePayoutStatus(
+    @Param("payoutId") payoutId: string,
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    const record = body as Record<string, unknown>;
+    const action = record.action as string;
+    const notes = (record.notes as string) ?? null;
+    return this.operationsService.updatePayoutStatus(
+      request.auth!.userId,
+      payoutId,
+      action,
+      notes,
+    );
+  }
+
+  // --- Admin Tax Forms ---
+
+  @Get("admin/tax-forms")
+  async listAdminTaxForms(@Req() request: AuthenticatedRequest) {
+    return this.operationsService.listAdminTaxForms(request.auth!.userId);
+  }
+
+  @Patch("admin/tax-forms/:taxFormId")
+  async reviewAdminTaxForm(
+    @Param("taxFormId") taxFormId: string,
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    const record = body as Record<string, unknown>;
+    const status = record.status as string;
+    const notes = (record.notes as string) ?? null;
+    return this.operationsService.reviewAdminTaxForm(
+      request.auth!.userId,
+      taxFormId,
+      status,
+      notes,
+    );
+  }
+
+  // --- Admin Help Center ---
+
+  @Get("admin/help-center")
+  async getAdminHelpCenter(@Req() request: AuthenticatedRequest) {
+    return this.operationsService.getAdminHelpCenter(request.auth!.userId);
+  }
+
+  @Post("admin/help-center/categories")
+  async createHelpCenterCategory(
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.operationsService.createHelpCenterCategory(
+      request.auth!.userId,
+      body as any,
+    );
+  }
+
+  @Post("admin/help-center/articles")
+  async createHelpCenterArticle(
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.operationsService.createHelpCenterArticle(
+      request.auth!.userId,
+      body as any,
+    );
+  }
 }

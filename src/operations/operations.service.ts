@@ -15,6 +15,7 @@ import {
   ReviewStatus,
 } from "@prisma/client";
 import { AuthService } from "../auth/auth.service";
+import { ResendEmailService } from "../auth/resend-email.service";
 import {
   creatorExclusiveRevenueShareSettingKey,
   creatorNonExclusiveRevenueShareSettingKey,
@@ -22,6 +23,7 @@ import {
   isCreatorWithdrawalPeriodLabel,
 } from "../creator/creator-finance.constants";
 import { PrismaService } from "../database/prisma.service";
+import { RedisService } from "../redis/redis.service";
 import {
   defaultBookPlatformPolicy,
   formatPremiumWindowLabel,
@@ -75,6 +77,8 @@ const supportHelpCenterArticles = [
       "Recover access, update your password, and review device/session security after a reset.",
     tag: "Security & Access",
     title: "Resetting your password",
+    body:
+      "If you cannot access your account, use the password reset flow from the sign-in page. We will send a secure reset link to your email so you can create a new password.\n\nAfter resetting, review your recent sessions and update your security settings to keep your account protected. If you did not request the reset, contact support right away.",
   },
   {
     id: "publish-first-story",
@@ -83,6 +87,8 @@ const supportHelpCenterArticles = [
       "Prepare story metadata, organize volumes and arcs, and move your first project into publication.",
     tag: "Writer's Guide",
     title: "How to publish your first story",
+    body:
+      "Start by completing your story details, cover art, and genre tags. Organize chapters into volumes and arcs so readers can follow your structure.\n\nWhen you are ready, schedule or publish your chapters from the studio. Keep an eye on the dashboard for early engagement signals and reader feedback.",
   },
   {
     id: "coins-subscriptions",
@@ -91,6 +97,8 @@ const supportHelpCenterArticles = [
       "Understand memberships, coin balances, billing cycles, and what happens after a successful purchase.",
     tag: "Billing",
     title: "TaleStead Coins and Subscriptions",
+    body:
+      "Coins unlock premium chapters and support your favorite creators. Subscriptions provide monthly bundles and benefits tied to your plan tier.\n\nCheck your billing settings to review active plans, payment methods, and recent purchases. If a charge looks incorrect, submit a support ticket and include the transaction details.",
   },
   {
     id: "report-inappropriate-content",
@@ -99,6 +107,8 @@ const supportHelpCenterArticles = [
       "Report a story or chapter, share context with moderation, and track the status of your report.",
     tag: "Safety",
     title: "Reporting inappropriate content",
+    body:
+      "Use the report option on any story or chapter to flag content that violates community guidelines. Provide clear context so the moderation team can act quickly.\n\nYou will see updates in your moderation inbox once the report is reviewed. Serious or urgent issues can also be escalated through a support request.",
   },
 ] as const;
 
@@ -223,10 +233,29 @@ const defaultAdminSettings: DefaultAdminSetting[] = [
       ContractExclusivity.NON_EXCLUSIVE,
     ),
   },
+  {
+    description: "Points awarded for each daily check-in.",
+    enabled: true,
+    group: "Engagement Rewards",
+    key: "dailyCheckInReward",
+    kind: "CURRENCY_CENTS",
+    title: "Daily Check-In Reward",
+    valueCents: 50,
+  },
+  {
+    description: "Points awarded for each referral share.",
+    enabled: true,
+    group: "Engagement Rewards",
+    key: "referralShareReward",
+    kind: "CURRENCY_CENTS",
+    title: "Referral Share Reward",
+    valueCents: 20,
+  },
 ] as const;
 
 const maintenanceActionLabels = {
   "clear-cache": "Cache clear started",
+  "purge-sessions": "Session purge started",
   "reindex-search": "Search reindex queued",
   "run-backup": "Backup snapshot queued",
 };
@@ -324,6 +353,8 @@ export class OperationsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly authService: AuthService,
+    private readonly redis: RedisService,
+    private readonly emailService: ResendEmailService,
   ) {}
 
   async createContentReport(
@@ -420,6 +451,38 @@ export class OperationsService {
   async getSupportHelpCenter(userId: string) {
     await this.requireActiveUser(userId);
 
+    // Try DB first, fall back to hardcoded data
+    const dbCategories = await this.prisma.helpCenterCategory.findMany({
+      include: { articles: { where: { published: true }, orderBy: { sortOrder: "asc" } } },
+      orderBy: { sortOrder: "asc" },
+    });
+
+    if (dbCategories.length > 0) {
+      return {
+        articles: dbCategories.flatMap((c) =>
+          c.articles.map((a) => ({
+            id: a.id,
+            categoryId: a.categoryId,
+            body: a.body,
+            excerpt: a.excerpt,
+            tag: a.tag,
+            title: a.title,
+          })),
+        ),
+        categories: dbCategories.map((c) => ({
+          id: c.id,
+          title: c.title,
+          description: c.description,
+          icon: c.icon,
+          articleCount: c.articles.length,
+        })),
+        supportActions: supportHelpCenterActions.map((action) => ({
+          ...action,
+        })),
+      };
+    }
+
+    // Fallback to hardcoded data
     return {
       articles: supportHelpCenterArticles.map((article) => ({
         ...article,
@@ -1557,6 +1620,26 @@ export class OperationsService {
       },
     });
 
+    // Revoke all active sessions when suspending or deleting a user
+    if (nextStatus === "SUSPENDED" || nextStatus === "DELETED") {
+      const activeSessions = await this.prisma.session.findMany({
+        where: { userId: targetUserId, revokedAt: null },
+        select: { id: true },
+      });
+
+      if (activeSessions.length > 0) {
+        await this.prisma.session.updateMany({
+          where: { userId: targetUserId, revokedAt: null },
+          data: { revokedAt: new Date() },
+        });
+
+        // Clear Redis session caches
+        for (const session of activeSessions) {
+          await this.redis.delete(`auth:session:${session.id}`);
+        }
+      }
+    }
+
     await this.logAdminAction(admin.id, {
       detail: `${this.getDisplayName(updatedUser)} status changed to ${this.mapStatusLabel(nextStatus)}.`,
       icon: action === "DELETE" ? "delete" : action === "SUSPEND" ? "block" : "check",
@@ -2130,7 +2213,8 @@ export class OperationsService {
   async updatePayoutStatus(
     adminUserId: string,
     payoutId: string,
-    action: "RELEASE" | "REVIEW",
+    action: string,
+    notes?: string | null,
   ) {
     const admin = await this.requireAdmin(adminUserId);
     const payout = await this.prisma.creatorPayout.findUnique({
@@ -2150,14 +2234,53 @@ export class OperationsService {
       throw new NotFoundException("Payout not found.");
     }
 
-    const nextStatus = action === "RELEASE" ? "RELEASED" : "IN_REVIEW";
+    let nextStatus: string;
+    let summaryPrefix: string;
+
+    if (action === "RELEASE") {
+      // Check two-person payout review setting
+      const twoPersonSetting = await this.prisma.adminSetting.findUnique({
+        where: { key: "twoPersonPayoutReview" },
+      });
+      if (
+        twoPersonSetting?.enabled &&
+        payout.reviewedByAdminUserId === adminUserId
+      ) {
+        throw new BadRequestException(
+          "Two-person review is enabled. A different admin must release this payout.",
+        );
+      }
+
+      nextStatus = "RELEASED";
+      summaryPrefix = "Released payout for";
+    } else if (action === "REVIEW") {
+      nextStatus = "IN_REVIEW";
+      summaryPrefix = "Opened payout review for";
+    } else if (action === "REJECT") {
+      nextStatus = "REJECTED";
+      summaryPrefix = "Rejected payout for";
+    } else {
+      throw new BadRequestException(
+        "Action must be one of: RELEASE, REVIEW, REJECT.",
+      );
+    }
+
+    const updateData: Record<string, unknown> = {
+      status: nextStatus,
+      reviewNotes: notes ?? null,
+    };
+
+    if (action === "REVIEW") {
+      updateData.reviewedByAdminUserId = adminUserId;
+    } else if (action === "RELEASE") {
+      updateData.releasedByAdminUserId = adminUserId;
+    }
+
     const updatedPayout = await this.prisma.creatorPayout.update({
       where: {
         id: payoutId,
       },
-      data: {
-        status: nextStatus,
-      },
+      data: updateData,
       include: {
         creator: {
           include: {
@@ -2170,20 +2293,338 @@ export class OperationsService {
     await this.logAdminAction(admin.id, {
       detail: `${this.getDisplayName(updatedPayout.creator)} payout moved to ${nextStatus}.`,
       icon: "payments",
-      summary:
-        action === "RELEASE"
-          ? `Released payout for ${this.getDisplayName(updatedPayout.creator)}`
-          : `Opened payout review for ${this.getDisplayName(updatedPayout.creator)}`,
+      summary: `${summaryPrefix} ${this.getDisplayName(updatedPayout.creator)}`,
       targetId: payoutId,
       targetType: "PAYOUT",
     });
 
+    // Send email notification on release
+    if (action === "RELEASE" && updatedPayout.creator.email) {
+      try {
+        await this.emailService.sendPayoutProcessed({
+          email: updatedPayout.creator.email,
+          userName: this.getDisplayName(updatedPayout.creator),
+          amount: this.formatCurrency(updatedPayout.amountCents),
+        });
+      } catch {
+        // Non-critical: don't fail the payout release if email fails
+      }
+    }
+
+    const messages: Record<string, string> = {
+      RELEASE: `Payout release started for ${this.getDisplayName(updatedPayout.creator)}.`,
+      REVIEW: `Finance review opened for ${this.getDisplayName(updatedPayout.creator)}.`,
+      REJECT: `Payout rejected for ${this.getDisplayName(updatedPayout.creator)}.`,
+    };
+
+    return {
+      message: messages[action] ?? "Payout status updated.",
+    };
+  }
+
+  // --- Admin Refunds ---
+
+  async listAdminRefunds(adminUserId: string) {
+    await this.requireAdmin(adminUserId);
+
+    const refunds = await this.prisma.refundRequest.findMany({
+      include: {
+        user: { include: { profile: true } },
+        purchase: { include: { coinPackage: true, plan: true } },
+      },
+      orderBy: { createdAt: "desc" },
+      take: ADMIN_LIST_DEFAULT_LIMIT,
+    });
+
+    return {
+      refunds: refunds.map((r) => ({
+        id: r.id,
+        userId: r.userId,
+        userName: this.getDisplayName(r.user),
+        purchaseId: r.purchaseId,
+        purchaseLabel:
+          r.purchase.coinPackage?.name ??
+          r.purchase.plan?.name ??
+          r.purchase.kind,
+        reason: r.reason,
+        amountCents: r.amountCents,
+        amountFormatted: this.formatCurrency(r.amountCents),
+        status: r.status,
+        reviewNotes: r.reviewNotes,
+        createdAt: r.createdAt.toISOString(),
+        reviewedAt: r.reviewedAt?.toISOString() ?? null,
+      })),
+    };
+  }
+
+  async resolveAdminRefund(
+    adminUserId: string,
+    refundId: string,
+    action: string,
+    notes: string | null,
+  ) {
+    const admin = await this.requireAdmin(adminUserId);
+
+    const refund = await this.prisma.refundRequest.findUnique({
+      where: { id: refundId },
+      include: {
+        user: { include: { profile: true } },
+        purchase: true,
+      },
+    });
+
+    if (!refund) {
+      throw new NotFoundException("Refund request not found.");
+    }
+
+    if (refund.status !== "PENDING") {
+      throw new BadRequestException("This refund has already been resolved.");
+    }
+
+    if (action !== "APPROVE" && action !== "REJECT") {
+      throw new BadRequestException("Action must be APPROVE or REJECT.");
+    }
+
+    const nextStatus = action === "APPROVE" ? "APPROVED" : "REJECTED";
+
+    await this.prisma.refundRequest.update({
+      where: { id: refundId },
+      data: {
+        status: nextStatus,
+        reviewNotes: notes,
+        reviewedAt: new Date(),
+        reviewedById: adminUserId,
+      },
+    });
+
+    // If approved, mark purchase as refunded and restore coins
+    if (action === "APPROVE") {
+      await this.prisma.$transaction(async (tx) => {
+        await tx.purchase.update({
+          where: { id: refund.purchaseId },
+          data: { status: "REFUNDED" },
+        });
+
+        // Restore coins to user wallet
+        if (refund.amountCents > 0) {
+          const coinsToRestore = refund.amountCents; // 1:1 cents to coins
+          const wallet = await tx.wallet.upsert({
+            where: { userId: refund.userId },
+            create: { userId: refund.userId, balanceCoins: coinsToRestore },
+            update: { balanceCoins: { increment: coinsToRestore } },
+          });
+
+          await tx.walletLedgerEntry.create({
+            data: {
+              wallet: { connect: { id: wallet.id } },
+              user: { connect: { id: refund.userId } },
+              entryType: "CREDIT",
+              reason: "REFUND",
+              deltaCoins: coinsToRestore,
+              balanceAfter: wallet.balanceCoins,
+              note: `Refund for purchase ${refund.purchaseId}`,
+              idempotencyKey: `refund:${refundId}`,
+            },
+          });
+        }
+      });
+
+      await this.prisma.refundRequest.update({
+        where: { id: refundId },
+        data: { status: "PROCESSED" },
+      });
+    }
+
+    await this.logAdminAction(admin.id, {
+      detail: `Refund request from ${this.getDisplayName(refund.user)} ${action === "APPROVE" ? "approved and processed" : "rejected"}.${notes ? ` Notes: ${notes}` : ""}`,
+      icon: "receipt_long",
+      summary: `${action === "APPROVE" ? "Approved" : "Rejected"} refund for ${this.getDisplayName(refund.user)}`,
+      targetId: refundId,
+      targetType: "REFUND",
+    });
+
     return {
       message:
-        action === "RELEASE"
-          ? `Payout release started for ${this.getDisplayName(updatedPayout.creator)}.`
-          : `Finance review opened for ${this.getDisplayName(updatedPayout.creator)}.`,
+        action === "APPROVE"
+          ? `Refund approved and processed for ${this.getDisplayName(refund.user)}.`
+          : `Refund rejected for ${this.getDisplayName(refund.user)}.`,
     };
+  }
+
+  // --- Admin Tax Forms ---
+
+  async listAdminTaxForms(adminUserId: string) {
+    await this.requireAdmin(adminUserId);
+
+    const taxForms = await this.prisma.taxForm.findMany({
+      include: {
+        user: { include: { profile: true } },
+      },
+      orderBy: { createdAt: "desc" },
+      take: ADMIN_LIST_DEFAULT_LIMIT,
+    });
+
+    return {
+      taxForms: taxForms.map((form) => ({
+        id: form.id,
+        userId: form.userId,
+        userName: this.getDisplayName(form.user),
+        formType: form.formType,
+        status: form.status,
+        submittedAt: form.submittedAt?.toISOString() ?? null,
+        reviewedAt: form.reviewedAt?.toISOString() ?? null,
+        createdAt: form.createdAt.toISOString(),
+      })),
+    };
+  }
+
+  async reviewAdminTaxForm(
+    adminUserId: string,
+    taxFormId: string,
+    status: string,
+    notes: string | null,
+  ) {
+    const admin = await this.requireAdmin(adminUserId);
+
+    const taxForm = await this.prisma.taxForm.findUnique({
+      where: { id: taxFormId },
+      include: { user: { include: { profile: true } } },
+    });
+
+    if (!taxForm) {
+      throw new NotFoundException("Tax form not found.");
+    }
+
+    if (status !== "APPROVED" && status !== "REJECTED") {
+      throw new BadRequestException("Status must be APPROVED or REJECTED.");
+    }
+
+    await this.prisma.taxForm.update({
+      where: { id: taxFormId },
+      data: {
+        status,
+        reviewedAt: new Date(),
+      },
+    });
+
+    await this.logAdminAction(admin.id, {
+      detail: `Tax form (${taxForm.formType}) for ${this.getDisplayName(taxForm.user)} ${status.toLowerCase()}.${notes ? ` Notes: ${notes}` : ""}`,
+      icon: "description",
+      summary: `${status === "APPROVED" ? "Approved" : "Rejected"} tax form for ${this.getDisplayName(taxForm.user)}`,
+      targetId: taxFormId,
+      targetType: "TAX_FORM",
+    });
+
+    return {
+      message: `Tax form ${status.toLowerCase()} for ${this.getDisplayName(taxForm.user)}.`,
+    };
+  }
+
+  // --- Admin Help Center ---
+
+  async getAdminHelpCenter(adminUserId: string) {
+    await this.requireAdmin(adminUserId);
+
+    const categories = await this.prisma.helpCenterCategory.findMany({
+      include: {
+        _count: { select: { articles: true } },
+      },
+      orderBy: { sortOrder: "asc" },
+    });
+
+    const articles = await this.prisma.helpCenterArticle.findMany({
+      orderBy: { sortOrder: "asc" },
+    });
+
+    return {
+      categories: categories.map((c) => ({
+        id: c.id,
+        title: c.title,
+        description: c.description,
+        icon: c.icon,
+        sortOrder: c.sortOrder,
+        articleCount: c._count.articles,
+      })),
+      articles: articles.map((a) => ({
+        id: a.id,
+        categoryId: a.categoryId,
+        title: a.title,
+        excerpt: a.excerpt,
+        body: a.body,
+        tag: a.tag,
+        sortOrder: a.sortOrder,
+        published: a.published,
+      })),
+    };
+  }
+
+  async createHelpCenterCategory(
+    adminUserId: string,
+    input: { title: string; description: string; icon: string; sortOrder?: number },
+  ) {
+    const admin = await this.requireAdmin(adminUserId);
+
+    const category = await this.prisma.helpCenterCategory.create({
+      data: {
+        title: input.title,
+        description: input.description,
+        icon: input.icon,
+        sortOrder: input.sortOrder ?? 0,
+      },
+    });
+
+    await this.logAdminAction(admin.id, {
+      detail: `Created help center category "${input.title}".`,
+      icon: "help",
+      summary: `Created help center category "${input.title}"`,
+      targetId: category.id,
+      targetType: "HELP_CENTER",
+    });
+
+    return { category };
+  }
+
+  async createHelpCenterArticle(
+    adminUserId: string,
+    input: {
+      categoryId: string;
+      title: string;
+      excerpt: string;
+      body?: string;
+      tag?: string;
+      sortOrder?: number;
+    },
+  ) {
+    const admin = await this.requireAdmin(adminUserId);
+
+    const category = await this.prisma.helpCenterCategory.findUnique({
+      where: { id: input.categoryId },
+    });
+
+    if (!category) {
+      throw new NotFoundException("Help center category not found.");
+    }
+
+    const article = await this.prisma.helpCenterArticle.create({
+      data: {
+        categoryId: input.categoryId,
+        title: input.title,
+        excerpt: input.excerpt,
+        body: input.body ?? null,
+        tag: input.tag ?? null,
+        sortOrder: input.sortOrder ?? 0,
+      },
+    });
+
+    await this.logAdminAction(admin.id, {
+      detail: `Created help center article "${input.title}" in category "${category.title}".`,
+      icon: "article",
+      summary: `Created help center article "${input.title}"`,
+      targetId: article.id,
+      targetType: "HELP_CENTER",
+    });
+
+    return { article };
   }
 
   async getAdminSettings(adminUserId: string) {
@@ -2346,6 +2787,20 @@ export class OperationsService {
 
     if (!label) {
       throw new BadRequestException("Unknown maintenance action.");
+    }
+
+    // Execute the maintenance action
+    if (actionId === "purge-sessions") {
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      await this.prisma.session.deleteMany({
+        where: {
+          OR: [
+            { revokedAt: { not: null, lt: thirtyDaysAgo } },
+            { refreshTokenExpiresAt: { lt: new Date() } },
+          ],
+        },
+      });
     }
 
     await this.logAdminAction(admin.id, {

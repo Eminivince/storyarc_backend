@@ -17,6 +17,7 @@ import {
 } from "@prisma/client";
 import { PrismaService } from "../database/prisma.service";
 import { CreatorAnalyticsService } from "../analytics/creator-analytics.service";
+import { BadgeEvaluationService } from "../engagement/badge-evaluation.service";
 import { EngagementService } from "../engagement/engagement.service";
 import { RedisService } from "../redis/redis.service";
 import {
@@ -311,6 +312,7 @@ export class ReaderService {
     private readonly prisma: PrismaService,
     private readonly monetizationService: MonetizationService,
     private readonly engagementService: EngagementService,
+    private readonly badgeEvaluationService: BadgeEvaluationService,
     private readonly creatorAnalyticsService: CreatorAnalyticsService,
     private readonly redisService: RedisService,
   ) {}
@@ -717,6 +719,7 @@ export class ReaderService {
     limit?: number | null;
     offset?: number | null;
     query?: string;
+    tags?: string[];
   }) {
     const [storyCatalog, genres] = await Promise.all([
       this.queryPublishedStories({
@@ -724,6 +727,7 @@ export class ReaderService {
         limit: input.limit ?? null,
         offset: input.offset ?? null,
         query: input.query,
+        tags: input.tags,
       }),
       this.prisma.genre.findMany({
         orderBy: { name: "asc" },
@@ -1116,29 +1120,38 @@ export class ReaderService {
             },
           },
           orderBy:
-            input.sort === "highest"
+            input.sort === "most_helpful"
               ? [
                   {
-                    rating: "desc",
+                    helpfulCount: "desc",
                   },
                   {
                     createdAt: "desc",
                   },
                 ]
-              : input.sort === "lowest"
+              : input.sort === "highest"
                 ? [
                     {
-                      rating: "asc",
+                      rating: "desc",
                     },
                     {
                       createdAt: "desc",
                     },
                   ]
-                : [
-                    {
-                      createdAt: "desc",
-                    },
-                  ],
+                : input.sort === "lowest"
+                  ? [
+                      {
+                        rating: "asc",
+                      },
+                      {
+                        createdAt: "desc",
+                      },
+                    ]
+                  : [
+                      {
+                        createdAt: "desc",
+                      },
+                    ],
           take: input.limit ?? undefined,
         }),
         this.prisma.review.count({
@@ -1347,7 +1360,7 @@ export class ReaderService {
       },
     });
 
-    if (!story || !this.isReadableStatus(story.status) || !isStoryLive(story)) {
+    if (!story || story.deletedAt || !this.isReadableStatus(story.status) || !isStoryLive(story)) {
       throw new NotFoundException("Story not found.");
     }
 
@@ -1655,6 +1668,8 @@ export class ReaderService {
       })
       .catch(() => undefined);
 
+    this.badgeEvaluationService.evaluateBadges(userId).catch(() => undefined);
+
     return {
       comment: this.mapCommentNode(comment, userId, []),
       message: parentComment ? "Reply posted." : "Comment posted.",
@@ -1768,6 +1783,7 @@ export class ReaderService {
             lastUpdatedByAdminUserId: true,
           },
         },
+        deletedAt: true,
         id: true,
         isLive: true,
         liveAt: true,
@@ -1775,7 +1791,7 @@ export class ReaderService {
       },
     });
 
-    if (!story || !this.isReadableStatus(story.status) || !isStoryLive(story)) {
+    if (!story || story.deletedAt || !this.isReadableStatus(story.status) || !isStoryLive(story)) {
       throw new NotFoundException("Story not found.");
     }
 
@@ -1920,6 +1936,52 @@ export class ReaderService {
       userId,
     });
 
+    // Populate ChapterReadEvent for completion tracking
+    const todayDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const existingChapterReadEvent = await this.prisma.chapterReadEvent.findUnique({
+      where: {
+        userId_publishedChapterId_readDate: {
+          userId,
+          publishedChapterId: chapter.id,
+          readDate: todayDate,
+        },
+      },
+    });
+
+    if (existingChapterReadEvent) {
+      await this.prisma.chapterReadEvent.update({
+        where: { id: existingChapterReadEvent.id },
+        data: {
+          paragraphIndex: Math.max(existingChapterReadEvent.paragraphIndex, nextParagraphIndex),
+          maxProgressPercent: Math.max(existingChapterReadEvent.maxProgressPercent, nextProgressPercent),
+          lastReadAt: now,
+          ...(nextProgressPercent >= 95 && !existingChapterReadEvent.completed
+            ? { completed: true, completedAt: now }
+            : {}),
+        },
+      });
+    } else {
+      await this.prisma.chapterReadEvent.create({
+        data: {
+          userId,
+          storyId: story.id,
+          publishedChapterId: chapter.id,
+          readDate: todayDate,
+          paragraphIndex: nextParagraphIndex,
+          maxProgressPercent: nextProgressPercent,
+          completed: nextProgressPercent >= 95,
+          completedAt: nextProgressPercent >= 95 ? now : null,
+          firstReadAt: now,
+          lastReadAt: now,
+        },
+      });
+    }
+
+    // Trigger badge evaluation on chapter completion
+    if (nextProgressPercent >= 95) {
+      this.badgeEvaluationService.evaluateBadges(userId).catch(() => undefined);
+    }
+
     return {
       progress: {
         chapterSlug: chapter.slug,
@@ -1931,6 +1993,95 @@ export class ReaderService {
           progress.progressPercent,
         ),
         storySlug: input.storySlug,
+      },
+    };
+  }
+
+  async getChapterCompletionStats(
+    userId: string,
+    storySlug: string,
+    chapterSlug: string,
+  ) {
+    const story = await this.prisma.story.findUnique({
+      where: { slug: storySlug },
+      select: { id: true, deletedAt: true, status: true, isLive: true },
+    });
+
+    if (!story || story.deletedAt) {
+      throw new NotFoundException("Story not found.");
+    }
+
+    const chapter = await this.prisma.publishedChapter.findUnique({
+      where: {
+        storyId_slug: { slug: chapterSlug, storyId: story.id },
+      },
+      select: {
+        id: true,
+        chapterNumber: true,
+        title: true,
+        chapter: { select: { readingMinutes: true } },
+      },
+    });
+
+    if (!chapter) {
+      throw new NotFoundException("Chapter not found.");
+    }
+
+    // Percentile rank: users who are at this chapter or beyond ÷ total readers
+    const [readersAtOrBeyond, totalReaders] = await Promise.all([
+      this.prisma.readingProgress.count({
+        where: {
+          storyId: story.id,
+          chapter: { chapterNumber: { gte: chapter.chapterNumber } },
+        },
+      }),
+      this.prisma.readingProgress.count({
+        where: { storyId: story.id },
+      }),
+    ]);
+
+    const percentileRank = totalReaders > 0
+      ? Math.round(((totalReaders - readersAtOrBeyond) / totalReaders) * 100)
+      : 0;
+
+    // Chapter reader count
+    const chapterReaderCount = await this.prisma.chapterReadEvent.groupBy({
+      by: ["userId"],
+      where: { publishedChapterId: chapter.id },
+    }).then((results) => results.length);
+
+    // Next chapter
+    const nextChapter = await this.prisma.publishedChapter.findFirst({
+      where: {
+        storyId: story.id,
+        chapterNumber: { gt: chapter.chapterNumber },
+      },
+      orderBy: { chapterNumber: "asc" },
+      select: {
+        slug: true,
+        title: true,
+        chapter: { select: { readingMinutes: true } },
+      },
+    });
+
+    // Streak info
+    const rewardWallet = await this.prisma.rewardWallet.findUnique({
+      where: { userId },
+    });
+
+    return {
+      percentileRank,
+      chapterReaderCount,
+      nextChapter: nextChapter
+        ? {
+            slug: nextChapter.slug,
+            title: nextChapter.title,
+            estimatedReadingMinutes: nextChapter.chapter?.readingMinutes ?? null,
+          }
+        : null,
+      streakInfo: {
+        streakDays: rewardWallet?.streakDays ?? 0,
+        streakMultiplier: rewardWallet?.streakMultiplier ?? 1.0,
       },
     };
   }
@@ -2240,13 +2391,14 @@ export class ReaderService {
             visibilityState: true,
           },
         },
+        deletedAt: true,
         id: true,
         isLive: true,
         status: true,
       },
     });
 
-    if (!story || !this.isReadableStatus(story.status) || !isStoryLive(story)) {
+    if (!story || story.deletedAt || !this.isReadableStatus(story.status) || !isStoryLive(story)) {
       throw new NotFoundException("Story not found.");
     }
 
@@ -2291,6 +2443,8 @@ export class ReaderService {
       },
     });
 
+    this.badgeEvaluationService.evaluateBadges(userId).catch(() => undefined);
+
     return {
       bookmarkId: bookmark.id,
       message: "Bookmark saved.",
@@ -2317,6 +2471,157 @@ export class ReaderService {
     return {
       message: "Bookmark removed.",
     };
+  }
+
+  async voteOnReview(userId: string, reviewId: string, helpful: boolean) {
+    const review = await this.prisma.review.findUnique({
+      where: { id: reviewId },
+    });
+
+    if (!review) {
+      throw new NotFoundException("Review not found.");
+    }
+
+    if (review.userId === userId) {
+      throw new BadRequestException("You cannot vote on your own review.");
+    }
+
+    const existingVote = await this.prisma.reviewVote.findUnique({
+      where: {
+        userId_reviewId: { userId, reviewId },
+      },
+    });
+
+    if (existingVote) {
+      if (existingVote.helpful === helpful) {
+        // Remove vote
+        await this.prisma.reviewVote.delete({
+          where: { id: existingVote.id },
+        });
+        if (existingVote.helpful) {
+          await this.prisma.review.update({
+            where: { id: reviewId },
+            data: { helpfulCount: { decrement: 1 } },
+          });
+        }
+        return { message: "Vote removed.", voted: null };
+      }
+
+      // Toggle vote
+      await this.prisma.reviewVote.update({
+        where: { id: existingVote.id },
+        data: { helpful },
+      });
+      await this.prisma.review.update({
+        where: { id: reviewId },
+        data: {
+          helpfulCount: helpful ? { increment: 1 } : { decrement: 1 },
+        },
+      });
+      return { message: "Vote updated.", voted: helpful };
+    }
+
+    await this.prisma.reviewVote.create({
+      data: { userId, reviewId, helpful },
+    });
+
+    if (helpful) {
+      await this.prisma.review.update({
+        where: { id: reviewId },
+        data: { helpfulCount: { increment: 1 } },
+      });
+    }
+
+    return { message: "Vote recorded.", voted: helpful };
+  }
+
+  // --- Bookmark Folders ---
+
+  async listBookmarkFolders(userId: string) {
+    const folders = await this.prisma.bookmarkFolder.findMany({
+      where: { userId },
+      include: {
+        _count: { select: { bookmarks: true } },
+      },
+      orderBy: { sortOrder: "asc" },
+    });
+
+    return {
+      folders: folders.map((f) => ({
+        id: f.id,
+        name: f.name,
+        sortOrder: f.sortOrder,
+        bookmarkCount: f._count.bookmarks,
+      })),
+    };
+  }
+
+  async createBookmarkFolder(userId: string, name: string) {
+    const existingCount = await this.prisma.bookmarkFolder.count({
+      where: { userId },
+    });
+
+    const folder = await this.prisma.bookmarkFolder.create({
+      data: {
+        userId,
+        name: name.trim(),
+        sortOrder: existingCount,
+      },
+    });
+
+    return { folder: { id: folder.id, name: folder.name, sortOrder: folder.sortOrder } };
+  }
+
+  async deleteBookmarkFolder(userId: string, folderId: string) {
+    const folder = await this.prisma.bookmarkFolder.findFirst({
+      where: { id: folderId, userId },
+    });
+
+    if (!folder) {
+      throw new NotFoundException("Bookmark folder not found.");
+    }
+
+    // Unassign bookmarks from folder before deleting
+    await this.prisma.bookmark.updateMany({
+      where: { folderId },
+      data: { folderId: null },
+    });
+
+    await this.prisma.bookmarkFolder.delete({
+      where: { id: folderId },
+    });
+
+    return { message: "Folder deleted." };
+  }
+
+  async moveBookmarkToFolder(
+    userId: string,
+    bookmarkId: string,
+    folderId: string | null,
+  ) {
+    const bookmark = await this.prisma.bookmark.findFirst({
+      where: { id: bookmarkId, userId },
+    });
+
+    if (!bookmark) {
+      throw new NotFoundException("Bookmark not found.");
+    }
+
+    if (folderId) {
+      const folder = await this.prisma.bookmarkFolder.findFirst({
+        where: { id: folderId, userId },
+      });
+      if (!folder) {
+        throw new NotFoundException("Folder not found.");
+      }
+    }
+
+    await this.prisma.bookmark.update({
+      where: { id: bookmarkId },
+      data: { folderId },
+    });
+
+    return { message: folderId ? "Bookmark moved to folder." : "Bookmark removed from folder." };
   }
 
   private async getContinueReading(userId: string) {
@@ -2398,6 +2703,7 @@ export class ReaderService {
     limit?: number | null;
     offset?: number | null;
     query?: string;
+    tags?: string[];
   }) {
     const limit = input.limit ?? null;
     const offset = input.offset ?? null;
@@ -3213,7 +3519,7 @@ export class ReaderService {
       },
     });
 
-    if (!story || !this.isReadableStatus(story.status) || !isStoryLive(story)) {
+    if (!story || story.deletedAt || !this.isReadableStatus(story.status) || !isStoryLive(story)) {
       throw new NotFoundException("Story not found.");
     }
 
@@ -3223,6 +3529,7 @@ export class ReaderService {
   private buildPublishedStoryWhere(input: {
     genre?: string;
     query?: string;
+    tags?: string[];
   }): Prisma.StoryWhereInput {
     const normalizedGenre = this.normalizeOptionalQuery(input.genre);
     const normalizedGenreSlug = normalizedGenre ? this.toSlug(normalizedGenre) : null;
@@ -3254,6 +3561,19 @@ export class ReaderService {
           has: normalizedGenreSlug,
         },
       });
+    }
+
+    if (input.tags && input.tags.length > 0) {
+      const normalizedTags = input.tags
+        .map((tag) => this.toSlug(tag))
+        .filter(Boolean);
+      if (normalizedTags.length > 0) {
+        andFilters.push({
+          tagSlugs: {
+            hasSome: normalizedTags,
+          },
+        });
+      }
     }
 
     if (normalizedQuery) {
@@ -3303,6 +3623,7 @@ export class ReaderService {
 
     return {
       AND: andFilters,
+      deletedAt: null,
       status: {
         in: [StoryStatus.PUBLISHED, StoryStatus.COMPLETED, StoryStatus.HIATUS],
       },

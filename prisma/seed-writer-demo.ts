@@ -16,7 +16,35 @@ import {
 import dotenv from "dotenv";
 dotenv.config();
 
-const prisma = new PrismaClient();
+const directUrl = process.env.DIRECT_URL?.trim() || "";
+const pooledUrl = process.env.DATABASE_URL?.trim() || "";
+
+function isSupabasePoolerUrl(value: string) {
+  if (!value) {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(value);
+    return parsed.hostname.includes("pooler.supabase.com");
+  } catch {
+    return false;
+  }
+}
+
+const databaseUrl = directUrl && !isSupabasePoolerUrl(directUrl) ? directUrl : pooledUrl;
+
+if (!databaseUrl) {
+  throw new Error("DATABASE_URL or DIRECT_URL must be set to seed the database.");
+}
+
+const prisma = new PrismaClient({
+  datasources: {
+    db: {
+      url: databaseUrl,
+    },
+  },
+});
 const HASH_ROUNDS = 3;
 
 const writerSeed = {

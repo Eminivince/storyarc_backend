@@ -181,6 +181,24 @@ export function parseUnlockChapterBatchBody(
   };
 }
 
+export function parseRefundRequestBody(body: unknown) {
+  const record = getObjectBody(body);
+
+  return {
+    purchaseId: getTrimmedString(record, "purchaseId", { minLength: 8, maxLength: 80 }),
+    reason: getTrimmedString(record, "reason", { minLength: 10, maxLength: 1000 }),
+  };
+}
+
+export function parseSubscriptionChangePlanBody(body: unknown) {
+  const record = getObjectBody(body);
+
+  return {
+    planId: getTrimmedString(record, "planId", { minLength: 2, maxLength: 80 }),
+    billingInterval: getEnumValue(record, "billingInterval", CHECKOUT_BILLING_INTERVALS),
+  };
+}
+
 export function parseSendGiftBody(body: unknown): SendGiftInput {
   const record = getObjectBody(body);
 

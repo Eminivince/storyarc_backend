@@ -13,16 +13,22 @@ import {
 import { AccessTokenGuard } from "../common/guards/access-token.guard";
 import { AuthenticatedRequest } from "../common/types/request-with-auth.type";
 import {
+  parseDeleteAccountBody,
   parseForgotPasswordBody,
   parseGoogleAuthCallbackQuery,
   parseGoogleAuthStartQuery,
   parseLoginBody,
   parseRefreshBody,
   parseRegisterBody,
+  parseRegisterFcmTokenBody,
   parseResetPasswordBody,
+  parseTotpChallengeBody,
+  parseTotpDisableBody,
+  parseTotpVerifySetupBody,
   parseVerifyResetCodeBody,
 } from "./auth.schemas";
 import { AuthService } from "./auth.service";
+import { TotpService } from "./totp.service";
 
 function getHeaderValue(
   headers: Record<string, string | string[] | undefined>,
@@ -52,7 +58,10 @@ function getRequestMeta(request: AuthenticatedRequest) {
 
 @Controller("auth")
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly totpService: TotpService,
+  ) {}
 
   @Get("google/start")
   @Redirect()
@@ -143,5 +152,83 @@ export class AuthController {
     @Req() request: AuthenticatedRequest,
   ) {
     return this.authService.revokeSession(request.auth!.userId, sessionId);
+  }
+
+  // --- 2FA Endpoints ---
+
+  @UseGuards(AccessTokenGuard)
+  @Post("2fa/setup")
+  async setup2FA(@Req() request: AuthenticatedRequest) {
+    return this.totpService.setup(request.auth!.userId);
+  }
+
+  @UseGuards(AccessTokenGuard)
+  @Post("2fa/verify-setup")
+  async verify2FASetup(
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    const { code } = parseTotpVerifySetupBody(body);
+    return this.totpService.verifySetup(request.auth!.userId, code);
+  }
+
+  @Post("2fa/challenge")
+  async complete2FAChallenge(
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    const { challengeToken, code } = parseTotpChallengeBody(body);
+    const userId = await this.totpService.verifyChallenge(challengeToken, code);
+    return this.authService.complete2FALogin(userId, getRequestMeta(request));
+  }
+
+  @UseGuards(AccessTokenGuard)
+  @Post("2fa/disable")
+  async disable2FA(
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    const { password, code } = parseTotpDisableBody(body);
+    return this.totpService.disable(request.auth!.userId, password, code);
+  }
+
+  // --- Account Deletion ---
+
+  @UseGuards(AccessTokenGuard)
+  @Post("account/delete")
+  async deleteAccount(
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    const { password } = parseDeleteAccountBody(body);
+    return this.authService.deleteAccount(request.auth!.userId, password);
+  }
+
+  // --- FCM Token Management ---
+
+  @UseGuards(AccessTokenGuard)
+  @Post("fcm-token")
+  async registerFcmToken(
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    const { token, device } = parseRegisterFcmTokenBody(body);
+    return this.authService.registerFcmToken(request.auth!.userId, token, device);
+  }
+
+  @UseGuards(AccessTokenGuard)
+  @Delete("fcm-token/:token")
+  async removeFcmToken(
+    @Param("token") token: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.authService.removeFcmToken(request.auth!.userId, token);
+  }
+
+  // --- Unsubscribe ---
+
+  @Get("unsubscribe")
+  async unsubscribe(@Query("token") token: string) {
+    return this.authService.processUnsubscribe(token);
   }
 }

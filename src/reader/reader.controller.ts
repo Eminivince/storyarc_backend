@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   Param,
+  Patch,
   Put,
   Post,
   Query,
@@ -141,6 +142,19 @@ export class ReaderController {
     @Req() request: AuthenticatedRequest,
   ) {
     return this.readerService.getChapter(
+      request.auth!.userId,
+      storySlug,
+      chapterSlug,
+    );
+  }
+
+  @Get("stories/:storySlug/chapters/:chapterSlug/completion-stats")
+  async getChapterCompletionStats(
+    @Param("storySlug") storySlug: string,
+    @Param("chapterSlug") chapterSlug: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.readerService.getChapterCompletionStats(
       request.auth!.userId,
       storySlug,
       chapterSlug,
@@ -313,5 +327,58 @@ export class ReaderController {
     @Req() request: AuthenticatedRequest,
   ) {
     return this.readerService.removeBookmark(request.auth!.userId, bookmarkId);
+  }
+
+  @Post("reviews/:reviewId/vote")
+  async voteOnReview(
+    @Param("reviewId") reviewId: string,
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    const record = body as Record<string, unknown>;
+    const helpful = record.helpful === true;
+    return this.readerService.voteOnReview(
+      request.auth!.userId,
+      reviewId,
+      helpful,
+    );
+  }
+
+  @Get("bookmark-folders")
+  async listBookmarkFolders(@Req() request: AuthenticatedRequest) {
+    return this.readerService.listBookmarkFolders(request.auth!.userId);
+  }
+
+  @Post("bookmark-folders")
+  async createBookmarkFolder(
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    const record = body as Record<string, unknown>;
+    const name = typeof record.name === "string" ? record.name : "";
+    return this.readerService.createBookmarkFolder(request.auth!.userId, name);
+  }
+
+  @Delete("bookmark-folders/:folderId")
+  async deleteBookmarkFolder(
+    @Param("folderId") folderId: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.readerService.deleteBookmarkFolder(request.auth!.userId, folderId);
+  }
+
+  @Patch("bookmarks/:bookmarkId/folder")
+  async moveBookmarkToFolder(
+    @Param("bookmarkId") bookmarkId: string,
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    const record = body as Record<string, unknown>;
+    const folderId = typeof record.folderId === "string" ? record.folderId : null;
+    return this.readerService.moveBookmarkToFolder(
+      request.auth!.userId,
+      bookmarkId,
+      folderId,
+    );
   }
 }

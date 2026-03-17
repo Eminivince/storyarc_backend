@@ -6,6 +6,19 @@ import {
 import { Resend } from "resend";
 import { env } from "../config/env";
 
+function unsubscribeFooter(unsubscribeUrl: string | null) {
+  if (!unsubscribeUrl) {
+    return "";
+  }
+
+  return `
+    <div style="margin-top: 32px; padding-top: 16px; border-top: 1px solid #e5e7eb; font-size: 12px; color: #9ca3af;">
+      <a href="${unsubscribeUrl}" style="color: #9ca3af; text-decoration: underline;">Unsubscribe</a>
+      from these emails.
+    </div>
+  `;
+}
+
 @Injectable()
 export class ResendEmailService {
   private readonly logger = new Logger(ResendEmailService.name);
@@ -93,8 +106,9 @@ export class ResendEmailService {
     subject: string;
     title: string;
     userName: string;
+    unsubscribeUrl?: string;
   }) {
-    const { email, preview, subject, title, userName } = params;
+    const { email, preview, subject, title, userName, unsubscribeUrl } = params;
 
     const result = await this.resend.emails.send({
       from: env.resendFromEmail,
@@ -108,6 +122,7 @@ export class ResendEmailService {
           <p style="font-size: 16px; line-height: 1.6; color: #374151;">
             ${preview}
           </p>
+          ${unsubscribeFooter(unsubscribeUrl ?? null)}
         </div>
       `,
     });
@@ -117,6 +132,139 @@ export class ResendEmailService {
         `Resend error while sending notification email: ${result.error.message}`,
       );
       throw new InternalServerErrorException("Could not send the notification email.");
+    }
+  }
+
+  async sendPurchaseReceipt(params: {
+    email: string;
+    userName: string;
+    itemName: string;
+    amountFormatted: string;
+    purchaseDate: string;
+  }) {
+    const { email, userName, itemName, amountFormatted, purchaseDate } = params;
+
+    await this.sendNotificationEmail({
+      email,
+      userName,
+      subject: "Your TaleStead purchase receipt",
+      title: "Purchase Confirmation",
+      preview: `You purchased ${itemName} for ${amountFormatted} on ${purchaseDate}. Thank you for supporting creators on TaleStead!`,
+    });
+  }
+
+  async sendPayoutProcessed(params: {
+    email: string;
+    userName: string;
+    amount: string;
+  }) {
+    await this.sendNotificationEmail({
+      email: params.email,
+      userName: params.userName,
+      subject: "Your TaleStead payout has been processed",
+      title: "Payout Processed",
+      preview: `Your payout of ${params.amount} has been released. Please allow a few business days for it to arrive in your account.`,
+    });
+  }
+
+  async sendSubscriptionCharged(params: {
+    email: string;
+    userName: string;
+    planName: string;
+    amount: string;
+  }) {
+    await this.sendNotificationEmail({
+      email: params.email,
+      userName: params.userName,
+      subject: `Your TaleStead ${params.planName} subscription was renewed`,
+      title: "Subscription Renewed",
+      preview: `Your ${params.planName} plan was renewed for ${params.amount}. Enjoy continued access to premium content!`,
+    });
+  }
+
+  async sendSecurityAlert(params: {
+    email: string;
+    userName: string;
+    eventType: string;
+    ipAddress: string | null;
+  }) {
+    const locationNote = params.ipAddress ? ` from IP ${params.ipAddress}` : "";
+
+    await this.sendNotificationEmail({
+      email: params.email,
+      userName: params.userName,
+      subject: "TaleStead security alert",
+      title: "Security Alert",
+      preview: `We detected ${params.eventType}${locationNote}. If this wasn't you, please secure your account immediately by changing your password.`,
+    });
+  }
+
+  async sendCreatorApplicationStatus(params: {
+    email: string;
+    userName: string;
+    status: "APPROVED" | "REJECTED";
+  }) {
+    const isApproved = params.status === "APPROVED";
+
+    await this.sendNotificationEmail({
+      email: params.email,
+      userName: params.userName,
+      subject: isApproved
+        ? "Welcome to TaleStead Creators!"
+        : "Update on your TaleStead creator application",
+      title: isApproved ? "You're In!" : "Application Update",
+      preview: isApproved
+        ? "Congratulations! Your creator application has been approved. You can now start publishing stories on TaleStead."
+        : "Unfortunately, your creator application was not approved at this time. Please review the feedback and feel free to reapply.",
+    });
+  }
+
+  async sendModerationNotice(params: {
+    email: string;
+    userName: string;
+    contentType: string;
+    action: string;
+  }) {
+    await this.sendNotificationEmail({
+      email: params.email,
+      userName: params.userName,
+      subject: `Action taken on your ${params.contentType}`,
+      title: "Content Moderation Notice",
+      preview: `Your ${params.contentType} has been ${params.action} by our moderation team. Please review our community guidelines for more information.`,
+    });
+  }
+
+  async sendWeeklyDigest(params: {
+    email: string;
+    userName: string;
+    sections: string[];
+    unsubscribeUrl: string;
+  }) {
+    const sectionsHtml = params.sections
+      .map((s) => `<li style="margin-bottom: 8px;">${s}</li>`)
+      .join("");
+
+    const result = await this.resend.emails.send({
+      from: env.resendFromEmail,
+      to: params.email,
+      subject: "Your TaleStead Weekly Digest",
+      text: `Hi ${params.userName}, here's what happened this week on TaleStead.`,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 520px; margin: 0 auto; padding: 24px; color: #111827;">
+          <p style="font-size: 16px; margin-bottom: 16px;">Hi ${params.userName},</p>
+          <h1 style="font-size: 24px; margin: 0 0 16px;">Your Weekly Digest</h1>
+          <ul style="font-size: 16px; line-height: 1.6; color: #374151; padding-left: 20px;">
+            ${sectionsHtml}
+          </ul>
+          ${unsubscribeFooter(params.unsubscribeUrl)}
+        </div>
+      `,
+    });
+
+    if (result.error) {
+      this.logger.error(
+        `Resend error while sending weekly digest: ${result.error.message}`,
+      );
     }
   }
 }

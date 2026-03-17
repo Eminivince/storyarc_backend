@@ -14,7 +14,9 @@ import { AuthenticatedRequest } from "../common/types/request-with-auth.type";
 import {
   parseConfirmCheckoutSessionBody,
   parseCreateCheckoutSessionBody,
+  parseRefundRequestBody,
   parseSendGiftBody,
+  parseSubscriptionChangePlanBody,
   parseUnlockChapterBatchBody,
   parseUnlockChapterBody,
 } from "./monetization.schemas";
@@ -101,19 +103,6 @@ export class MonetizationController {
     );
   }
 
-  @Post("chapters/:storySlug/:chapterSlug/unlock-with-ad")
-  async unlockChapterWithAd(
-    @Body() body: unknown,
-    @Param("chapterSlug") chapterSlug: string,
-    @Param("storySlug") storySlug: string,
-    @Req() request: AuthenticatedRequest,
-  ) {
-    return this.monetizationService.unlockChapterWithAd(
-      request.auth!.userId,
-      parseUnlockChapterBody(body, { chapterSlug, storySlug }),
-    );
-  }
-
   @Post("gifts")
   async sendGift(
     @Body() body: unknown,
@@ -122,6 +111,37 @@ export class MonetizationController {
     return this.monetizationService.sendGift(
       request.auth!.userId,
       parseSendGiftBody(body),
+    );
+  }
+
+  @Post("refund-request")
+  async requestRefund(
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    const { purchaseId, reason } = parseRefundRequestBody(body);
+    return this.monetizationService.requestRefund(
+      request.auth!.userId,
+      purchaseId,
+      reason,
+    );
+  }
+
+  @Post("subscription/cancel")
+  async cancelSubscription(@Req() request: AuthenticatedRequest) {
+    return this.monetizationService.cancelSubscription(request.auth!.userId);
+  }
+
+  @Post("subscription/change-plan")
+  async changeSubscriptionPlan(
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    const { planId, billingInterval } = parseSubscriptionChangePlanBody(body);
+    return this.monetizationService.changeSubscriptionPlan(
+      request.auth!.userId,
+      planId,
+      billingInterval,
     );
   }
 }

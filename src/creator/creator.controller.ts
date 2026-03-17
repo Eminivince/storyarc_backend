@@ -87,6 +87,27 @@ export class CreatorController {
       parseCreatorWithdrawalRequestBody(body),
     );
   }
+
+  @Get("tax-form")
+  async getTaxForm(@Req() request: AuthenticatedRequest) {
+    assertCreatorRole(request);
+
+    return this.creatorFinanceService.getTaxForm(request.auth!.userId);
+  }
+
+  @Post("tax-form")
+  async submitTaxForm(
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    assertCreatorRole(request);
+
+    const record = body as Record<string, unknown>;
+    return this.creatorFinanceService.submitTaxForm(request.auth!.userId, {
+      formType: record.formType as string,
+      formData: (record.formData as Record<string, unknown>) ?? {},
+    });
+  }
 }
 
 @Controller("admin/creator-applications")

@@ -33,7 +33,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   async onModuleInit() {
     try {
       await this.client.connect();
-      this.logger.log("Redis connected.");
+      console.log("====== Redis Connected ======");
     } catch (error) {
       if (!this.canUseFallback(error)) {
         throw error;
@@ -100,6 +100,93 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
       },
       async () => {
         this.fallbackStore.delete(key);
+      },
+    );
+  }
+
+  async increment(key: string, ttlSeconds: number): Promise<number> {
+    return this.withRedisClient(
+      async (client) => {
+        const value = await client.incr(key);
+
+        if (value === 1) {
+          await client.expire(key, ttlSeconds);
+        }
+
+        return value;
+      },
+      async () => {
+        const existing = this.getFallbackValue(key);
+        const current = existing ? parseInt(existing.value, 10) : 0;
+        const next = current + 1;
+
+        this.fallbackStore.set(key, {
+          expiresAt: existing?.expiresAt ?? Date.now() + ttlSeconds * 1000,
+          value: String(next),
+        });
+
+        return next;
+      },
+    );
+  }
+
+  async pushToList(key: string, json: unknown): Promise<void> {
+    await this.withRedisClient(
+      async (client) => {
+        await client.lpush(key, JSON.stringify(json));
+      },
+      async () => {
+        const existing = this.getFallbackValue(key);
+        const list: unknown[] = existing ? JSON.parse(existing.value) : [];
+        list.push(json);
+        this.fallbackStore.set(key, {
+          expiresAt: null,
+          value: JSON.stringify(list),
+        });
+      },
+    );
+  }
+
+  async popFromList(key: string): Promise<unknown | null> {
+    return this.withRedisClient(
+      async (client) => {
+        const value = await client.rpop(key);
+        return value ? JSON.parse(value) : null;
+      },
+      async () => {
+        const existing = this.getFallbackValue(key);
+
+        if (!existing) {
+          return null;
+        }
+
+        const list: unknown[] = JSON.parse(existing.value);
+
+        if (list.length === 0) {
+          return null;
+        }
+
+        const item = list.shift();
+        this.fallbackStore.set(key, {
+          expiresAt: null,
+          value: JSON.stringify(list),
+        });
+        return item ?? null;
+      },
+    );
+  }
+
+  async listLength(key: string): Promise<number> {
+    return this.withRedisClient(
+      async (client) => client.llen(key),
+      async () => {
+        const existing = this.getFallbackValue(key);
+
+        if (!existing) {
+          return 0;
+        }
+
+        return JSON.parse(existing.value).length;
       },
     );
   }

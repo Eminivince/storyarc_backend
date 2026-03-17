@@ -10,6 +10,7 @@ import {
   ChapterStatus,
   Prisma,
   StoryStatus,
+  PrismaClient,
 } from "@prisma/client";
 import { PrismaService } from "../database/prisma.service";
 import { EngagementService } from "../engagement/engagement.service";
@@ -101,7 +102,32 @@ export class StudioService {
     publishedCount: number;
     scannedCount: number;
   }> {
-    const dueChapters = await this.prisma.chapter.findMany({
+    const directUrl = process.env.DIRECT_URL?.trim() || "";
+    const pooledUrl = process.env.DATABASE_URL?.trim() || "";
+    const baseUrl = directUrl || pooledUrl;
+
+    if (!baseUrl) {
+      this.logger.warn(
+        "Skipping scheduled chapter auto-publish: DIRECT_URL or DATABASE_URL must be set.",
+      );
+      return {
+        failureCount: 0,
+        publishedCount: 0,
+        scannedCount: 0,
+      };
+    }
+
+    const separator = baseUrl.includes("?") ? "&" : "?";
+    const seedUrl = `${baseUrl}${separator}connection_limit=1`;
+    const seedPrisma = new PrismaClient({
+      datasources: {
+        db: {
+          url: seedUrl,
+        },
+      },
+    });
+
+    const dueChapters = await seedPrisma.chapter.findMany({
       where: {
         scheduledFor: {
           lte: now,
@@ -129,6 +155,8 @@ export class StudioService {
       ],
       take: limit,
     });
+
+    await seedPrisma.$disconnect();
 
     if (!dueChapters.length) {
       return {
@@ -1096,6 +1124,141 @@ export class StudioService {
     }
 
     return Math.trunc(parsed);
+  }
+
+  async deleteStory(userId: string, storySlug: string) {
+    const story = await this.prisma.story.findFirst({
+      where: {
+        authorId: userId,
+        slug: storySlug,
+        deletedAt: null,
+      },
+    });
+
+    if (!story) {
+      throw new NotFoundException("Story not found.");
+    }
+
+    await this.prisma.story.update({
+      where: { id: story.id },
+      data: { deletedAt: new Date() },
+    });
+
+    return {
+      message: `"${story.title}" has been deleted.`,
+    };
+  }
+
+  async reorderChapters(
+    userId: string,
+    storySlug: string,
+    orderedChapterIds: string[],
+  ) {
+    const story = await this.prisma.story.findFirst({
+      where: {
+        authorId: userId,
+        slug: storySlug,
+        deletedAt: null,
+      },
+      include: {
+        chapters: { select: { id: true } },
+      },
+    });
+
+    if (!story) {
+      throw new NotFoundException("Story not found.");
+    }
+
+    const storyChapterIds = new Set(story.chapters.map((c) => c.id));
+    for (const id of orderedChapterIds) {
+      if (!storyChapterIds.has(id)) {
+        throw new BadRequestException(`Chapter ${id} does not belong to this story.`);
+      }
+    }
+
+    await this.prisma.$transaction(
+      orderedChapterIds.map((chapterId, index) =>
+        this.prisma.chapter.update({
+          where: { id: chapterId },
+          data: { chapterNumber: index + 1 },
+        }),
+      ),
+    );
+
+    // Update published chapter numbers to match
+    await this.prisma.$transaction(
+      orderedChapterIds.map((chapterId, index) =>
+        this.prisma.publishedChapter.updateMany({
+          where: { chapterId },
+          data: { chapterNumber: index + 1 },
+        }),
+      ),
+    );
+
+    return {
+      message: "Chapters reordered successfully.",
+    };
+  }
+
+  async bulkChapterAction(
+    userId: string,
+    storySlug: string,
+    chapterIds: string[],
+    action: string,
+  ) {
+    const MAX_BULK_SIZE = 50;
+
+    if (chapterIds.length > MAX_BULK_SIZE) {
+      throw new BadRequestException(`Cannot process more than ${MAX_BULK_SIZE} chapters at once.`);
+    }
+
+    const story = await this.prisma.story.findFirst({
+      where: {
+        authorId: userId,
+        slug: storySlug,
+        deletedAt: null,
+      },
+      include: {
+        chapters: {
+          where: { id: { in: chapterIds } },
+          include: { publishedChapter: true },
+        },
+      },
+    });
+
+    if (!story) {
+      throw new NotFoundException("Story not found.");
+    }
+
+    if (story.chapters.length !== chapterIds.length) {
+      throw new BadRequestException("Some chapters do not belong to this story.");
+    }
+
+    let affectedCount = 0;
+
+    if (action === "UNPUBLISH") {
+      const publishedChapterIds = story.chapters
+        .filter((c) => c.publishedChapter)
+        .map((c) => c.publishedChapter!.id);
+      if (publishedChapterIds.length > 0) {
+        await this.prisma.publishedChapter.deleteMany({
+          where: { id: { in: publishedChapterIds } },
+        });
+      }
+      affectedCount = publishedChapterIds.length;
+    } else if (action === "DELETE") {
+      await this.prisma.chapter.deleteMany({
+        where: { id: { in: chapterIds }, storyId: story.id },
+      });
+      affectedCount = chapterIds.length;
+    } else {
+      throw new BadRequestException("Action must be UNPUBLISH or DELETE.");
+    }
+
+    return {
+      message: `${action.toLowerCase()} applied to ${affectedCount} chapter(s).`,
+      affectedCount,
+    };
   }
 
   private async createUniqueStorySlug(title: string) {

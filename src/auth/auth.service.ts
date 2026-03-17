@@ -52,6 +52,7 @@ type AuthUserSnapshot = {
   status: UserStatus;
   profile: UserProfileSnapshot | null;
   creatorApplication?: CreatorApplicationSnapshot | null;
+  totpCredential?: { verified: boolean } | null;
 };
 
 type GoogleUserInfo = {
@@ -319,8 +320,21 @@ export class AuthService {
     );
   }
 
+  private getLockoutKey(email: string) {
+    return `auth:lockout:${email}`;
+  }
+
   async login(input: LoginInput, requestMeta: RequestMeta) {
     const email = this.normalizeEmail(input.email);
+
+    // Account lockout: reject after 5 failed attempts within 15 minutes
+    const lockoutKey = this.getLockoutKey(email);
+    const failedAttempts = await this.redis.getJson<number>(lockoutKey);
+
+    if (failedAttempts !== null && failedAttempts >= 5) {
+      throw new UnauthorizedException("Invalid email or password.");
+    }
+
     const user = await this.prisma.user.findUnique({
       where: { email },
       include: {
@@ -334,10 +348,14 @@ export class AuthService {
           },
         },
         profile: true,
+        totpCredential: {
+          select: { verified: true },
+        },
       },
     });
 
     if (!user?.credential) {
+      await this.redis.increment(lockoutKey, 900);
       throw new UnauthorizedException("Invalid email or password.");
     }
 
@@ -348,7 +366,23 @@ export class AuthService {
     const passwordMatches = await compare(input.password, user.credential.passwordHash);
 
     if (!passwordMatches) {
+      await this.redis.increment(lockoutKey, 900);
       throw new UnauthorizedException("Invalid email or password.");
+    }
+
+    // Successful login: clear lockout counter
+    await this.redis.delete(lockoutKey);
+
+    // Check if 2FA is enabled — if so, return a challenge instead of a session
+    if (user.totpCredential?.verified) {
+      // Generate a short-lived challenge token. The caller must present it
+      // along with a valid TOTP code to complete login.
+      const challengeToken = await this.jwtService.signAsync(
+        { sub: user.id, type: "2fa-challenge" },
+        { secret: env.jwtAccessSecret, expiresIn: "5m" },
+      );
+
+      return { requires2FA: true, challengeToken };
     }
 
     return this.createSessionResponse(
@@ -359,9 +393,103 @@ export class AuthService {
         status: user.status,
         creatorApplication: user.creatorApplication,
         profile: user.profile,
+        totpCredential: user.totpCredential,
       },
       requestMeta,
     );
+  }
+
+  async complete2FALogin(userId: string, requestMeta: RequestMeta) {
+    const user = await this.prisma.user.findUniqueOrThrow({
+      where: { id: userId },
+      include: {
+        creatorApplication: {
+          select: {
+            reviewNotes: true,
+            reviewedAt: true,
+            status: true,
+            submittedAt: true,
+          },
+        },
+        profile: true,
+        totpCredential: {
+          select: { verified: true },
+        },
+      },
+    });
+
+    return this.createSessionResponse(
+      {
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        status: user.status,
+        creatorApplication: user.creatorApplication,
+        profile: user.profile,
+        totpCredential: user.totpCredential,
+      },
+      requestMeta,
+    );
+  }
+
+  async deleteAccount(userId: string, password: string) {
+    const user = await this.prisma.user.findUniqueOrThrow({
+      where: { id: userId },
+      include: { credential: true },
+    });
+
+    if (!user.credential) {
+      throw new BadRequestException("No password credential found. Cannot verify identity.");
+    }
+
+    const passwordMatches = await compare(password, user.credential.passwordHash);
+
+    if (!passwordMatches) {
+      throw new UnauthorizedException("Invalid password.");
+    }
+
+    const anonymizedEmail = `deleted_${user.id}@removed.talestead.com`;
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id: userId },
+        data: {
+          email: anonymizedEmail,
+          status: "DELETED",
+        },
+      });
+
+      await tx.profile.updateMany({
+        where: { userId },
+        data: {
+          displayName: "Deleted User",
+          bio: null,
+          avatarUrl: null,
+          location: null,
+          tagline: null,
+          website: null,
+          twitter: null,
+          discord: null,
+        },
+      });
+
+      await tx.session.updateMany({
+        where: { userId, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+    });
+
+    // Clear session caches
+    const sessions = await this.prisma.session.findMany({
+      where: { userId },
+      select: { id: true },
+    });
+
+    for (const session of sessions) {
+      await this.clearSessionCache(session.id);
+    }
+
+    return { message: "Your account has been deleted." };
   }
 
   async logout(userId: string, sessionId: string) {
@@ -642,6 +770,9 @@ export class AuthService {
           },
         },
         profile: true,
+        totpCredential: {
+          select: { verified: true },
+        },
       },
     });
 
@@ -657,6 +788,7 @@ export class AuthService {
         role: user.role,
         status: user.status,
         profile: user.profile,
+        totpCredential: user.totpCredential,
       }),
     };
   }
@@ -920,6 +1052,9 @@ export class AuthService {
             },
           },
           profile: true,
+          totpCredential: {
+            select: { verified: true },
+          },
         },
       }),
     ]);
@@ -936,6 +1071,9 @@ export class AuthService {
               },
             },
             profile: true,
+            totpCredential: {
+              select: { verified: true },
+            },
           },
         })
       : null;
@@ -995,6 +1133,9 @@ export class AuthService {
             },
           },
           profile: true,
+          totpCredential: {
+            select: { verified: true },
+          },
         },
       });
 
@@ -1008,6 +1149,7 @@ export class AuthService {
           role: createdUser.role,
           status: createdUser.status,
           profile: createdUser.profile,
+          totpCredential: createdUser.totpCredential,
         },
         requestMeta,
       );
@@ -1065,6 +1207,9 @@ export class AuthService {
                 },
               },
               profile: true,
+              totpCredential: {
+                select: { verified: true },
+              },
             },
           })
         : existingUser;
@@ -1079,6 +1224,7 @@ export class AuthService {
         role: syncedUser.role,
         status: syncedUser.status,
         profile: syncedUser.profile,
+        totpCredential: syncedUser.totpCredential,
       },
       requestMeta,
     );
@@ -1274,6 +1420,7 @@ export class AuthService {
       role: user.role,
       displayName: user.profile?.displayName ?? "TaleStead User",
       onboarding: this.mapOnboarding(user.profile),
+      has2FA: user.totpCredential?.verified ?? false,
     };
   }
 
@@ -1426,5 +1573,82 @@ export class AuthService {
 
   private getPendingRegistrationKey(email: string) {
     return `auth:register:${email}`;
+  }
+
+  // --- FCM Token Management ---
+
+  async registerFcmToken(userId: string, token: string, device?: string) {
+    await this.prisma.fcmToken.upsert({
+      where: { token },
+      create: { userId, token, device },
+      update: { userId, device, updatedAt: new Date() },
+    });
+
+    return { message: "FCM token registered." };
+  }
+
+  async removeFcmToken(userId: string, token: string) {
+    await this.prisma.fcmToken.deleteMany({
+      where: { userId, token },
+    });
+
+    return { message: "FCM token removed." };
+  }
+
+  // --- Unsubscribe ---
+
+  async processUnsubscribe(token: string) {
+    if (!token || typeof token !== "string") {
+      throw new BadRequestException("Invalid unsubscribe token.");
+    }
+
+    let payload: { sub: string; category: string };
+
+    try {
+      payload = await this.jwtService.verifyAsync(token, {
+        secret: env.jwtAccessSecret,
+      });
+    } catch {
+      throw new BadRequestException("Invalid or expired unsubscribe token.");
+    }
+
+    if (!payload.sub || !payload.category) {
+      throw new BadRequestException("Malformed unsubscribe token.");
+    }
+
+    const updateData: Record<string, boolean> = {};
+    const categoryToField: Record<string, string> = {
+      comments: "emailNewComments",
+      digest: "emailWeeklyDigest",
+      marketing: "emailMarketing",
+    };
+
+    const field = categoryToField[payload.category];
+
+    if (!field) {
+      throw new BadRequestException("Unknown email category.");
+    }
+
+    updateData[field] = false;
+
+    await this.prisma.notificationPreference.upsert({
+      where: { userId: payload.sub },
+      create: {
+        userId: payload.sub,
+        ...updateData,
+      },
+      update: updateData,
+    });
+
+    return {
+      message: `You have been unsubscribed from ${payload.category} emails.`,
+    };
+  }
+
+  async generateUnsubscribeToken(userId: string, category: string): Promise<string> {
+    return this.jwtService.signAsync(
+      { sub: userId, category, type: "unsubscribe" },
+      { secret: env.jwtAccessSecret, expiresIn: "90d" },
+    );
   }
 }

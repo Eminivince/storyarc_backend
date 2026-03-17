@@ -1,12 +1,17 @@
 import { BadRequestException } from "@nestjs/common";
 import {
+  DeleteAccountInput,
   ForgotPasswordInput,
   GoogleAuthCallbackInput,
   GoogleAuthStartInput,
   LoginInput,
   RefreshInput,
+  RegisterFcmTokenInput,
   RegisterInput,
   ResetPasswordInput,
+  TotpChallengeInput,
+  TotpDisableInput,
+  TotpVerifySetupInput,
   UpdateCurrentUserProfileInput,
   VerifyResetCodeInput,
 } from "./auth.types";
@@ -277,6 +282,60 @@ export function parseResetPasswordBody(body: unknown): ResetPasswordInput {
       maxLength: 5000,
     }),
     password: getPassword(record),
+  };
+}
+
+function getTotpCode(record: RawRecord) {
+  const code = getTrimmedString(record, "code", { minLength: 6, maxLength: 6 });
+
+  if (!/^\d{6}$/.test(code)) {
+    throw new BadRequestException("code must be a 6-digit TOTP code.");
+  }
+
+  return code;
+}
+
+export function parseTotpVerifySetupBody(body: unknown): TotpVerifySetupInput {
+  const record = getObjectBody(body);
+
+  return { code: getTotpCode(record) };
+}
+
+export function parseTotpChallengeBody(body: unknown): TotpChallengeInput {
+  const record = getObjectBody(body);
+
+  return {
+    challengeToken: getTrimmedString(record, "challengeToken", {
+      minLength: 20,
+      maxLength: 5000,
+    }),
+    code: getTotpCode(record),
+  };
+}
+
+export function parseTotpDisableBody(body: unknown): TotpDisableInput {
+  const record = getObjectBody(body);
+
+  return {
+    password: getPassword(record),
+    code: getTotpCode(record),
+  };
+}
+
+export function parseDeleteAccountBody(body: unknown): DeleteAccountInput {
+  const record = getObjectBody(body);
+
+  return {
+    password: getPassword(record),
+  };
+}
+
+export function parseRegisterFcmTokenBody(body: unknown): RegisterFcmTokenInput {
+  const record = getObjectBody(body);
+
+  return {
+    token: getTrimmedString(record, "token", { minLength: 10, maxLength: 4096 }),
+    device: getOptionalTrimmedString(record, "device", { maxLength: 255 }) ?? undefined,
   };
 }
 

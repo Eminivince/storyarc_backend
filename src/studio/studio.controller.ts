@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   ForbiddenException,
   Get,
   Param,
@@ -168,5 +169,65 @@ export class StudioController {
     assertStudioAccess(request);
 
     return this.studioService.uploadCover(parseStudioCoverUploadBody(body));
+  }
+
+  @Delete("stories/:storySlug")
+  async deleteStory(
+    @Param("storySlug") storySlug: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    assertStudioAccess(request);
+
+    return this.studioService.deleteStory(request.auth!.userId, storySlug);
+  }
+
+  @Put("stories/:storySlug/chapters/reorder")
+  async reorderChapters(
+    @Param("storySlug") storySlug: string,
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    assertStudioAccess(request);
+
+    const record = body as Record<string, unknown>;
+    const chapterIds = record.chapterIds;
+
+    if (!Array.isArray(chapterIds) || !chapterIds.every((id) => typeof id === "string")) {
+      throw new ForbiddenException("chapterIds must be an array of strings.");
+    }
+
+    return this.studioService.reorderChapters(
+      request.auth!.userId,
+      storySlug,
+      chapterIds as string[],
+    );
+  }
+
+  @Post("stories/:storySlug/chapters/bulk-action")
+  async bulkChapterAction(
+    @Param("storySlug") storySlug: string,
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    assertStudioAccess(request);
+
+    const record = body as Record<string, unknown>;
+    const chapterIds = record.chapterIds;
+    const action = record.action;
+
+    if (!Array.isArray(chapterIds) || !chapterIds.every((id) => typeof id === "string")) {
+      throw new ForbiddenException("chapterIds must be an array of strings.");
+    }
+
+    if (typeof action !== "string") {
+      throw new ForbiddenException("action must be a string.");
+    }
+
+    return this.studioService.bulkChapterAction(
+      request.auth!.userId,
+      storySlug,
+      chapterIds as string[],
+      action,
+    );
   }
 }

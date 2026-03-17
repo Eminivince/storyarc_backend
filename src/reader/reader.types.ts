@@ -46,7 +46,7 @@ export type UpdateCommentInput = {
   body: string;
 };
 
-export type ReviewSort = "recent" | "highest" | "lowest";
+export type ReviewSort = "recent" | "highest" | "lowest" | "most_helpful";
 
 export type StoryRankingKindInput =
   | "trending"

@@ -14,6 +14,7 @@
     "prisma:push": "prisma db push",
     "prisma:seed": "node --env-file=.env -r ts-node/register/transpile-only prisma/seed.ts",
     "prisma:seed:writer": "node --env-file=.env -r ts-node/register/transpile-only prisma/seed-writer-demo.ts",
+    "prisma:seed:badges": "node --env-file=.env -r ts-node/register/transpile-only prisma/seed-badges.ts",
     "postinstall": "prisma generate"
   },
   "keywords": [
@@ -25,6 +26,8 @@
   "license": "UNLICENSED",
   "dependencies": {
     "@fastify/compress": "^8.0.0",
+    "@fastify/helmet": "^13.0.2",
+    "@fastify/rate-limit": "^10.3.0",
     "@nestjs/common": "^11.1.16",
     "@nestjs/config": "^4.0.3",
     "@nestjs/core": "^11.1.16",
@@ -34,6 +37,7 @@
     "bcryptjs": "^3.0.3",
     "ioredis": "^5.10.0",
     "node-html-parser": "^7.1.0",
+    "otpauth": "^9.5.0",
     "reflect-metadata": "^0.2.2",
     "resend": "^6.9.3",
     "rxjs": "7.8.1",
