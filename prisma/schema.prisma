@@ -385,6 +385,8 @@ model User {
   dailyRewardOutcomes         DailyRewardOutcome[]
   dailyMissionBoards          DailyMissionBoard[]
   creatorScorecards           CreatorScorecard[]
+  paragraphReactions          ParagraphReaction[]
+  chapterReactions            ChapterReaction[]
 
   @@map("users")
 }
@@ -754,8 +756,10 @@ model PublishedChapter {
   contentReports      ContentReport[]
   adminOverride       PublishedChapterAdminOverride?
   comments            Comment[]
-  chapterReadEvents   ChapterReadEvent[]
-  analyticsDaily      ChapterAnalyticsDaily[]
+  chapterReadEvents    ChapterReadEvent[]
+  analyticsDaily       ChapterAnalyticsDaily[]
+  paragraphReactions   ParagraphReaction[]
+  chapterReactions     ChapterReaction[]
 
   @@unique([storyId, slug])
   @@unique([storyId, chapterNumber])
@@ -1914,4 +1918,44 @@ model CreatorScorecard {
   @@unique([userId, weekStart])
   @@index([userId, weekStart])
   @@map("creator_scorecards")
+}
+
+// ─── Paragraph & Chapter Reactions ───────────────────────────────────
+
+enum ReactionType {
+  SHOCKED
+  SAD
+  LAUGHING
+  HEART
+  FIRE
+  SCARED
+}
+
+model ParagraphReaction {
+  id                 String           @id @default(cuid())
+  userId             String
+  publishedChapterId String
+  paragraphIndex     Int
+  reactionType       ReactionType
+  createdAt          DateTime         @default(now())
+  user               User             @relation(fields: [userId], references: [id])
+  publishedChapter   PublishedChapter @relation(fields: [publishedChapterId], references: [id])
+
+  @@unique([userId, publishedChapterId, paragraphIndex])
+  @@index([publishedChapterId, paragraphIndex])
+  @@map("paragraph_reactions")
+}
+
+model ChapterReaction {
+  id                 String           @id @default(cuid())
+  userId             String
+  publishedChapterId String
+  reactionType       ReactionType
+  createdAt          DateTime         @default(now())
+  user               User             @relation(fields: [userId], references: [id])
+  publishedChapter   PublishedChapter @relation(fields: [publishedChapterId], references: [id])
+
+  @@unique([userId, publishedChapterId])
+  @@index([publishedChapterId, reactionType])
+  @@map("chapter_reactions")
 }

@@ -1,5 +1,5 @@
 import { BadRequestException } from "@nestjs/common";
-import { LeaderboardPeriod } from "@prisma/client";
+import { LeaderboardPeriod, ReactionType } from "@prisma/client";
 
 type RawRecord = Record<string, unknown>;
 
@@ -209,6 +209,42 @@ export function parseVotePollBody(body: unknown) {
       maxLength: 80,
     }),
   };
+}
+
+const VALID_REACTION_TYPES: ReactionType[] = [
+  "SHOCKED",
+  "SAD",
+  "LAUGHING",
+  "HEART",
+  "FIRE",
+  "SCARED",
+];
+
+export function parseReactionBody(body: unknown) {
+  const record = getObjectBody(body);
+  const reactionType = getStringValue(record, "reactionType", {
+    maxLength: 20,
+  });
+
+  if (!VALID_REACTION_TYPES.includes(reactionType as ReactionType)) {
+    throw new BadRequestException(
+      `reactionType must be one of: ${VALID_REACTION_TYPES.join(", ")}.`,
+    );
+  }
+
+  return { reactionType: reactionType as ReactionType };
+}
+
+export function parseParagraphIndexParam(index: string) {
+  const parsed = parseInt(index, 10);
+
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new BadRequestException(
+      "Paragraph index must be a non-negative integer.",
+    );
+  }
+
+  return parsed;
 }
 
 export function parseReadingTimeBody(body: unknown) {

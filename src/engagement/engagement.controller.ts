@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   ForbiddenException,
   Get,
   Param,
@@ -17,11 +18,14 @@ import {
   parseCreatePollBody,
   parseLeaderboardPeriodQuery,
   parseNotificationPreferencesBody,
+  parseParagraphIndexParam,
+  parseReactionBody,
   parseReadingTimeBody,
   parseShareReferralBody,
   parseVotePollBody,
 } from "./engagement.schemas";
 import { EngagementService } from "./engagement.service";
+import { ReactionService } from "./reaction.service";
 
 function assertCreatorRole(request: AuthenticatedRequest) {
   if (
@@ -35,7 +39,10 @@ function assertCreatorRole(request: AuthenticatedRequest) {
 @Controller("engagement")
 @UseGuards(AccessTokenGuard)
 export class EngagementController {
-  constructor(private readonly engagementService: EngagementService) {}
+  constructor(
+    private readonly engagementService: EngagementService,
+    private readonly reactionService: ReactionService,
+  ) {}
 
   @Get("overview")
   async getOverview(@Req() request: AuthenticatedRequest) {
@@ -197,6 +204,102 @@ export class EngagementController {
     return this.engagementService.toggleBadgeFeatured(
       request.auth!.userId,
       badgeId,
+    );
+  }
+
+  // ── paragraph reactions ────────────────────────────────────────────
+
+  @Put("stories/:storySlug/chapters/:chapterSlug/paragraphs/:index/reaction")
+  async upsertParagraphReaction(
+    @Param("storySlug") storySlug: string,
+    @Param("chapterSlug") chapterSlug: string,
+    @Param("index") index: string,
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    const { reactionType } = parseReactionBody(body);
+
+    return this.reactionService.upsertParagraphReaction(
+      request.auth!.userId,
+      storySlug,
+      chapterSlug,
+      parseParagraphIndexParam(index),
+      reactionType,
+    );
+  }
+
+  @Delete("stories/:storySlug/chapters/:chapterSlug/paragraphs/:index/reaction")
+  async removeParagraphReaction(
+    @Param("storySlug") storySlug: string,
+    @Param("chapterSlug") chapterSlug: string,
+    @Param("index") index: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.reactionService.removeParagraphReaction(
+      request.auth!.userId,
+      storySlug,
+      chapterSlug,
+      parseParagraphIndexParam(index),
+    );
+  }
+
+  // ── chapter reactions ──────────────────────────────────────────────
+
+  @Put("stories/:storySlug/chapters/:chapterSlug/reaction")
+  async upsertChapterReaction(
+    @Param("storySlug") storySlug: string,
+    @Param("chapterSlug") chapterSlug: string,
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    const { reactionType } = parseReactionBody(body);
+
+    return this.reactionService.upsertChapterReaction(
+      request.auth!.userId,
+      storySlug,
+      chapterSlug,
+      reactionType,
+    );
+  }
+
+  @Delete("stories/:storySlug/chapters/:chapterSlug/reaction")
+  async removeChapterReaction(
+    @Param("storySlug") storySlug: string,
+    @Param("chapterSlug") chapterSlug: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.reactionService.removeChapterReaction(
+      request.auth!.userId,
+      storySlug,
+      chapterSlug,
+    );
+  }
+
+  // ── aggregated reactions ───────────────────────────────────────────
+
+  @Get("stories/:storySlug/chapters/:chapterSlug/reactions")
+  async getChapterReactions(
+    @Param("storySlug") storySlug: string,
+    @Param("chapterSlug") chapterSlug: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.reactionService.getChapterReactions(
+      request.auth!.userId,
+      storySlug,
+      chapterSlug,
+    );
+  }
+
+  @Get("stories/:storySlug/chapters/:chapterSlug/reaction-heatmap")
+  async getReactionHeatmap(
+    @Param("storySlug") storySlug: string,
+    @Param("chapterSlug") chapterSlug: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.reactionService.getReactionHeatmap(
+      request.auth!.userId,
+      storySlug,
+      chapterSlug,
     );
   }
 }
