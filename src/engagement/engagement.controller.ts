@@ -32,6 +32,7 @@ import { ChurnPredictionService } from "./churn-prediction.service";
 import { EngagementService } from "./engagement.service";
 import { PointShopService } from "./point-shop.service";
 import { ReactionService } from "./reaction.service";
+import { ReferralService } from "./referral.service";
 
 function assertCreatorRole(request: AuthenticatedRequest) {
   if (
@@ -58,6 +59,7 @@ export class EngagementController {
     private readonly pointShopService: PointShopService,
     private readonly activityFeedService: ActivityFeedService,
     private readonly churnPredictionService: ChurnPredictionService,
+    private readonly referralService: ReferralService,
   ) {}
 
   @Get("overview")
@@ -420,6 +422,36 @@ export class EngagementController {
       cursor?.trim() || undefined,
       limit ? Math.min(parseInt(limit, 10) || 20, 50) : 20,
     );
+  }
+
+  // ── referral affiliate ───────────────────────────────────────────
+
+  @Get("referrals/dashboard")
+  async getReferralDashboard(@Req() request: AuthenticatedRequest) {
+    return this.referralService.getReferralDashboard(request.auth!.userId);
+  }
+
+  @Post("referrals/withdraw")
+  async requestReferralWithdrawal(
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    const record = body as Record<string, unknown>;
+    const amountCents = Number(record?.amountCents);
+
+    if (!amountCents || amountCents <= 0 || !Number.isFinite(amountCents)) {
+      throw new ForbiddenException("amountCents must be a positive number.");
+    }
+
+    return this.referralService.requestReferralWithdrawal(
+      request.auth!.userId,
+      Math.floor(amountCents),
+    );
+  }
+
+  @Get("referrals/earnings")
+  async getReferralEarnings(@Req() request: AuthenticatedRequest) {
+    return this.referralService.getReferralEarnings(request.auth!.userId);
   }
 
   // ── Churn Prediction ────────────────────────────────────────────

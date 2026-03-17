@@ -157,7 +157,15 @@ enum MissionRecurrence {
 
 enum ReferralEventStatus {
   SHARED
+  SIGNED_UP
   COMPLETED
+}
+
+enum ReferralPayoutStatus {
+  PENDING
+  APPROVED
+  RELEASED
+  REJECTED
 }
 
 enum LeaderboardPeriod {
@@ -393,6 +401,9 @@ model User {
   pointShopPurchases          UserPointShopPurchase[]
   activityFeedEvents          ActivityFeedEvent[]
   retentionInterventions      RetentionIntervention[]
+  referralEarnings            ReferralEarning[]
+  referralPayouts             ReferralPayout[]
+  referralEarningBalanceCents Int                             @default(0)
 
   @@map("users")
 }
@@ -1326,6 +1337,7 @@ model ReferralEvent {
   channel             String
   inviteeEmail        String?
   rewardPoints        Int                 @default(20)
+  commissionRate      Float               @default(0.10)
   completedAt         DateTime?
   createdAt           DateTime            @default(now())
   updatedAt           DateTime            @updatedAt
@@ -1333,10 +1345,40 @@ model ReferralEvent {
   inviter             User                @relation("ReferralInviter", fields: [inviterUserId], references: [id])
   invitee             User?               @relation("ReferralInvitee", fields: [inviteeUserId], references: [id])
   rewardLedgerEntries RewardLedgerEntry[]
+  referralEarnings    ReferralEarning[]
 
   @@index([inviterUserId, createdAt])
   @@index([inviteeUserId])
   @@map("referral_events")
+}
+
+model ReferralEarning {
+  id                    String        @id @default(cuid())
+  referrerUserId        String
+  referralEventId       String
+  sourceTransactionId   String
+  purchaseAmountCents   Int
+  commissionCents       Int
+  createdAt             DateTime      @default(now())
+  referrer              User          @relation(fields: [referrerUserId], references: [id])
+  referralEvent         ReferralEvent @relation(fields: [referralEventId], references: [id])
+
+  @@index([referrerUserId, createdAt])
+  @@map("referral_earnings")
+}
+
+model ReferralPayout {
+  id              String               @id @default(cuid())
+  userId          String
+  amountCents     Int
+  status          ReferralPayoutStatus @default(PENDING)
+  reviewNotes     String?
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+  user            User                 @relation(fields: [userId], references: [id])
+
+  @@index([userId, updatedAt])
+  @@map("referral_payouts")
 }
 
 model LeaderboardSnapshot {

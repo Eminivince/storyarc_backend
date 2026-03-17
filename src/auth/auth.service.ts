@@ -188,6 +188,7 @@ export class AuthService {
         email,
         expiresAtIso: expiresAt.toISOString(),
         passwordHash,
+        referralCode: input.referralCode,
       } satisfies PendingRegistrationPayload,
       env.registrationCodeTtlMinutes * 60,
     );
@@ -307,6 +308,10 @@ export class AuthService {
 
     await this.redis.delete(this.getPendingRegistrationKey(email));
 
+    if (pendingRegistration.referralCode) {
+      await this.processReferralCode(user.id, pendingRegistration.referralCode);
+    }
+
     return this.createSessionResponse(
       {
         id: user.id,
@@ -318,6 +323,60 @@ export class AuthService {
       },
       requestMeta,
     );
+  }
+
+  private async processReferralCode(userId: string, referralCode: string) {
+    try {
+      const code = await this.prisma.referralCode.findUnique({
+        where: { code: referralCode.trim().toUpperCase() },
+      });
+
+      if (!code || code.userId === userId) {
+        return;
+      }
+
+      const existingEvent = await this.prisma.referralEvent.findFirst({
+        where: { referralCodeId: code.id, inviteeUserId: userId },
+      });
+
+      if (existingEvent) {
+        return;
+      }
+
+      const sharedEvent = await this.prisma.referralEvent.findFirst({
+        where: {
+          referralCodeId: code.id,
+          status: "SHARED",
+          inviteeUserId: null,
+        },
+        orderBy: { createdAt: "desc" },
+      });
+
+      if (sharedEvent) {
+        await this.prisma.referralEvent.update({
+          where: { id: sharedEvent.id },
+          data: {
+            inviteeUserId: userId,
+            status: "SIGNED_UP",
+            completedAt: new Date(),
+          },
+        });
+      } else {
+        await this.prisma.referralEvent.create({
+          data: {
+            channel: "referral_code",
+            commissionRate: 0.1,
+            inviteeUserId: userId,
+            inviterUserId: code.userId,
+            referralCodeId: code.id,
+            status: "SIGNED_UP",
+            completedAt: new Date(),
+          },
+        });
+      }
+    } catch {
+      // Non-critical: don't block registration if referral processing fails
+    }
   }
 
   private getLockoutKey(email: string) {

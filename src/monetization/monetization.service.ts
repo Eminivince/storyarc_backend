@@ -24,6 +24,7 @@ import { env } from "../config/env";
 import { PrismaService } from "../database/prisma.service";
 import { PrismaClient } from "@prisma/client";
 import { ResendEmailService } from "../auth/resend-email.service";
+import { ReferralService } from "../engagement/referral.service";
 import { RedisService } from "../redis/redis.service";
 import {
   RequiredPreviousChapter,
@@ -313,6 +314,7 @@ export class MonetizationService implements OnModuleInit {
     private readonly prisma: PrismaService,
     private readonly redisService: RedisService,
     private readonly emailService: ResendEmailService,
+    private readonly referralService: ReferralService,
   ) {}
 
   async onModuleInit() {
@@ -1696,6 +1698,20 @@ export class MonetizationService implements OnModuleInit {
     if (resolvedPurchase.kind === PurchaseKind.COINS) {
       await this.completeCoinPurchase(resolvedPurchase, transaction);
       await this.trySendPurchaseReceipt(resolvedPurchase);
+
+      try {
+        const amountCents = transaction.amount ? Math.floor(Number(transaction.amount)) : 0;
+        if (amountCents > 0) {
+          await this.referralService.recordReferralCommission(
+            resolvedPurchase.userId,
+            amountCents,
+            resolvedPurchase.id,
+          );
+        }
+      } catch {
+        this.logger.warn(`Referral commission recording failed for purchase ${resolvedPurchase.id}`);
+      }
+
       return;
     }
 

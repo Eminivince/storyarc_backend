@@ -190,6 +190,7 @@ export function parseRegisterBody(body: unknown): RegisterInput {
       minLength: 2,
       maxLength: 80,
     }),
+    referralCode: getOptionalTrimmedString(record, "referralCode", { maxLength: 40 }) ?? undefined,
   };
 }
 

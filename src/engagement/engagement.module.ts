@@ -12,6 +12,7 @@ import { ChallengeService } from "./challenge.service";
 import { PointShopService } from "./point-shop.service";
 import { ChurnPredictionService } from "./churn-prediction.service";
 import { ReactionService } from "./reaction.service";
+import { ReferralService } from "./referral.service";
 import { RetentionNotificationService } from "./retention-notification.service";
 import { WeeklyDigestService } from "./weekly-digest.service";
 
@@ -28,10 +29,11 @@ import { WeeklyDigestService } from "./weekly-digest.service";
     EmailQueueService,
     PointShopService,
     ReactionService,
+    ReferralService,
     RetentionNotificationService,
     WeeklyDigestService,
     DataCleanupService,
   ],
-  exports: [ActivityFeedService, EngagementService, BadgeEvaluationService, ChallengeService, EmailQueueService, ReactionService],
+  exports: [ActivityFeedService, EngagementService, BadgeEvaluationService, ChallengeService, EmailQueueService, ReactionService, ReferralService],
 })
 export class EngagementModule {}

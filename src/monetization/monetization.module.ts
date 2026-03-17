@@ -1,5 +1,6 @@
 import { Module } from "@nestjs/common";
 import { AuthModule } from "../auth/auth.module";
+import { EngagementModule } from "../engagement/engagement.module";
 import { RedisModule } from "../redis/redis.module";
 import {
   CryptomusWebhookController,
@@ -9,7 +10,7 @@ import {
 import { MonetizationService } from "./monetization.service";
 
 @Module({
-  imports: [AuthModule, RedisModule],
+  imports: [AuthModule, EngagementModule, RedisModule],
   controllers: [
     MonetizationController,
     PaystackWebhookController,

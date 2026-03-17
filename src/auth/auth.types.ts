@@ -47,6 +47,7 @@ export type RegisterInput = {
   email: string;
   password: string;
   displayName: string;
+  referralCode?: string;
 };
 
 export type PendingRegistrationPayload = {
@@ -55,6 +56,7 @@ export type PendingRegistrationPayload = {
   email: string;
   expiresAtIso: string;
   passwordHash: string;
+  referralCode?: string;
 };
 
 export type LoginInput = {
