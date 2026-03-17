@@ -10,6 +10,7 @@ import { DataCleanupService } from "./data-cleanup.service";
 import { ActivityFeedService } from "./activity-feed.service";
 import { ChallengeService } from "./challenge.service";
 import { PointShopService } from "./point-shop.service";
+import { ChurnPredictionService } from "./churn-prediction.service";
 import { ReactionService } from "./reaction.service";
 import { RetentionNotificationService } from "./retention-notification.service";
 import { WeeklyDigestService } from "./weekly-digest.service";
@@ -19,6 +20,7 @@ import { WeeklyDigestService } from "./weekly-digest.service";
   controllers: [EngagementController],
   providers: [
     ActivityFeedService,
+    ChurnPredictionService,
     EngagementService,
     BadgeEvaluationService,
     ChallengeService,

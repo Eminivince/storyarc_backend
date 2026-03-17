@@ -392,6 +392,7 @@ model User {
   challengeProgress           UserChallengeProgress[]
   pointShopPurchases          UserPointShopPurchase[]
   activityFeedEvents          ActivityFeedEvent[]
+  retentionInterventions      RetentionIntervention[]
 
   @@map("users")
 }
@@ -2100,4 +2101,41 @@ model ActivityFeedEvent {
   @@index([userId, createdAt])
   @@index([createdAt])
   @@map("activity_feed_events")
+}
+
+// ── Churn Prediction ──────────────────────────────────────────────
+
+enum InterventionType {
+  WELCOME_BACK_MODAL
+  RE_ENGAGEMENT_EMAIL
+  STREAK_SAVE_PUSH
+  PERSONALIZED_RECOMMENDATION
+  WIN_BACK_OFFER
+}
+
+enum ChurnRiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+  CHURNED
+}
+
+model RetentionIntervention {
+  id               String           @id @default(cuid())
+  userId           String
+  interventionType InterventionType
+  riskLevel        ChurnRiskLevel
+  riskScore        Float
+  sentAt           DateTime         @default(now())
+  channel          String
+  metadata         Json?
+  clickedAt        DateTime?
+  convertedAt      DateTime?
+  createdAt        DateTime         @default(now())
+  user             User             @relation(fields: [userId], references: [id])
+
+  @@index([userId, sentAt])
+  @@index([riskLevel, sentAt])
+  @@map("retention_interventions")
 }

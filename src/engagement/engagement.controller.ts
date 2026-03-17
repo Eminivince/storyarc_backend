@@ -28,6 +28,7 @@ import {
 } from "./engagement.schemas";
 import { ActivityFeedService } from "./activity-feed.service";
 import { ChallengeService } from "./challenge.service";
+import { ChurnPredictionService } from "./churn-prediction.service";
 import { EngagementService } from "./engagement.service";
 import { PointShopService } from "./point-shop.service";
 import { ReactionService } from "./reaction.service";
@@ -56,6 +57,7 @@ export class EngagementController {
     private readonly challengeService: ChallengeService,
     private readonly pointShopService: PointShopService,
     private readonly activityFeedService: ActivityFeedService,
+    private readonly churnPredictionService: ChurnPredictionService,
   ) {}
 
   @Get("overview")
@@ -418,5 +420,38 @@ export class EngagementController {
       cursor?.trim() || undefined,
       limit ? Math.min(parseInt(limit, 10) || 20, 50) : 20,
     );
+  }
+
+  // ── Churn Prediction ────────────────────────────────────────────
+
+  @Get("returning-user-check")
+  async getReturningUserCheck(@Req() request: AuthenticatedRequest) {
+    return (
+      (await this.churnPredictionService.getReturningUserIntervention(
+        request.auth!.userId,
+      )) ?? { interventionId: null }
+    );
+  }
+
+  @Post("interventions/:id/click")
+  async recordInterventionClick(
+    @Param("id") id: string,
+  ) {
+    await this.churnPredictionService.recordInterventionClick(id);
+    return { ok: true };
+  }
+
+  @Post("interventions/:id/convert")
+  async recordInterventionConversion(
+    @Param("id") id: string,
+  ) {
+    await this.churnPredictionService.recordInterventionConversion(id);
+    return { ok: true };
+  }
+
+  @Get("admin/churn-metrics")
+  async getChurnMetrics(@Req() request: AuthenticatedRequest) {
+    assertAdminRole(request);
+    return this.churnPredictionService.getChurnMetrics();
   }
 }
