@@ -15,6 +15,7 @@
     "prisma:seed": "node --env-file=.env -r ts-node/register/transpile-only prisma/seed.ts",
     "prisma:seed:writer": "node --env-file=.env -r ts-node/register/transpile-only prisma/seed-writer-demo.ts",
     "prisma:seed:badges": "node --env-file=.env -r ts-node/register/transpile-only prisma/seed-badges.ts",
+    "prisma:set-user-role": "node --env-file=.env -r ts-node/register/transpile-only prisma/set-user-role.ts",
     "postinstall": "prisma generate"
   },
   "keywords": [

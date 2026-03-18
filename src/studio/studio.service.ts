@@ -651,7 +651,7 @@ export class StudioService {
     const refreshedStory = await this.getStoryRecord(userId, chapter.story.slug);
 
     return {
-      message: "Chapter published to readers.",
+      message: "Chapter uploaded.",
       story: this.mapStudioStory(refreshedStory),
     };
   }

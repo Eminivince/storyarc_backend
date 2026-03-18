@@ -2665,7 +2665,7 @@ export class ReaderService {
       orderBy: {
         lastReadAt: "desc",
       },
-      take: 6,
+      take: 1,
     });
 
     return entries

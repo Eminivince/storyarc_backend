@@ -75,8 +75,15 @@ export class OperationsController {
   }
 
   @Get("admin/books")
-  async getAdminBooks(@Req() request: AuthenticatedRequest) {
-    return this.operationsService.listAdminBooks(request.auth!.userId);
+  async getAdminBooks(
+    @Query("limit") limit: string | undefined,
+    @Query("offset") offset: string | undefined,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.operationsService.listAdminBooks(request.auth!.userId, {
+      limit: parseAdminListLimitQuery(limit),
+      offset: parseAdminListOffsetQuery(offset),
+    });
   }
 
   @Get("admin/books/:bookSlug")

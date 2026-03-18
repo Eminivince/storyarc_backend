@@ -2663,7 +2663,6 @@ export class EngagementService {
       bookmarks,
       authoredStories,
       currentReadingEntry,
-      recentActivity,
     ] = await Promise.all([
       this.prisma.readingProgress.count({
         where: {
@@ -2713,7 +2712,6 @@ export class EngagementService {
           lastReadAt: "desc",
         },
       }),
-      this.buildRecentActivity(user),
     ]);
 
     const visibleBookmarks = bookmarks.filter((bookmark) => isStoryLive(bookmark.story));
@@ -2790,7 +2788,7 @@ export class EngagementService {
         },
       ],
       readingList,
-      recentActivity,
+      recentActivity: [],
     };
   }
 

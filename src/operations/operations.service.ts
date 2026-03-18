@@ -848,12 +848,34 @@ export class OperationsService {
     };
   }
 
-  async listAdminBooks(adminUserId: string) {
+  async listAdminBooks(
+    adminUserId: string,
+    pagination: AdminListPagination = {},
+  ) {
+    // Temporary debug logging for admin books pagination issues
+    // eslint-disable-next-line no-console
+    console.log("[admin/books] listAdminBooks called", {
+      adminUserId,
+      pagination,
+    });
+
     await this.requireAdmin(adminUserId);
     await this.ensureAdminDefaults();
     const policy = await this.ensureBookPlatformDefaults();
-    const stories = await this.getAdminBookStories();
-    const revenueByStoryId = await this.getBookRevenueMap(stories.map((story) => story.id));
+    const { stories, hasMore, limit, offset } =
+      await this.getAdminBookStories(undefined, pagination);
+
+    // eslint-disable-next-line no-console
+    console.log("[admin/books] fetched stories", {
+      count: stories.length,
+      hasMore,
+      limit,
+      offset,
+    });
+
+    const revenueByStoryId = await this.getBookRevenueMap(
+      stories.map((story) => story.id),
+    );
 
     return {
       inventory: stories.map((story) =>
@@ -863,6 +885,7 @@ export class OperationsService {
         ),
       ),
       inventoryStats: this.buildAdminBookStats(stories, revenueByStoryId),
+      pageInfo: this.buildAdminPageInfo(limit, offset, hasMore),
       policy: {
         defaultCoinCap: policy.defaultCoinCap,
         defaultPremiumWindowHours: policy.defaultPremiumWindowHours,
@@ -2994,8 +3017,17 @@ export class OperationsService {
 
   private async getAdminBookStories(
     storySlug?: string,
-  ): Promise<AdminBookStoryRecord[]> {
+    pagination?: AdminListPagination,
+  ): Promise<{
+    hasMore: boolean;
+    limit: number;
+    offset: number;
+    stories: AdminBookStoryRecord[];
+  }> {
     const policy = await this.ensureBookPlatformDefaults();
+    const limit = this.resolveAdminListLimit(pagination?.limit);
+    const offset = pagination?.offset ?? 0;
+
     const stories = await this.prisma.story.findMany({
       where: storySlug
         ? {
@@ -3039,9 +3071,17 @@ export class OperationsService {
           title: "asc",
         },
       ],
+      skip: storySlug ? 0 : offset,
+      take: storySlug ? undefined : limit + 1,
     });
 
-    const storiesMissingControl = stories.filter((story) => !story.adminControl);
+    const hasMore = !storySlug && stories.length > limit;
+    const slicedStories =
+      !storySlug && hasMore ? stories.slice(0, limit) : stories;
+
+    const storiesMissingControl = slicedStories.filter(
+      (story) => !story.adminControl,
+    );
 
     if (storiesMissingControl.length > 0) {
       await Promise.all(
@@ -3055,7 +3095,9 @@ export class OperationsService {
               globalCoinCap: policy.defaultCoinCap,
               releaseMode: policy.defaultReleaseMode,
               reviewedAt:
-                story.isLive || story.liveAt ? story.liveAt ?? story.publishedAt ?? new Date() : null,
+                story.isLive || story.liveAt
+                  ? story.liveAt ?? story.publishedAt ?? new Date()
+                  : null,
               storyId: story.id,
               visibilityState: story.isLive
                 ? AdminBookVisibilityState.LIVE
@@ -3066,16 +3108,21 @@ export class OperationsService {
         ),
       );
 
-      return this.getAdminBookStories(storySlug);
+      return this.getAdminBookStories(storySlug, pagination);
     }
 
-    return stories;
+    return {
+      hasMore,
+      limit,
+      offset,
+      stories: slicedStories,
+    };
   }
 
   private async getAdminBookStoryOrThrow(
     storySlug: string,
   ): Promise<AdminBookStoryRecord> {
-    const stories = await this.getAdminBookStories(storySlug);
+    const { stories } = await this.getAdminBookStories(storySlug);
     const story = stories[0];
 
     if (!story) {
