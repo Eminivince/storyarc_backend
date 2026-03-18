@@ -940,6 +940,7 @@ export class ReaderService {
           publishedAtLabel: this.formatRelativeDate(chapter.publishedAt),
           requiredPreviousChapter: chapterAccess?.requiredPreviousChapter ?? null,
           title: chapter.title,
+          volumeId: chapter.chapter?.volumeId ?? null,
         };
       }),
       continueReading: progress
@@ -994,6 +995,11 @@ export class ReaderService {
         tagLabels: story.tagSlugs.map((tagSlug) => this.slugToLabel(tagSlug)),
         title: story.title,
         userRating: storyRating?.rating ?? null,
+        volumes: (story.volumes ?? []).map((volume) => ({
+          id: volume.id,
+          number: volume.number,
+          title: volume.title,
+        })),
       },
     };
   }
@@ -3541,6 +3547,14 @@ export class ReaderService {
             chapter: true,
           },
           orderBy: { chapterNumber: "asc" },
+        },
+        volumes: {
+          orderBy: { sortOrder: "asc" },
+          select: {
+            id: true,
+            number: true,
+            title: true,
+          },
         },
       },
     });

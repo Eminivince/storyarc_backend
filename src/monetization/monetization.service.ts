@@ -26,6 +26,7 @@ import { PrismaClient } from "@prisma/client";
 import { ResendEmailService } from "../auth/resend-email.service";
 import { ReferralService } from "../engagement/referral.service";
 import { RedisService } from "../redis/redis.service";
+import { WebsocketService } from "../websocket/websocket.service";
 import {
   RequiredPreviousChapter,
   resolveChapterAccessState,
@@ -315,6 +316,7 @@ export class MonetizationService implements OnModuleInit {
     private readonly redisService: RedisService,
     private readonly emailService: ResendEmailService,
     private readonly referralService: ReferralService,
+    private readonly websocketService: WebsocketService,
   ) {}
 
   async onModuleInit() {
@@ -619,6 +621,7 @@ export class MonetizationService implements OnModuleInit {
 
       if (checkoutStatus === "success") {
         await this.processCryptomusInvoice(invoice, purchase);
+        this.emitWalletUpdate(userId);
       } else {
         await this.syncNonSuccessfulCryptomusPurchase(
           purchase,
@@ -647,6 +650,7 @@ export class MonetizationService implements OnModuleInit {
 
     if (checkoutStatus === "success") {
       await this.processPaystackTransaction(transaction, purchase);
+      this.emitWalletUpdate(userId);
     } else {
       await this.syncNonSuccessfulPurchase(purchase, transaction, checkoutStatus);
     }
@@ -805,11 +809,23 @@ export class MonetizationService implements OnModuleInit {
       }
     }
 
+    this.emitWalletUpdate(userId);
+
     return {
       chapterKey: this.toChapterKey(input.storySlug, input.chapterSlug),
       message: `Chapter unlocked with ${effectiveChapter.effectiveCoinPrice} coins.`,
       status: await this.getStatus(userId),
     };
+  }
+
+  private emitWalletUpdate(userId: string) {
+    try {
+      this.websocketService.emitToUser(userId, "wallet:updated", {
+        timestamp: Date.now(),
+      });
+    } catch (error) {
+      this.logger.warn(`Failed to emit wallet:updated to ${userId}`, error);
+    }
   }
 
   async getChapterBatchUnlockOptions(
@@ -1055,6 +1071,8 @@ export class MonetizationService implements OnModuleInit {
       };
     }
 
+    this.emitWalletUpdate(userId);
+
     return {
       chapterKey: this.toChapterKey(input.storySlug, input.chapterSlug),
       message: this.getBatchUnlockMessage(executedOption),
@@ -1146,6 +1164,8 @@ export class MonetizationService implements OnModuleInit {
         throw error;
       }
     }
+
+    this.emitWalletUpdate(userId);
 
     return {
       message: `${selectedGift.name} sent to ${story.authorName}.`,

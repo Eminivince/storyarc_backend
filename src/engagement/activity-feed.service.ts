@@ -1,10 +1,17 @@
-import { Injectable } from "@nestjs/common";
+import { forwardRef, Inject, Injectable, Logger } from "@nestjs/common";
 import { ActivityEventType, Prisma } from "@prisma/client";
 import { PrismaService } from "../database/prisma.service";
+import { WebsocketService } from "../websocket/websocket.service";
 
 @Injectable()
 export class ActivityFeedService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(ActivityFeedService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    @Inject(forwardRef(() => WebsocketService))
+    private readonly websocketService: WebsocketService,
+  ) {}
 
   async recordActivity(
     userId: string,
@@ -20,7 +27,7 @@ export class ActivityFeedService {
 
     if (profile?.showActivity === false) return;
 
-    await this.prisma.activityFeedEvent.create({
+    const event = await this.prisma.activityFeedEvent.create({
       data: {
         userId,
         eventType,
@@ -29,6 +36,17 @@ export class ActivityFeedService {
         chapterId: chapterId ?? undefined,
       },
     });
+
+    try {
+      this.websocketService.emitToUser(userId, "activity:new", {
+        id: event.id,
+        eventType,
+        metadata: metadata ?? null,
+        createdAt: event.createdAt.toISOString(),
+      });
+    } catch {
+      // Socket emit is best-effort
+    }
   }
 
   async getActivityFeed(

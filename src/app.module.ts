@@ -10,6 +10,7 @@ import { OperationsModule } from "./operations/operations.module";
 import { ReaderModule } from "./reader/reader.module";
 import { RedisModule } from "./redis/redis.module";
 import { StudioModule } from "./studio/studio.module";
+import { WebsocketModule } from "./websocket/websocket.module";
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { StudioModule } from "./studio/studio.module";
     MonetizationModule,
     ReaderModule,
     StudioModule,
+    WebsocketModule,
   ],
 })
 export class AppModule {}

@@ -25,6 +25,7 @@ import { RedisService } from "../redis/redis.service";
 import { isStoryLive } from "../utils/book-admin";
 import { BadgeEvaluationService } from "./badge-evaluation.service";
 import { ChallengeService } from "./challenge.service";
+import { WebsocketService } from "../websocket/websocket.service";
 
 const DAILY_CHECK_IN_REWARD = 50;
 const REFERRAL_SHARE_REWARD = 20;
@@ -288,7 +289,19 @@ export class EngagementService {
     private readonly badgeEvaluationService: BadgeEvaluationService,
     @Inject(forwardRef(() => ChallengeService))
     private readonly challengeService: ChallengeService,
+    @Inject(forwardRef(() => WebsocketService))
+    private readonly websocketService: WebsocketService,
   ) {}
+
+  private emitNotification(userId: string) {
+    try {
+      this.websocketService.emitToUser(userId, "notification:new", {
+        timestamp: Date.now(),
+      });
+    } catch (error) {
+      this.logger.warn(`Failed to emit notification:new to ${userId}`, error);
+    }
+  }
 
   async getOverview(userId: string) {
     const user = await this.getActiveUser(userId, {
@@ -631,6 +644,8 @@ export class EngagementService {
       });
     });
 
+    this.emitNotification(userId);
+
     if (streakDays === 7 || streakDays === 14 || streakDays === 30) {
       await this.maybeSendNotificationEmail(user, "REWARD", {
         body: `You reached a ${streakDays}-day TaleStead streak. Your daily reward has been added to your account.`,
@@ -770,6 +785,8 @@ export class EngagementService {
       title: "Mission completed",
     });
 
+    this.emitNotification(userId);
+
     await this.clearOverviewCache(userId);
 
     this.badgeEvaluationService.evaluateBadges(userId).catch((err) => {
@@ -853,6 +870,8 @@ export class EngagementService {
         },
       });
     });
+
+    this.emitNotification(userId);
 
     await this.maybeSendNotificationEmail(user, "REFERRAL", {
       body: `Your TaleStead referral code was shared via ${input.channel}. ${referralReward} Arc Points were added to your rewards balance.`,
@@ -1154,6 +1173,7 @@ export class EngagementService {
           userId: post.creatorUserId,
         },
       });
+      this.emitNotification(post.creatorUserId);
     }
 
     return {
@@ -1641,6 +1661,7 @@ export class EngagementService {
               userId: user.id,
             },
           });
+          this.emitNotification(user.id);
 
           if (user.notificationPreference?.emailNewChapters ?? true) {
             await this.resendEmailService
@@ -1765,6 +1786,7 @@ export class EngagementService {
               userId: recipient.id,
             },
           });
+          this.emitNotification(recipient.id);
         }
 
         if (preferences?.emailNewComments ?? true) {
@@ -1934,6 +1956,7 @@ export class EngagementService {
         userId,
       },
     });
+    this.emitNotification(userId);
   }
 
   private async generateDailyMissionBoard(userId: string, streakDays: number, userRole: string): Promise<void> {
@@ -2577,6 +2600,7 @@ export class EngagementService {
           userId: user.id,
         },
       });
+      this.emitNotification(user.id);
 
       if (user.notificationPreference?.emailMarketing) {
         await this.resendEmailService
@@ -2615,6 +2639,7 @@ export class EngagementService {
           userId: actor.id,
         },
       });
+      this.emitNotification(actor.id);
     }
   }
 

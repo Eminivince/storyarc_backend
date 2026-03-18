@@ -2,6 +2,7 @@ import { forwardRef, Inject, Injectable, Logger } from "@nestjs/common";
 import { UserBadge } from "@prisma/client";
 import { PrismaService } from "../database/prisma.service";
 import { RedisService } from "../redis/redis.service";
+import { WebsocketService } from "../websocket/websocket.service";
 import { ActivityFeedService } from "./activity-feed.service";
 
 @Injectable()
@@ -11,6 +12,8 @@ export class BadgeEvaluationService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
+    @Inject(forwardRef(() => WebsocketService))
+    private readonly websocketService: WebsocketService,
     @Inject(forwardRef(() => ActivityFeedService))
     private readonly activityFeedService: ActivityFeedService,
   ) {}
@@ -93,6 +96,19 @@ export class BadgeEvaluationService {
         }
 
         newlyEarned.push(userBadge);
+
+        try {
+          this.websocketService.emitToUser(userId, "badge:earned", {
+            badgeKey: definition.key,
+            badgeTitle: definition.title,
+            rarity: definition.rarity,
+          });
+          this.websocketService.emitToUser(userId, "notification:new", {
+            timestamp: Date.now(),
+          });
+        } catch {
+          // Socket emit is best-effort
+        }
 
         this.activityFeedService
           .recordActivity(userId, "EARNED_BADGE", {
