@@ -456,8 +456,12 @@ export class OperationsService {
       include: { articles: { where: { published: true }, orderBy: { sortOrder: "asc" } } },
       orderBy: { sortOrder: "asc" },
     });
+    const publishedArticleCount = dbCategories.reduce(
+      (count, category) => count + category.articles.length,
+      0,
+    );
 
-    if (dbCategories.length > 0) {
+    if (dbCategories.length > 0 && publishedArticleCount > 0) {
       return {
         articles: dbCategories.flatMap((c) =>
           c.articles.map((a) => ({
@@ -2583,7 +2587,12 @@ export class OperationsService {
 
   async createHelpCenterCategory(
     adminUserId: string,
-    input: { title: string; description: string; icon: string; sortOrder?: number },
+    input: {
+      title: string;
+      description: string;
+      icon: string;
+      sortOrder?: number | null;
+    },
   ) {
     const admin = await this.requireAdmin(adminUserId);
 
@@ -2613,9 +2622,10 @@ export class OperationsService {
       categoryId: string;
       title: string;
       excerpt: string;
-      body?: string;
-      tag?: string;
-      sortOrder?: number;
+      body?: string | null;
+      published?: boolean | null;
+      tag?: string | null;
+      sortOrder?: number | null;
     },
   ) {
     const admin = await this.requireAdmin(adminUserId);
@@ -2634,6 +2644,7 @@ export class OperationsService {
         title: input.title,
         excerpt: input.excerpt,
         body: input.body ?? null,
+        published: input.published ?? true,
         tag: input.tag ?? null,
         sortOrder: input.sortOrder ?? 0,
       },
@@ -2648,6 +2659,38 @@ export class OperationsService {
     });
 
     return { article };
+  }
+
+  async deleteHelpCenterArticle(adminUserId: string, articleId: string) {
+    const admin = await this.requireAdmin(adminUserId);
+
+    const article = await this.prisma.helpCenterArticle.findUnique({
+      where: { id: articleId },
+      include: {
+        category: true,
+      },
+    });
+
+    if (!article) {
+      throw new NotFoundException("Help center article not found.");
+    }
+
+    await this.prisma.helpCenterArticle.delete({
+      where: { id: articleId },
+    });
+
+    await this.logAdminAction(admin.id, {
+      detail: `Deleted help center article "${article.title}" from category "${article.category.title}".`,
+      icon: "delete",
+      summary: `Deleted help center article "${article.title}"`,
+      targetId: article.id,
+      targetType: "HELP_CENTER",
+    });
+
+    return {
+      deletedArticleId: article.id,
+      message: `Deleted "${article.title}" from the help center.`,
+    };
   }
 
   async getAdminSettings(adminUserId: string) {

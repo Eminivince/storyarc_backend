@@ -250,6 +250,55 @@ export function parseCreateSupportTicketBody(body: unknown) {
   };
 }
 
+export function parseAdminHelpCenterCategoryBody(body: unknown) {
+  const record = getObjectBody(body);
+
+  return {
+    description: getStringValue(record, "description", {
+      maxLength: 300,
+      minLength: 8,
+    }),
+    icon: getStringValue(record, "icon", {
+      maxLength: 64,
+      minLength: 2,
+    }),
+    sortOrder: getNullableNumberValue(record, "sortOrder", {
+      max: 10_000,
+      min: 0,
+    }),
+    title: getStringValue(record, "title", {
+      maxLength: 120,
+      minLength: 2,
+    }),
+  };
+}
+
+export function parseAdminHelpCenterArticleBody(body: unknown) {
+  const record = getObjectBody(body);
+
+  return {
+    body: getOptionalStringValue(record, "body", 16_000),
+    categoryId: getStringValue(record, "categoryId", {
+      maxLength: 64,
+      minLength: 2,
+    }),
+    excerpt: getStringValue(record, "excerpt", {
+      maxLength: 320,
+      minLength: 8,
+    }),
+    published: getNullableBooleanValue(record, "published"),
+    sortOrder: getNullableNumberValue(record, "sortOrder", {
+      max: 10_000,
+      min: 0,
+    }),
+    tag: getOptionalStringValue(record, "tag", 80),
+    title: getStringValue(record, "title", {
+      maxLength: 160,
+      minLength: 4,
+    }),
+  };
+}
+
 export function parseSupportMessageBody(body: unknown) {
   const record = getObjectBody(body);
 

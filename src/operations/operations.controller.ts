@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Patch,
@@ -15,6 +16,8 @@ import { AuthenticatedRequest } from "../common/types/request-with-auth.type";
 import {
   parseAdminCommentModerationBody,
   parseAdminContractBody,
+  parseAdminHelpCenterArticleBody,
+  parseAdminHelpCenterCategoryBody,
   parseAdminReviewModerationBody,
   parseAdminSettingValueBody,
   parseAdminUserStatusBody,
@@ -531,7 +534,7 @@ export class OperationsController {
   ) {
     return this.operationsService.createHelpCenterCategory(
       request.auth!.userId,
-      body as any,
+      parseAdminHelpCenterCategoryBody(body),
     );
   }
 
@@ -542,7 +545,18 @@ export class OperationsController {
   ) {
     return this.operationsService.createHelpCenterArticle(
       request.auth!.userId,
-      body as any,
+      parseAdminHelpCenterArticleBody(body),
+    );
+  }
+
+  @Delete("admin/help-center/articles/:articleId")
+  async deleteHelpCenterArticle(
+    @Param("articleId") articleId: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.operationsService.deleteHelpCenterArticle(
+      request.auth!.userId,
+      articleId,
     );
   }
 }
