@@ -39,6 +39,11 @@ export class ReaderController {
     return this.readerService.getDashboard(request.auth!.userId);
   }
 
+  @Get("dashboard/personalization")
+  async getDashboardPersonalization(@Req() request: AuthenticatedRequest) {
+    return this.readerService.getDashboardPersonalization(request.auth!.userId);
+  }
+
   @Get("dashboard/shelf/:shelfId")
   async getDashboardShelf(
     @Param("shelfId") shelfId: string,

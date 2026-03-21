@@ -290,6 +290,9 @@ const RECOMMENDATION_SIGNAL_CACHE_TTL_SECONDS = 45 * 60;
 const HOME_CATALOG_CACHE_TTL_SECONDS = 5 * 60;
 const PUBLISHED_STORY_METADATA_CACHE_TTL_SECONDS = 60 * 60;
 
+/** Matches dashboard row preview size (dedupeStoryCards default). */
+const DASHBOARD_PREVIEW_ROW_LIMIT = 6;
+
 const homeCreatorBenefits = [
   {
     title: "Creator Studio",
@@ -354,73 +357,143 @@ export class ReaderService {
     };
   }
 
+  /**
+   * Fast first paint: small DB slices + continue reading + featured.
+   * Client should call {@link getDashboardPersonalization} after load for "for you" + genres.
+   */
   async getDashboard(userId: string) {
-    const [stories, continueReading] = await Promise.all([
-      this.getPublishedStories(
-        {},
-        {
-          cacheKeyLabel: "dashboard",
-          cacheTtlSeconds: HOME_CATALOG_CACHE_TTL_SECONDS,
-        },
-      ),
+    const catalogWhere = this.buildPublishedStoryWhere({});
+
+    const [continueReading, trendingPack, freshPack, featuredStory] = await Promise.all([
       this.getContinueReading(userId),
+      this.queryPublishedStories({
+        limit: DASHBOARD_PREVIEW_ROW_LIMIT,
+        offset: 0,
+        orderMode: "trending",
+      }),
+      this.queryPublishedStories({
+        limit: DASHBOARD_PREVIEW_ROW_LIMIT,
+        offset: 0,
+        orderMode: "fresh",
+      }),
+      this.getDashboardFeaturedStoryRecord(catalogWhere),
     ]);
 
-    if (stories.length === 0) {
+    const trendingStories = trendingPack.stories;
+    const freshStories = freshPack.stories;
+
+    if (!featuredStory && trendingStories.length === 0 && freshStories.length === 0) {
       return {
         availableGenres: [],
-        continueReading: [],
+        continueReading,
         featured: null,
+        personalizationPending: true,
         rows: [],
       };
     }
 
-    const featuredStory =
-      stories.find((story) => story.featured) ??
-      [...stories].sort((left, right) => right.totalReads - left.totalReads)[0];
+    return {
+      availableGenres: [],
+      continueReading,
+      featured: featuredStory ? this.mapFeaturedStory(featuredStory) : null,
+      personalizationPending: true,
+      rows: [
+        {
+          id: "for-you",
+          personalizationPending: true,
+          stories: [],
+          title: "Recommended for you",
+        },
+        {
+          id: "trending",
+          stories: this.dedupeStoryCards(trendingStories),
+          title: "Trending now",
+        },
+        {
+          id: "fresh",
+          stories: this.dedupeStoryCards(freshStories),
+          title: "Fresh chapters",
+        },
+      ],
+    };
+  }
+
+  /** Full-catalog recommendations + genre list (heavier; load after dashboard shell). */
+  async getDashboardPersonalization(userId: string) {
+    const stories = await this.getPublishedStories(
+      {},
+      {
+        cacheKeyLabel: "dashboard",
+        cacheTtlSeconds: HOME_CATALOG_CACHE_TTL_SECONDS,
+      },
+    );
+
+    if (stories.length === 0) {
+      return {
+        availableGenres: [],
+        forYouRow: {
+          id: "for-you" as const,
+          stories: [],
+          title: "Recommended for you",
+        },
+      };
+    }
+
     const recommendedStories = await this.getRecommendedStoryCards({
       excludeSeenStories: true,
       stories,
       userId,
     });
 
-    const trendingStories = [...stories].sort(
-      (left, right) => right.totalReads - left.totalReads,
-    );
-    const freshStories = [...stories].sort((left, right) => {
-      const leftValue = left.latestChapterAt?.getTime() ?? 0;
-      const rightValue = right.latestChapterAt?.getTime() ?? 0;
-
-      return rightValue - leftValue;
-    });
-
     return {
       availableGenres: Array.from(
         new Set(stories.flatMap((story) => story.genreSlugs.map((slug) => this.slugToLabel(slug)))),
       ),
-      continueReading,
-      featured: this.mapFeaturedStory(featuredStory),
-      rows: [
+      forYouRow: {
+        id: "for-you" as const,
+        stories: recommendedStories.stories,
+        title:
+          recommendedStories.selectedGenres.length > 0
+            ? `Because you picked ${recommendedStories.selectedGenres[0]}`
+            : "Recommended for you",
+      },
+    };
+  }
+
+  private async getDashboardFeaturedStoryRecord(
+    catalogWhere: Prisma.StoryWhereInput,
+  ): Promise<PublishedStoryCatalogRecord | null> {
+    const featuredPick = await this.prisma.story.findFirst({
+      where: {
+        AND: [catalogWhere, { featured: true }],
+      },
+      orderBy: [
         {
-          id: "for-you",
-          title:
-            recommendedStories.selectedGenres.length > 0
-              ? `Because you picked ${recommendedStories.selectedGenres[0]}`
-              : "Recommended for you",
-          stories: recommendedStories.stories,
+          totalReads: Prisma.SortOrder.desc,
         },
         {
-          id: "trending",
-          title: "Trending now",
-          stories: this.dedupeStoryCards(trendingStories),
-        },
-        {
-          id: "fresh",
-          title: "Fresh chapters",
-          stories: this.dedupeStoryCards(freshStories),
+          updatedAt: Prisma.SortOrder.desc,
         },
       ],
-    };
+      select: publishedStoryCatalogSelect,
+    });
+
+    if (featuredPick) {
+      return featuredPick;
+    }
+
+    return this.prisma.story.findFirst({
+      where: catalogWhere,
+      orderBy: [
+        {
+          totalReads: Prisma.SortOrder.desc,
+        },
+        {
+          updatedAt: Prisma.SortOrder.desc,
+        },
+      ],
+      select: publishedStoryCatalogSelect,
+    });
   }
 
   async getDashboardShelf(userId: string, shelfId: string, offset: number, limit: number) {
