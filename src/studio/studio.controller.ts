@@ -203,6 +203,36 @@ export class StudioController {
     );
   }
 
+  @Post("stories/:storySlug/chapters/:chapterId/bin")
+  async moveChapterToBin(
+    @Param("storySlug") storySlug: string,
+    @Param("chapterId") chapterId: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    assertStudioAccess(request);
+
+    return this.studioService.moveChapterToStudioBin(
+      request.auth!.userId,
+      storySlug,
+      chapterId,
+    );
+  }
+
+  @Post("stories/:storySlug/chapters/:chapterId/restore")
+  async restoreChapterFromBin(
+    @Param("storySlug") storySlug: string,
+    @Param("chapterId") chapterId: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    assertStudioAccess(request);
+
+    return this.studioService.restoreChapterFromStudioBin(
+      request.auth!.userId,
+      storySlug,
+      chapterId,
+    );
+  }
+
   @Post("stories/:storySlug/chapters/bulk-action")
   async bulkChapterAction(
     @Param("storySlug") storySlug: string,

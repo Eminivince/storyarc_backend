@@ -133,6 +133,7 @@ export class StudioService {
           lte: now,
         },
         status: ChapterStatus.SCHEDULED,
+        studioBinnedAt: null,
       },
       include: {
         arc: true,
@@ -608,6 +609,12 @@ export class StudioService {
       throw new NotFoundException("Chapter draft not found.");
     }
 
+    if (chapter.studioBinnedAt) {
+      throw new BadRequestException(
+        "This chapter is in your bin. Restore it before publishing or scheduling.",
+      );
+    }
+
     if (!chapter.title.trim()) {
       throw new BadRequestException("A chapter title is required before publishing.");
     }
@@ -737,6 +744,110 @@ export class StudioService {
 
     return {
       message: "Volume and arc structure saved.",
+      story: this.mapStudioStory(refreshedStory),
+    };
+  }
+
+  async moveChapterToStudioBin(
+    userId: string,
+    storySlug: string,
+    chapterId: string,
+  ) {
+    const story = await this.prisma.story.findFirst({
+      where: {
+        authorId: userId,
+        deletedAt: null,
+        slug: storySlug,
+      },
+      select: { id: true, slug: true },
+    });
+
+    if (!story) {
+      throw new NotFoundException("Story not found.");
+    }
+
+    const chapter = await this.prisma.chapter.findFirst({
+      where: {
+        id: chapterId,
+        storyId: story.id,
+      },
+    });
+
+    if (!chapter) {
+      throw new NotFoundException("Chapter not found.");
+    }
+
+    if (chapter.studioBinnedAt) {
+      throw new BadRequestException("Chapter is already in the bin.");
+    }
+
+    const now = new Date();
+    const clearSchedule =
+      chapter.status === ChapterStatus.SCHEDULED && chapter.scheduledFor;
+
+    await this.prisma.chapter.update({
+      where: { id: chapter.id },
+      data: {
+        scheduledFor: clearSchedule ? null : chapter.scheduledFor,
+        status: clearSchedule ? ChapterStatus.DRAFT : chapter.status,
+        studioBinnedAt: now,
+      },
+    });
+
+    const refreshedStory = await this.getStoryRecord(userId, storySlug);
+
+    return {
+      message: clearSchedule
+        ? "Chapter moved to bin (removed from release queue)."
+        : "Chapter moved to bin.",
+      story: this.mapStudioStory(refreshedStory),
+    };
+  }
+
+  async restoreChapterFromStudioBin(
+    userId: string,
+    storySlug: string,
+    chapterId: string,
+  ) {
+    const story = await this.prisma.story.findFirst({
+      where: {
+        authorId: userId,
+        deletedAt: null,
+        slug: storySlug,
+      },
+      select: { id: true, slug: true },
+    });
+
+    if (!story) {
+      throw new NotFoundException("Story not found.");
+    }
+
+    const chapter = await this.prisma.chapter.findFirst({
+      where: {
+        id: chapterId,
+        storyId: story.id,
+      },
+    });
+
+    if (!chapter) {
+      throw new NotFoundException("Chapter not found.");
+    }
+
+    if (!chapter.studioBinnedAt) {
+      throw new BadRequestException("Chapter is not in the bin.");
+    }
+
+    await this.prisma.chapter.update({
+      where: { id: chapter.id },
+      data: {
+        studioBinnedAt: null,
+      },
+    });
+
+    const refreshedStory = await this.getStoryRecord(userId, storySlug);
+
+    return {
+      message: "Chapter restored from bin.",
       story: this.mapStudioStory(refreshedStory),
     };
   }
@@ -946,12 +1057,17 @@ export class StudioService {
       "";
     const visibilityState = getStoryVisibilityState(story);
     const genreLabel = this.slugToLabel(story.genreSlugs[0] ?? "story");
-    const chapterCount = story.chapters.length;
-    const publishedCount = story.publishedChapters.length;
-    const latestPublishedChapter = [...story.publishedChapters].sort(
-      (left, right) => right.chapterNumber - left.chapterNumber,
-    )[0];
-    const recentChapters = [...story.chapters]
+    const activeChapters = story.chapters.filter((chapter) => !chapter.studioBinnedAt);
+    const binnedChapters = story.chapters.filter((chapter) => chapter.studioBinnedAt);
+    const binnedChapterIds = new Set(binnedChapters.map((chapter) => chapter.id));
+    const chapterCount = activeChapters.length;
+    const publishedCount = story.publishedChapters.filter(
+      (pc) => !binnedChapterIds.has(pc.chapterId),
+    ).length;
+    const latestPublishedChapter = [...story.publishedChapters]
+      .filter((pc) => !binnedChapterIds.has(pc.chapterId))
+      .sort((left, right) => right.chapterNumber - left.chapterNumber)[0];
+    const recentChapters = [...activeChapters]
       .sort((left, right) => {
         const leftTime = left.lastPublishedAt?.getTime() ?? left.updatedAt.getTime();
         const rightTime = right.lastPublishedAt?.getTime() ?? right.updatedAt.getTime();
@@ -971,7 +1087,7 @@ export class StudioService {
             ? this.formatCompactNumber(story.totalReads)
             : "0",
       }));
-    const scheduledChapters = [...story.chapters]
+    const scheduledChapters = [...activeChapters]
       .filter((chapter) => chapter.status === "SCHEDULED" && chapter.scheduledFor)
       .sort(
         (left, right) =>
@@ -989,6 +1105,7 @@ export class StudioService {
         wordCount: `${chapter.wordCount.toLocaleString()} words`,
       }));
     const publishedChapters = [...story.publishedChapters]
+      .filter((chapter) => !binnedChapterIds.has(chapter.chapterId))
       .sort((left, right) => right.chapterNumber - left.chapterNumber)
       .map((chapter) => ({
         chapterId: chapter.chapterId,
@@ -1005,6 +1122,20 @@ export class StudioService {
             : formatVisibilityLabel(visibilityState),
         title: `Chapter ${chapter.chapterNumber}: ${chapter.title}`,
       }));
+    const binnedChaptersPayload = [...binnedChapters]
+      .sort(
+        (left, right) =>
+          (left.studioBinnedAt?.getTime() ?? 0) - (right.studioBinnedAt?.getTime() ?? 0),
+      )
+      .map((chapter) => ({
+        binnedAt: chapter.studioBinnedAt!.toISOString(),
+        chapterId: chapter.id,
+        detail: this.getRecentChapterDetail(chapter),
+        id: chapter.id,
+        number: String(chapter.chapterNumber).padStart(2, "0"),
+        status: this.mapChapterStatusLabel(chapter.status),
+        title: chapter.title,
+      }));
     const progress =
       chapterCount === 0
         ? 4
@@ -1018,6 +1149,7 @@ export class StudioService {
             ? "amber"
             : "primary",
       audience: story.targetAudience,
+      binnedChapters: binnedChaptersPayload,
       chapterLabel:
         visibilityState === AdminBookVisibilityState.PENDING_APPROVAL &&
         publishedCount > 0
@@ -1043,6 +1175,7 @@ export class StudioService {
       scheduledChapters,
       slug: story.slug,
       stats: {
+        binnedChapters: String(binnedChapters.length),
         chapters: String(chapterCount),
         completion: `${progress}%`,
         followers: "0",
@@ -1062,19 +1195,22 @@ export class StudioService {
       volumes: story.volumes.map((volume) => ({
         arcCount: volume.arcs.length,
         arcs: volume.arcs.map((arc) => ({
-          chapterCount: arc.chapters.length,
-          chapters: arc.chapters.map((chapter) => ({
-            chapterId: chapter.id,
-            number: String(chapter.chapterNumber).padStart(2, "0"),
-            title: chapter.title,
-          })),
+          chapterCount: arc.chapters.filter((chapter) => !chapter.studioBinnedAt).length,
+          chapters: arc.chapters
+            .filter((chapter) => !chapter.studioBinnedAt)
+            .map((chapter) => ({
+              chapterId: chapter.id,
+              number: String(chapter.chapterNumber).padStart(2, "0"),
+              title: chapter.title,
+            })),
           id: arc.id,
           sortOrder: arc.sortOrder,
           status: arc.statusLabel,
           title: arc.title,
         })),
         chapterCount: volume.arcs.reduce(
-          (count, arc) => count + arc.chapters.length,
+          (count, arc) =>
+            count + arc.chapters.filter((chapter) => !chapter.studioBinnedAt).length,
           0,
         ),
         id: volume.id,
@@ -1092,6 +1228,7 @@ export class StudioService {
       authorsNote: chapter.authorNote ?? "",
       body: normalizeRichTextDocument(chapter.bodyDraft),
       chapterId: chapter.id,
+      isBinned: Boolean(chapter.studioBinnedAt),
       coinUnlockPrice: chapter.premiumEnabled
         ? Math.max(1, chapter.coinUnlockPrice)
         : 50,
@@ -1161,7 +1298,10 @@ export class StudioService {
         deletedAt: null,
       },
       include: {
-        chapters: { select: { id: true } },
+        chapters: {
+          orderBy: { chapterNumber: "asc" },
+          select: { id: true, studioBinnedAt: true },
+        },
       },
     });
 
@@ -1169,28 +1309,59 @@ export class StudioService {
       throw new NotFoundException("Story not found.");
     }
 
-    const storyChapterIds = new Set(story.chapters.map((c) => c.id));
+    const activeChapters = story.chapters.filter((c) => !c.studioBinnedAt);
+    const binnedChapters = story.chapters.filter((c) => c.studioBinnedAt);
+
+    if (orderedChapterIds.length !== activeChapters.length) {
+      throw new BadRequestException(
+        "chapterIds must list every non-binned chapter for this story in the desired order.",
+      );
+    }
+
+    const activeIdSet = new Set(activeChapters.map((c) => c.id));
+    const seen = new Set<string>();
+
     for (const id of orderedChapterIds) {
-      if (!storyChapterIds.has(id)) {
-        throw new BadRequestException(`Chapter ${id} does not belong to this story.`);
+      if (!activeIdSet.has(id)) {
+        throw new BadRequestException(
+          `Chapter ${id} is not part of the active (non-binned) chapter set for this story.`,
+        );
       }
+
+      if (seen.has(id)) {
+        throw new BadRequestException("Duplicate chapter id in chapterIds.");
+      }
+
+      seen.add(id);
+    }
+
+    const orderedWithNumbers: { chapterId: string; chapterNumber: number }[] = [];
+    let n = 1;
+
+    for (const chapterId of orderedChapterIds) {
+      orderedWithNumbers.push({ chapterId, chapterNumber: n });
+      n += 1;
+    }
+
+    for (const chapter of binnedChapters) {
+      orderedWithNumbers.push({ chapterId: chapter.id, chapterNumber: n });
+      n += 1;
     }
 
     await this.prisma.$transaction(
-      orderedChapterIds.map((chapterId, index) =>
+      orderedWithNumbers.map(({ chapterId, chapterNumber }) =>
         this.prisma.chapter.update({
           where: { id: chapterId },
-          data: { chapterNumber: index + 1 },
+          data: { chapterNumber },
         }),
       ),
     );
 
-    // Update published chapter numbers to match
     await this.prisma.$transaction(
-      orderedChapterIds.map((chapterId, index) =>
+      orderedWithNumbers.map(({ chapterId, chapterNumber }) =>
         this.prisma.publishedChapter.updateMany({
           where: { chapterId },
-          data: { chapterNumber: index + 1 },
+          data: { chapterNumber },
         }),
       ),
     );

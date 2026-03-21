@@ -432,9 +432,11 @@ model CreatorApplication {
   experience            String
   portfolioUrl          String?
   motivation            String
-  wantsContract         Boolean                  @default(false)
-  requestedContractType ContractExclusivity?
-  status                CreatorApplicationStatus @default(DRAFT)
+  wantsContract                   Boolean                  @default(false)
+  requestedContractType           ContractExclusivity?
+  /// When status is APPROVED: whether this creator may hold story contracts with revenue share (>0%). Null = legacy rows (treated as true).
+  revenueShareContractApproved    Boolean?
+  status                          CreatorApplicationStatus @default(DRAFT)
   submittedAt           DateTime?
   reviewedAt            DateTime?
   reviewNotes           String?
@@ -738,6 +740,8 @@ model Chapter {
   contentWarnings  String[]          @default([])
   scheduledFor     DateTime?
   lastPublishedAt  DateTime?
+  /// Writer studio: hidden from structure / lists until restored (reader-facing publish unchanged).
+  studioBinnedAt   DateTime?
   createdAt        DateTime          @default(now())
   updatedAt        DateTime          @updatedAt
   story            Story             @relation(fields: [storyId], references: [id])
@@ -748,6 +752,7 @@ model Chapter {
   @@unique([storyId, slug])
   @@unique([storyId, chapterNumber])
   @@index([storyId, status, chapterNumber])
+  @@index([storyId, studioBinnedAt])
   @@map("chapters")
 }
 
