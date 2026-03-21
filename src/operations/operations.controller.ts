@@ -11,7 +11,9 @@ import {
   Req,
   UseGuards,
 } from "@nestjs/common";
+import { Throttle } from "@nestjs/throttler";
 import { AccessTokenGuard } from "../common/guards/access-token.guard";
+import { throttleReport } from "../common/throttler/throttler.constants";
 import { AuthenticatedRequest } from "../common/types/request-with-auth.type";
 import {
   parseAdminCommentModerationBody,
@@ -40,6 +42,7 @@ import { OperationsService } from "./operations.service";
 export class OperationsController {
   constructor(private readonly operationsService: OperationsService) {}
 
+  @Throttle(throttleReport)
   @Post("reports")
   async createContentReport(
     @Body() body: unknown,

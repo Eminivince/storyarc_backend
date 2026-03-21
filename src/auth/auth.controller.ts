@@ -10,7 +10,9 @@ import {
   Req,
   UseGuards,
 } from "@nestjs/common";
+import { Throttle } from "@nestjs/throttler";
 import { AccessTokenGuard } from "../common/guards/access-token.guard";
+import { throttleForgotPassword } from "../common/throttler/throttler.constants";
 import { AuthenticatedRequest } from "../common/types/request-with-auth.type";
 import {
   parseDeleteAccountBody,
@@ -82,8 +84,11 @@ export class AuthController {
   }
 
   @Post("register")
-  async register(@Body() body: unknown) {
-    return this.authService.register(parseRegisterBody(body));
+  async register(@Body() body: unknown, @Req() request: AuthenticatedRequest) {
+    return this.authService.register(
+      parseRegisterBody(body),
+      getRequestMeta(request),
+    );
   }
 
   @Post("register/resend-code")
@@ -121,6 +126,7 @@ export class AuthController {
     return this.authService.refresh(parseRefreshBody(body), getRequestMeta(request));
   }
 
+  @Throttle(throttleForgotPassword)
   @Post("forgot-password")
   async forgotPassword(@Body() body: unknown) {
     return this.authService.forgotPassword(parseForgotPasswordBody(body));

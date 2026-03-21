@@ -3,7 +3,6 @@ import { Logger } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import compress from "@fastify/compress";
 import helmet from "@fastify/helmet";
-import rateLimit from "@fastify/rate-limit";
 import { FastifyAdapter, NestFastifyApplication } from "@nestjs/platform-fastify";
 import { AppModule } from "./app.module";
 import { HttpExceptionFilter } from "./common/filters/http-exception.filter";
@@ -71,52 +70,11 @@ function isAllowedCorsOrigin(origin: string | undefined) {
   return false;
 }
 
-// Per-route rate limit overrides (method + path → config).
-// Routes not listed here use the global default (100 req/min).
-const routeRateLimits: Record<string, { max: number; timeWindow: string }> = {
-  "POST /auth/login": { max: 5, timeWindow: "1 minute" },
-  "POST /auth/register": { max: 5, timeWindow: "1 minute" },
-  "POST /auth/forgot-password": { max: 3, timeWindow: "1 minute" },
-  "POST /monetization/checkout-session": { max: 10, timeWindow: "1 minute" },
-  "POST /monetization/gifts": { max: 10, timeWindow: "1 minute" },
-};
-
-// Patterns that match any sub-path for chapter unlock routes
-const chapterUnlockPattern = /^POST \/monetization\/chapters\/[^/]+\/[^/]+\/unlock/;
-
 async function bootstrap() {
   logger.log("Starting Nest application...");
 
   const adapter = new FastifyAdapter({ logger: false });
   const fastifyInstance = adapter.getInstance();
-
-  // Apply per-route rate limit config before NestJS registers routes
-  fastifyInstance.addHook("onRoute", (routeOptions) => {
-    const methods = Array.isArray(routeOptions.method)
-      ? routeOptions.method
-      : [routeOptions.method];
-
-    for (const method of methods) {
-      const key = `${method} ${routeOptions.url}`;
-      const exactMatch = routeRateLimits[key];
-
-      if (exactMatch) {
-        routeOptions.config = {
-          ...(routeOptions.config ?? {}),
-          rateLimit: exactMatch,
-        };
-        return;
-      }
-
-      if (chapterUnlockPattern.test(key)) {
-        routeOptions.config = {
-          ...(routeOptions.config ?? {}),
-          rateLimit: { max: 20, timeWindow: "1 minute" },
-        };
-        return;
-      }
-    }
-  });
 
   const app = await NestFactory.create<NestFastifyApplication>(
     AppModule,
@@ -134,16 +92,6 @@ async function bootstrap() {
     contentSecurityPolicy: false,
     hsts: { maxAge: 31536000, includeSubDomains: true },
     frameguard: { action: "deny" },
-  });
-
-  // Global rate limiting: 100 req/min (per-route overrides applied via onRoute hook above)
-  await app.register(rateLimit, {
-    max: 100,
-    timeWindow: "1 minute",
-    keyGenerator: (request) => {
-      const userId = (request as any).auth?.userId;
-      return userId ?? request.ip;
-    },
   });
 
   app.enableCors({

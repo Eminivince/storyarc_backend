@@ -9,8 +9,14 @@ import {
   UseGuards,
   Headers,
 } from "@nestjs/common";
+import { SkipThrottle, Throttle } from "@nestjs/throttler";
 import { AccessTokenGuard } from "../common/guards/access-token.guard";
 import { AuthenticatedRequest } from "../common/types/request-with-auth.type";
+import {
+  throttlePayment,
+  throttleRefund,
+  throttleUnlock,
+} from "../common/throttler/throttler.constants";
 import {
   parseConfirmCheckoutSessionBody,
   parseCreateCheckoutSessionBody,
@@ -42,6 +48,7 @@ export class MonetizationController {
     return this.monetizationService.getPurchases(request.auth!.userId);
   }
 
+  @Throttle(throttlePayment)
   @Post("checkout-session")
   async createCheckoutSession(
     @Body() body: unknown,
@@ -54,6 +61,7 @@ export class MonetizationController {
     );
   }
 
+  @Throttle(throttlePayment)
   @Post("checkout-session/confirm")
   async confirmCheckoutSession(
     @Body() body: unknown,
@@ -65,6 +73,7 @@ export class MonetizationController {
     );
   }
 
+  @Throttle(throttleUnlock)
   @Post("chapters/:storySlug/:chapterSlug/unlock-with-coins")
   async unlockChapterWithCoins(
     @Body() body: unknown,
@@ -90,6 +99,7 @@ export class MonetizationController {
     );
   }
 
+  @Throttle(throttleUnlock)
   @Post("chapters/:storySlug/:chapterSlug/unlock-batch")
   async unlockChapterBatchWithCoins(
     @Body() body: unknown,
@@ -103,6 +113,7 @@ export class MonetizationController {
     );
   }
 
+  @Throttle(throttlePayment)
   @Post("gifts")
   async sendGift(
     @Body() body: unknown,
@@ -114,6 +125,7 @@ export class MonetizationController {
     );
   }
 
+  @Throttle(throttleRefund)
   @Post("refund-request")
   async requestRefund(
     @Body() body: unknown,
@@ -127,11 +139,13 @@ export class MonetizationController {
     );
   }
 
+  @Throttle(throttlePayment)
   @Post("subscription/cancel")
   async cancelSubscription(@Req() request: AuthenticatedRequest) {
     return this.monetizationService.cancelSubscription(request.auth!.userId);
   }
 
+  @Throttle(throttlePayment)
   @Post("subscription/change-plan")
   async changeSubscriptionPlan(
     @Body() body: unknown,
@@ -150,6 +164,7 @@ export class MonetizationController {
 export class PaystackWebhookController {
   constructor(private readonly monetizationService: MonetizationService) {}
 
+  @SkipThrottle()
   @Post("webhook")
   async handleWebhook(
     @Headers("x-paystack-signature") signature: string | undefined,
@@ -163,6 +178,7 @@ export class PaystackWebhookController {
 export class CryptomusWebhookController {
   constructor(private readonly monetizationService: MonetizationService) {}
 
+  @SkipThrottle()
   @Post("webhook")
   async handleWebhook(@RawBody() rawBody: Buffer | undefined) {
     return this.monetizationService.handleCryptomusWebhook(rawBody);

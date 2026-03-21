@@ -10,7 +10,9 @@ import {
   Req,
   UseGuards,
 } from "@nestjs/common";
+import { Throttle } from "@nestjs/throttler";
 import { AccessTokenGuard } from "../common/guards/access-token.guard";
+import { throttleWithdrawal } from "../common/throttler/throttler.constants";
 import { AuthenticatedRequest } from "../common/types/request-with-auth.type";
 import {
   parseCreatorApplicationDraftBody,
@@ -75,6 +77,7 @@ export class CreatorController {
     );
   }
 
+  @Throttle(throttleWithdrawal)
   @Post("withdrawals")
   async createWithdrawalRequest(
     @Body() body: unknown,

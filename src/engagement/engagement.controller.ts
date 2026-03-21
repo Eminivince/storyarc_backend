@@ -11,7 +11,12 @@ import {
   Req,
   UseGuards,
 } from "@nestjs/common";
+import { Throttle } from "@nestjs/throttler";
 import { AccessTokenGuard } from "../common/guards/access-token.guard";
+import {
+  throttlePayment,
+  throttleWithdrawal,
+} from "../common/throttler/throttler.constants";
 import { AuthenticatedRequest } from "../common/types/request-with-auth.type";
 import {
   parseCreateAnnouncementBody,
@@ -187,6 +192,7 @@ export class EngagementController {
     return this.engagementService.markAllNotificationsRead(request.auth!.userId);
   }
 
+  @Throttle(throttlePayment)
   @Post("streak-shield/purchase")
   async purchaseStreakShield(@Req() request: AuthenticatedRequest) {
     return this.engagementService.purchaseStreakShield(request.auth!.userId);
@@ -383,6 +389,7 @@ export class EngagementController {
     return this.pointShopService.getShopCatalog();
   }
 
+  @Throttle(throttlePayment)
   @Post("shop/:itemId/purchase")
   async purchaseShopItem(
     @Param("itemId") itemId: string,
@@ -431,6 +438,7 @@ export class EngagementController {
     return this.referralService.getReferralDashboard(request.auth!.userId);
   }
 
+  @Throttle(throttleWithdrawal)
   @Post("referrals/withdraw")
   async requestReferralWithdrawal(
     @Body() body: unknown,
