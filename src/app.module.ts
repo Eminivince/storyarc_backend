@@ -2,8 +2,13 @@ import { Module } from "@nestjs/common";
 import { APP_GUARD } from "@nestjs/core";
 import { ThrottlerGuard, ThrottlerModule } from "@nestjs/throttler";
 import { AuthModule } from "./auth/auth.module";
-import { throttlerGetTracker } from "./common/throttler/throttler-tracker.util";
 import { THROTTLE_DEFAULT_MS } from "./common/throttler/throttler.constants";
+import {
+  createThrottlerRedisStorage,
+  THROTTLER_REDIS_STORAGE,
+  ThrottlerRedisStorageLifecycle,
+} from "./common/throttler/throttler-redis.storage";
+import { throttlerGetTracker } from "./common/throttler/throttler-tracker.util";
 import { CreatorModule } from "./creator/creator.module";
 import { DatabaseModule } from "./database/database.module";
 import { EngagementModule } from "./engagement/engagement.module";
@@ -16,6 +21,8 @@ import { RedisModule } from "./redis/redis.module";
 import { StudioModule } from "./studio/studio.module";
 import { WebsocketModule } from "./websocket/websocket.module";
 
+const throttlerRedisStorage = createThrottlerRedisStorage();
+
 @Module({
   imports: [
     ThrottlerModule.forRoot({
@@ -27,6 +34,7 @@ import { WebsocketModule } from "./websocket/websocket.module";
         },
       ],
       getTracker: throttlerGetTracker,
+      storage: throttlerRedisStorage,
     }),
     DatabaseModule,
     RedisModule,
@@ -41,6 +49,10 @@ import { WebsocketModule } from "./websocket/websocket.module";
     StudioModule,
     WebsocketModule,
   ],
-  providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
+  providers: [
+    { provide: APP_GUARD, useClass: ThrottlerGuard },
+    { provide: THROTTLER_REDIS_STORAGE, useValue: throttlerRedisStorage },
+    ThrottlerRedisStorageLifecycle,
+  ],
 })
 export class AppModule {}
