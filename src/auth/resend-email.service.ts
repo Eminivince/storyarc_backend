@@ -19,10 +19,22 @@ function unsubscribeFooter(unsubscribeUrl: string | null) {
   `;
 }
 
+function escapeHtmlForEmail(text: string) {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 @Injectable()
 export class ResendEmailService {
   private readonly logger = new Logger(ResendEmailService.name);
   private readonly resend = new Resend(env.resendApiKey);
+  private readonly capturedRegistrationCodes = new Map<
+    string,
+    { code: string; email: string; expiresInMinutes: number }
+  >();
 
   async sendRegistrationCode(params: {
     email: string;
@@ -31,6 +43,11 @@ export class ResendEmailService {
     expiresInMinutes: number;
   }) {
     const { email, displayName, code, expiresInMinutes } = params;
+
+    if (env.authEmailDeliveryMode === "capture") {
+      this.captureRegistrationCode(email, code, expiresInMinutes);
+      return;
+    }
 
     const result = await this.resend.emails.send({
       from: env.resendFromEmail,
@@ -61,6 +78,24 @@ export class ResendEmailService {
         "Could not send the registration verification code.",
       );
     }
+  }
+
+  getCapturedRegistrationCode(email: string) {
+    return this.capturedRegistrationCodes.get(email.trim().toLowerCase()) ?? null;
+  }
+
+  private captureRegistrationCode(
+    email: string,
+    code: string,
+    expiresInMinutes: number,
+  ) {
+    const normalizedEmail = email.trim().toLowerCase();
+
+    this.capturedRegistrationCodes.set(normalizedEmail, {
+      code,
+      email: normalizedEmail,
+      expiresInMinutes,
+    });
   }
 
   async sendPasswordResetCode(params: {
@@ -217,6 +252,109 @@ export class ResendEmailService {
         ? "Congratulations! Your creator application has been approved. You can now start publishing stories on TaleStead."
         : "Unfortunately, your creator application was not approved at this time. Please review the feedback and feel free to reapply.",
     });
+  }
+
+  /**
+   * Sent when an admin approves a creator application. Includes eligibility and optional reviewer notes.
+   */
+  async sendCreatorApplicationApproved(params: {
+    email: string;
+    applicantName: string;
+    primaryGenre: string;
+    reviewedAt: Date;
+    revenueShareEligible: boolean;
+    reviewNotesFromTeam: string | null;
+    studioDashboardUrl: string | null;
+  }) {
+    const reviewedLabel = params.reviewedAt.toLocaleDateString("en-US", {
+      day: "numeric",
+      month: "long",
+      weekday: "long",
+      year: "numeric",
+    });
+
+    const revenueText = params.revenueShareEligible
+      ? "You are eligible to enter revenue-sharing story contracts on TaleStead."
+      : "You have Creator Studio access. You are not eligible for revenue-sharing story contracts at this time (studio publishing only).";
+
+    const notesHtml =
+      params.reviewNotesFromTeam && params.reviewNotesFromTeam.trim().length > 0
+        ? `<div style="margin: 20px 0; padding: 16px; background: #f9fafb; border-radius: 12px; border: 1px solid #e5e7eb;">
+            <p style="margin: 0 0 8px; font-size: 13px; font-weight: 700; color: #111827; text-transform: uppercase; letter-spacing: 0.06em;">Message from the team</p>
+            <p style="margin: 0; font-size: 15px; line-height: 1.6; color: #374151; white-space: pre-wrap;">${escapeHtmlForEmail(
+              params.reviewNotesFromTeam.trim(),
+            )}</p>
+          </div>`
+        : "";
+
+    const ctaHtml = params.studioDashboardUrl
+      ? `<p style="margin: 28px 0 0;">
+          <a href="${escapeHtmlForEmail(params.studioDashboardUrl)}" style="display: inline-block; background: #d97706; color: #ffffff; text-decoration: none; font-weight: 700; padding: 14px 24px; border-radius: 10px; font-size: 15px;">Open Creator Studio</a>
+        </p>`
+      : `<p style="margin: 20px 0 0; font-size: 15px; color: #4b5563;">Sign in to TaleStead and open <strong>Creator Studio</strong> from your account menu.</p>`;
+
+    const plainNotes =
+      params.reviewNotesFromTeam && params.reviewNotesFromTeam.trim().length > 0
+        ? `\n\nMessage from the team:\n${params.reviewNotesFromTeam.trim()}`
+        : "";
+
+    const plainCta = params.studioDashboardUrl
+      ? `\n\nOpen Creator Studio: ${params.studioDashboardUrl}`
+      : "";
+
+    const textBody = `Hi ${params.applicantName},
+
+Your TaleStead creator application has been approved as of ${reviewedLabel}.
+
+Application details:
+- Name on application: ${params.applicantName}
+- Primary genre: ${params.primaryGenre}
+- Revenue-sharing contracts: ${params.revenueShareEligible ? "Eligible" : "Not eligible (studio only)"}
+
+${revenueText}${plainNotes}${plainCta}
+
+Welcome aboard — we're glad you're here.`;
+
+    const htmlBody = `
+        <div style="font-family: Arial, sans-serif; max-width: 520px; margin: 0 auto; padding: 24px; color: #111827;">
+          <p style="font-size: 16px; margin-bottom: 16px;">Hi ${escapeHtmlForEmail(params.applicantName)},</p>
+          <h1 style="font-size: 24px; margin: 0 0 12px;">You're approved</h1>
+          <p style="font-size: 15px; line-height: 1.6; color: #374151; margin: 0 0 20px;">
+            Your creator application was approved on <strong>${escapeHtmlForEmail(reviewedLabel)}</strong>.
+          </p>
+          <table style="width: 100%; border-collapse: collapse; font-size: 15px; color: #374151;">
+            <tr><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Name</td><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; font-weight: 600;">${escapeHtmlForEmail(params.applicantName)}</td></tr>
+            <tr><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; color: #6b7280;">Primary genre</td><td style="padding: 8px 0; border-bottom: 1px solid #e5e7eb; font-weight: 600;">${escapeHtmlForEmail(params.primaryGenre)}</td></tr>
+            <tr><td style="padding: 8px 0; color: #6b7280;">Revenue-sharing</td><td style="padding: 8px 0; font-weight: 600;">${params.revenueShareEligible ? "Eligible" : "Not eligible (studio only)"}</td></tr>
+          </table>
+          <p style="font-size: 15px; line-height: 1.6; color: #374151; margin: 20px 0 0;">
+            ${escapeHtmlForEmail(revenueText)}
+          </p>
+          ${notesHtml}
+          ${ctaHtml}
+        </div>
+      `;
+
+    const result = await this.resend.emails.send({
+      from: env.resendFromEmail,
+      to: params.email,
+      subject: "Your TaleStead creator application was approved",
+      text: textBody,
+      html: htmlBody,
+    });
+
+    if (result.error) {
+      this.logger.error(
+        JSON.stringify({
+          event: "creator_application_approval_email_failed",
+          email: params.email,
+          resendMessage: result.error.message,
+        }),
+      );
+      throw new InternalServerErrorException(
+        "Could not send the creator approval email.",
+      );
+    }
   }
 
   async sendModerationNotice(params: {

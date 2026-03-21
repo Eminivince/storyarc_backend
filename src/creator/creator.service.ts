@@ -2,10 +2,13 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
   UnauthorizedException,
 } from "@nestjs/common";
 import { ContractExclusivity } from "@prisma/client";
+import { ResendEmailService } from "../auth/resend-email.service";
+import { env } from "../config/env";
 import { PrismaService } from "../database/prisma.service";
 import {
   creatorExclusiveRevenueShareSettingKey,
@@ -20,7 +23,12 @@ import {
 
 @Injectable()
 export class CreatorService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(CreatorService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly resendEmailService: ResendEmailService,
+  ) {}
 
   async getCurrentUserApplication(userId: string) {
     await this.getActiveUser(userId);
@@ -316,6 +324,7 @@ export class CreatorService {
     }
 
     const reviewedAt = new Date();
+    const revenueShareApproved = input.approveRevenueShareContract ?? true;
     const [, approvedApplication] = await this.prisma.$transaction([
       this.prisma.user.update({
         where: {
@@ -330,6 +339,7 @@ export class CreatorService {
           id: applicationId,
         },
         data: {
+          revenueShareContractApproved: revenueShareApproved,
           reviewNotes: input.reviewNotes,
           reviewedAt,
           reviewedByUserId: reviewerUserId,
@@ -350,7 +360,11 @@ export class CreatorService {
       data: {
         action: "Creator application approved",
         adminUserId: reviewerUserId,
-        detail: `${approvedApplication.fullName} was approved for creator access.`,
+        detail: `${approvedApplication.fullName} was approved for creator studio access${
+          revenueShareApproved
+            ? " with revenue-sharing contract eligibility."
+            : " without revenue-sharing contract eligibility (studio only)."
+        }`,
         icon: "verified",
         summary: `Approved ${approvedApplication.fullName}`,
         targetId: approvedApplication.id,
@@ -358,6 +372,31 @@ export class CreatorService {
         tone: "emerald",
       },
     });
+
+    const frontendBase = env.frontendAppUrl?.replace(/\/$/, "").trim() || null;
+    const studioDashboardUrl = frontendBase ? `${frontendBase}/creator/dashboard` : null;
+
+    try {
+      await this.resendEmailService.sendCreatorApplicationApproved({
+        applicantName: approvedApplication.fullName,
+        email: approvedApplication.email.trim(),
+        primaryGenre: approvedApplication.primaryGenre,
+        revenueShareEligible: revenueShareApproved,
+        reviewNotesFromTeam: input.reviewNotes,
+        reviewedAt,
+        studioDashboardUrl,
+      });
+    } catch (error) {
+      this.logger.error(
+        JSON.stringify({
+          applicantUserId: application.userId,
+          applicationId: approvedApplication.id,
+          email: approvedApplication.email,
+          event: "creator_application_approval_email_failed",
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
 
     return {
       application: this.mapApplication(
@@ -372,7 +411,9 @@ export class CreatorService {
           includeApplicant: true,
         },
       ),
-      message: "Creator application approved and creator access granted.",
+      message: revenueShareApproved
+        ? "Creator approved with studio access and revenue-sharing eligibility."
+        : "Creator approved for studio access only (no revenue-sharing contracts).",
     };
   }
 
@@ -523,6 +564,7 @@ export class CreatorService {
       submittedAt: Date | null;
       updatedAt: Date;
       wantsContract: boolean;
+      revenueShareContractApproved: boolean | null;
       user?: {
         email: string;
         id: string;
@@ -553,6 +595,10 @@ export class CreatorService {
       createdAt: application.createdAt,
       updatedAt: application.updatedAt,
       wantsContract: application.wantsContract,
+      revenueShareContractApproved:
+        application.status === "APPROVED"
+          ? (application.revenueShareContractApproved ?? true)
+          : null,
       reviewedBy: application.reviewedAt
         ? application.reviewedByUser?.profile?.displayName ?? "TaleStead Admin"
         : null,
