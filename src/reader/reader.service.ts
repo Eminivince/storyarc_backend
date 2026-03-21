@@ -423,6 +423,96 @@ export class ReaderService {
     };
   }
 
+  async getDashboardShelf(userId: string, shelfId: string, offset: number, limit: number) {
+    const allowedShelves = new Set(["for-you", "trending", "fresh"]);
+
+    if (!allowedShelves.has(shelfId)) {
+      throw new BadRequestException("Unknown dashboard shelf.");
+    }
+
+    const take = Math.min(Math.max(limit, 1), 50);
+    const skip = Math.max(offset, 0);
+
+    if (shelfId === "trending") {
+      const { stories: pageRecords, pageInfo } = await this.queryPublishedStories({
+        limit: take,
+        offset: skip,
+        orderMode: "trending",
+      });
+
+      return {
+        shelfId,
+        title: "Trending now",
+        stories: pageRecords.map((story) => this.mapStoryCard(story)),
+        pageInfo,
+      };
+    }
+
+    if (shelfId === "fresh") {
+      const { stories: pageRecords, pageInfo } = await this.queryPublishedStories({
+        limit: take,
+        offset: skip,
+        orderMode: "fresh",
+      });
+
+      return {
+        shelfId,
+        title: "Fresh chapters",
+        stories: pageRecords.map((story) => this.mapStoryCard(story)),
+        pageInfo,
+      };
+    }
+
+    const allStories = await this.getPublishedStories(
+      {},
+      {
+        cacheKeyLabel: "dashboard",
+        cacheTtlSeconds: HOME_CATALOG_CACHE_TTL_SECONDS,
+      },
+    );
+
+    if (allStories.length === 0) {
+      return {
+        shelfId,
+        title: "Recommended for you",
+        stories: [],
+        pageInfo: {
+          hasMore: false,
+          limit: take,
+          nextOffset: null,
+          offset: skip,
+        },
+      };
+    }
+
+    const recommended = await this.getRecommendedStoryCards({
+      excludeSeenStories: true,
+      limit: null,
+      stories: allStories,
+      userId,
+    });
+
+    const title =
+      recommended.selectedGenres.length > 0
+        ? `Because you picked ${recommended.selectedGenres[0]}`
+        : "Recommended for you";
+
+    const slice = recommended.stories.slice(skip, skip + take);
+    const hasMore = skip + take < recommended.stories.length;
+
+    return {
+      shelfId,
+      title,
+      stories: slice,
+      pageInfo: {
+        hasMore,
+        limit: take,
+        nextOffset: hasMore ? skip + take : null,
+        offset: skip,
+      },
+    };
+  }
+
   async getFollowingFeed(userId: string) {
     const follows = await this.prisma.follow.findMany({
       where: {
@@ -2701,6 +2791,7 @@ export class ReaderService {
       genre?: string;
       limit?: number | null;
       offset?: number | null;
+      orderMode?: "default" | "trending" | "fresh";
       query?: string;
     } = {},
     options?: {
@@ -2734,25 +2825,50 @@ export class ReaderService {
     genre?: string;
     limit?: number | null;
     offset?: number | null;
+    orderMode?: "default" | "trending" | "fresh";
     query?: string;
     tags?: string[];
   }) {
     const limit = input.limit ?? null;
     const offset = input.offset ?? null;
+    const orderMode = input.orderMode ?? "default";
+    const orderBy: Prisma.StoryOrderByWithRelationInput[] =
+      orderMode === "trending"
+        ? [
+            {
+              totalReads: Prisma.SortOrder.desc,
+            },
+            {
+              updatedAt: Prisma.SortOrder.desc,
+            },
+          ]
+        : orderMode === "fresh"
+          ? [
+              {
+                latestChapterAt: {
+                  sort: Prisma.SortOrder.desc,
+                  nulls: Prisma.NullsOrder.last,
+                },
+              },
+              {
+                updatedAt: Prisma.SortOrder.desc,
+              },
+            ]
+          : [
+              {
+                featured: Prisma.SortOrder.desc,
+              },
+              {
+                totalReads: Prisma.SortOrder.desc,
+              },
+              {
+                updatedAt: Prisma.SortOrder.desc,
+              },
+            ];
     const stories: PublishedStoryCatalogRecord[] = await this.prisma.story.findMany({
       where: this.buildPublishedStoryWhere(input),
       select: publishedStoryCatalogSelect,
-      orderBy: [
-        {
-          featured: "desc",
-        },
-        {
-          totalReads: "desc",
-        },
-        {
-          updatedAt: "desc",
-        },
-      ],
+      orderBy,
       skip: offset ?? undefined,
       take: limit ? limit + 1 : undefined,
     });
@@ -2774,6 +2890,7 @@ export class ReaderService {
       genre?: string;
       limit?: number | null;
       offset?: number | null;
+      orderMode?: "default" | "trending" | "fresh";
       query?: string;
     },
     cacheKeyLabel: string,
@@ -2782,8 +2899,9 @@ export class ReaderService {
     const normalizedQuery = this.normalizeOptionalQuery(input.query) ?? "all";
     const limit = input.limit ?? "all";
     const offset = input.offset ?? 0;
+    const orderMode = input.orderMode ?? "default";
 
-    return `reader:published-stories:${cacheKeyLabel}:${normalizedGenre}:${normalizedQuery}:${limit}:${offset}`;
+    return `reader:published-stories:${cacheKeyLabel}:${normalizedGenre}:${normalizedQuery}:${orderMode}:${limit}:${offset}`;
   }
 
   private serializePublishedStoryCatalog(
@@ -2825,7 +2943,7 @@ export class ReaderService {
   private async getRecommendedStoryCards(input: {
     excludeSeenStories?: boolean;
     excludeStoryIds?: string[];
-    limit?: number;
+    limit?: number | null;
     sourceStory?: StoryCardSource | null;
     stories: StoryCardSource[];
     userId: string;
@@ -2865,7 +2983,10 @@ export class ReaderService {
 
     return {
       selectedGenres: recommendationSignals.selectedGenres,
-      stories: this.dedupeStoryCards(fallbackStories, input.limit ?? 6),
+      stories: this.dedupeStoryCards(
+        fallbackStories,
+        input.limit === undefined ? 6 : input.limit,
+      ),
     };
   }
 
@@ -4416,23 +4537,21 @@ export class ReaderService {
     return user.profile?.displayName?.trim() || user.email.split("@")[0] || "TaleStead Reader";
   }
 
-  private dedupeStoryCards(
-    stories: StoryCardSource[],
-    limit = 6,
-  ) {
+  private dedupeStoryCards(stories: StoryCardSource[], limit: number | null = 6) {
     const seen = new Set<string>();
 
-    return stories
-      .filter((story) => {
-        if (seen.has(story.slug)) {
-          return false;
-        }
+    const deduped = stories.filter((story) => {
+      if (seen.has(story.slug)) {
+        return false;
+      }
 
-        seen.add(story.slug);
-        return true;
-      })
-      .slice(0, limit)
-      .map((story) => this.mapStoryCard(story));
+      seen.add(story.slug);
+      return true;
+    });
+
+    const capped = limit === null ? deduped : deduped.slice(0, limit);
+
+    return capped.map((story) => this.mapStoryCard(story));
   }
 
   private addWeightedValue(

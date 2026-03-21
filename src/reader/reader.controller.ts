@@ -39,6 +39,26 @@ export class ReaderController {
     return this.readerService.getDashboard(request.auth!.userId);
   }
 
+  @Get("dashboard/shelf/:shelfId")
+  async getDashboardShelf(
+    @Param("shelfId") shelfId: string,
+    @Query("limit") limitRaw: string | undefined,
+    @Query("offset") offsetRaw: string | undefined,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    const parsedLimit = Number.parseInt(limitRaw ?? "10", 10);
+    const limit = Number.isFinite(parsedLimit) ? parsedLimit : 10;
+    const parsedOffset = Number.parseInt(offsetRaw ?? "0", 10);
+    const offset = Number.isFinite(parsedOffset) ? parsedOffset : 0;
+
+    return this.readerService.getDashboardShelf(
+      request.auth!.userId,
+      shelfId,
+      offset,
+      limit,
+    );
+  }
+
   @Get("following")
   async getFollowingFeed(@Req() request: AuthenticatedRequest) {
     return this.readerService.getFollowingFeed(request.auth!.userId);
