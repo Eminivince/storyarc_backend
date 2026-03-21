@@ -112,6 +112,12 @@ async function wipeAllStories(tx: Prisma.TransactionClient) {
   });
   const publishedChapterIds = published.map((p) => p.id);
 
+  const draftChapters = await tx.chapter.findMany({
+    where: { storyId: { in: storyIds } },
+    select: { id: true },
+  });
+  const draftChapterIds = draftChapters.map((c) => c.id);
+
   const gifts = await tx.giftTransaction.findMany({
     where: { storyId: { in: storyIds } },
     select: { id: true },
@@ -184,12 +190,15 @@ async function wipeAllStories(tx: Prisma.TransactionClient) {
     where: { storyId: { in: storyIds } },
   });
 
+  const activityChapterIds = [
+    ...new Set([...publishedChapterIds, ...draftChapterIds]),
+  ];
   await tx.activityFeedEvent.deleteMany({
     where: {
       OR: [
         { storyId: { in: storyIds } },
-        ...(publishedChapterIds.length > 0
-          ? [{ chapterId: { in: publishedChapterIds } }]
+        ...(activityChapterIds.length > 0
+          ? [{ chapterId: { in: activityChapterIds } }]
           : []),
       ],
     },
