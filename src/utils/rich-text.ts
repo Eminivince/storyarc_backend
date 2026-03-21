@@ -6,20 +6,33 @@ const richTextTagPattern = /<\/?[a-z][\s\S]*>/i;
 const sanitizeConfig: sanitizeHtml.IOptions = {
   allowedAttributes: {
     a: ["href", "rel", "target"],
+    code: ["class"],
+    pre: ["class"],
   },
   allowedSchemes: ["http", "https", "mailto"],
+  // Aligned with TipTap StarterKit + studio Link extension (see RichTextEditor.jsx).
   allowedTags: [
     "a",
     "blockquote",
     "br",
+    "code",
+    "del",
     "em",
     "h1",
     "h2",
     "h3",
+    "h4",
+    "h5",
+    "h6",
+    "hr",
     "li",
     "ol",
     "p",
+    "pre",
+    "s",
+    "strike",
     "strong",
+    "u",
     "ul",
   ],
   transformTags: {
@@ -29,6 +42,7 @@ const sanitizeConfig: sanitizeHtml.IOptions = {
     }),
     b: "strong",
     i: "em",
+    strike: "s",
   },
 };
 

@@ -1,4 +1,10 @@
-import { Inject, Injectable, OnModuleDestroy } from "@nestjs/common";
+import {
+  Inject,
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+} from "@nestjs/common";
 import { ThrottlerStorageRedisService } from "@nest-lab/throttler-storage-redis";
 import type { RedisOptions } from "ioredis";
 import { env } from "../../config/env";
@@ -8,10 +14,15 @@ import { env } from "../../config/env";
  */
 export const THROTTLER_REDIS_STORAGE = Symbol("THROTTLER_REDIS_STORAGE");
 
-/** Client options aligned with {@link RedisService} for consistent timeout / retry behavior. */
+/**
+ * Throttler Redis client options.
+ * `enableOfflineQueue: true` avoids "Stream isn't writeable and enableOfflineQueue options is false"
+ * when a request hits {@link ThrottlerGuard} before the TCP connection is ready or during reconnect.
+ * {@link ThrottlerRedisStorageLifecycle.onModuleInit} still eagerly `connect()`s before HTTP listens.
+ */
 export function getThrottlerRedisClientOptions(): RedisOptions {
   return {
-    enableOfflineQueue: false,
+    enableOfflineQueue: true,
     lazyConnect: true,
     maxRetriesPerRequest: 1,
     retryStrategy: () => null,
@@ -30,11 +41,28 @@ export function createThrottlerRedisStorage(): ThrottlerStorageRedisService {
 }
 
 @Injectable()
-export class ThrottlerRedisStorageLifecycle implements OnModuleDestroy {
+export class ThrottlerRedisStorageLifecycle implements OnModuleDestroy, OnModuleInit {
+  private readonly logger = new Logger(ThrottlerRedisStorageLifecycle.name);
+
   constructor(
     @Inject(THROTTLER_REDIS_STORAGE)
     private readonly storage: ThrottlerStorageRedisService,
   ) {}
+
+  async onModuleInit() {
+    const redis = this.storage.redis;
+    try {
+      if (redis.status === "wait") {
+        await redis.connect();
+      }
+      await redis.ping();
+    } catch (error) {
+      this.logger.error(
+        `Throttler Redis failed to connect: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      throw error;
+    }
+  }
 
   onModuleDestroy() {
     this.storage.onModuleDestroy();

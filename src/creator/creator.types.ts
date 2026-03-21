@@ -23,6 +23,8 @@ export type CreatorApplicationInput = {
 
 export type ReviewCreatorApplicationInput = {
   reviewNotes: string | null;
+  /** When approving: whether the writer may receive revenue-sharing story contracts. */
+  approveRevenueShareContract?: boolean;
 };
 
 export type CreatorWithdrawalRequestInput = {

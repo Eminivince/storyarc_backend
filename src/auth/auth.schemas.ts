@@ -15,6 +15,10 @@ import {
   UpdateCurrentUserProfileInput,
   VerifyResetCodeInput,
 } from "./auth.types";
+import {
+  PASSWORD_MAX_LENGTH,
+  validateStrongPassword,
+} from "./password-policy";
 
 type RawRecord = Record<string, unknown>;
 
@@ -58,6 +62,35 @@ function getTrimmedString(
   return trimmed;
 }
 
+function getRawString(
+  record: RawRecord,
+  fieldName: string,
+  options: { minLength?: number; maxLength?: number } = {},
+) {
+  const value = record[fieldName];
+
+  if (typeof value !== "string") {
+    throw new BadRequestException(`${fieldName} must be a string.`);
+  }
+
+  const minLength = options.minLength ?? 1;
+  const maxLength = options.maxLength ?? 255;
+
+  if (value.length < minLength) {
+    throw new BadRequestException(
+      `${fieldName} must be at least ${minLength} characters long.`,
+    );
+  }
+
+  if (value.length > maxLength) {
+    throw new BadRequestException(
+      `${fieldName} must be ${maxLength} characters or fewer.`,
+    );
+  }
+
+  return value;
+}
+
 function getEmail(record: RawRecord) {
   const email = getTrimmedString(record, "email", {
     minLength: 5,
@@ -72,9 +105,18 @@ function getEmail(record: RawRecord) {
 }
 
 function getPassword(record: RawRecord) {
-  return getTrimmedString(record, "password", {
-    minLength: 8,
-    maxLength: 128,
+  return validateStrongPassword(
+    getRawString(record, "password", {
+      minLength: 8,
+      maxLength: PASSWORD_MAX_LENGTH,
+    }),
+  );
+}
+
+function getExistingPassword(record: RawRecord) {
+  return getRawString(record, "password", {
+    minLength: 1,
+    maxLength: PASSWORD_MAX_LENGTH,
   });
 }
 
@@ -199,7 +241,7 @@ export function parseLoginBody(body: unknown): LoginInput {
 
   return {
     email: getEmail(record),
-    password: getPassword(record),
+    password: getExistingPassword(record),
   };
 }
 
@@ -318,7 +360,7 @@ export function parseTotpDisableBody(body: unknown): TotpDisableInput {
   const record = getObjectBody(body);
 
   return {
-    password: getPassword(record),
+    password: getExistingPassword(record),
     code: getTotpCode(record),
   };
 }
@@ -327,7 +369,7 @@ export function parseDeleteAccountBody(body: unknown): DeleteAccountInput {
   const record = getObjectBody(body);
 
   return {
-    password: getPassword(record),
+    password: getExistingPassword(record),
   };
 }
 

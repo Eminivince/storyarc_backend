@@ -41,6 +41,8 @@ export type CreatorApplicationSnapshot = {
   submittedAt: Date | null;
   reviewedAt: Date | null;
   reviewNotes: string | null;
+  /** When approved: allowed to hold revenue-sharing story contracts. Null = legacy (treated as true). */
+  revenueShareContractApproved: boolean | null;
 };
 
 export type RegisterInput = {

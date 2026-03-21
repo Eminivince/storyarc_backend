@@ -1384,6 +1384,10 @@ export class OperationsService {
 
   async createAdminContract(adminUserId: string, input: AdminContractInput) {
     const admin = await this.requireAdmin(adminUserId);
+    await this.assertContractPartyEligibleForRevenueShare(
+      input.userId,
+      input.revenueSharePercent,
+    );
     const [party, story, template] = await Promise.all([
       this.getContractPartyUserOrThrow(input.userId),
       this.getContractStoryOrThrow(input.storyId),
@@ -1439,6 +1443,10 @@ export class OperationsService {
   ) {
     const admin = await this.requireAdmin(adminUserId);
     const existingContract = await this.getContractOrThrow(contractId);
+    await this.assertContractPartyEligibleForRevenueShare(
+      input.userId,
+      input.revenueSharePercent,
+    );
     const [party, story, template] = await Promise.all([
       this.getContractPartyUserOrThrow(input.userId),
       this.getContractStoryOrThrow(input.storyId),
@@ -3549,6 +3557,37 @@ export class OperationsService {
     }
 
     return user;
+  }
+
+  /**
+   * Writers approved "studio only" cannot hold contracts that pay a revenue share from purchases.
+   * Missing application rows (e.g. legacy or seeded creators) are allowed.
+   */
+  private async assertContractPartyEligibleForRevenueShare(
+    userId: string,
+    revenueSharePercent: number,
+  ) {
+    if (revenueSharePercent <= 0) {
+      return;
+    }
+
+    const application = await this.prisma.creatorApplication.findUnique({
+      where: {
+        userId,
+      },
+    });
+
+    if (!application || application.status !== "APPROVED") {
+      return;
+    }
+
+    const allowed = application.revenueShareContractApproved ?? true;
+
+    if (!allowed) {
+      throw new BadRequestException(
+        "This creator was approved without revenue-sharing eligibility. Use studio-only access or update their application before assigning a contract with revenue share.",
+      );
+    }
   }
 
   private async getContractStoryOrThrow(storyId: string) {

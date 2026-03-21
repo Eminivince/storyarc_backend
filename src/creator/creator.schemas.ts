@@ -260,25 +260,46 @@ export function parseCreatorWithdrawalRequestBody(
   };
 }
 
+function getOptionalBoolean(record: RawRecord, fieldName: string) {
+  const value = record[fieldName];
+
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+
+  if (typeof value !== "boolean") {
+    throw new BadRequestException(`${fieldName} must be a boolean.`);
+  }
+
+  return value;
+}
+
 export function parseReviewCreatorApplicationBody(
   body: unknown,
 ): ReviewCreatorApplicationInput {
   if (body === undefined || body === null) {
     return {
+      approveRevenueShareContract: undefined,
       reviewNotes: null,
     };
   }
 
   const record = getObjectBody(body);
   const reviewNotes = record.reviewNotes;
+  const approveRevenueShareContract = getOptionalBoolean(
+    record,
+    "approveRevenueShareContract",
+  );
 
   if (reviewNotes === undefined || reviewNotes === null) {
     return {
+      approveRevenueShareContract,
       reviewNotes: null,
     };
   }
 
   return {
+    approveRevenueShareContract,
     reviewNotes: getStringValue(record, "reviewNotes", {
       allowEmpty: true,
       maxLength: 2_000,

@@ -10,7 +10,6 @@ import {
   ChapterStatus,
   Prisma,
   StoryStatus,
-  PrismaClient,
 } from "@prisma/client";
 import { PrismaService } from "../database/prisma.service";
 import { EngagementService } from "../engagement/engagement.service";
@@ -102,32 +101,7 @@ export class StudioService {
     publishedCount: number;
     scannedCount: number;
   }> {
-    const directUrl = process.env.DIRECT_URL?.trim() || "";
-    const pooledUrl = process.env.DATABASE_URL?.trim() || "";
-    const baseUrl = directUrl || pooledUrl;
-
-    if (!baseUrl) {
-      this.logger.warn(
-        "Skipping scheduled chapter auto-publish: DIRECT_URL or DATABASE_URL must be set.",
-      );
-      return {
-        failureCount: 0,
-        publishedCount: 0,
-        scannedCount: 0,
-      };
-    }
-
-    const separator = baseUrl.includes("?") ? "&" : "?";
-    const seedUrl = `${baseUrl}${separator}connection_limit=1`;
-    const seedPrisma = new PrismaClient({
-      datasources: {
-        db: {
-          url: seedUrl,
-        },
-      },
-    });
-
-    const dueChapters = await seedPrisma.chapter.findMany({
+    const dueChapters = await this.prisma.chapter.findMany({
       where: {
         scheduledFor: {
           lte: now,
@@ -156,8 +130,6 @@ export class StudioService {
       ],
       take: limit,
     });
-
-    await seedPrisma.$disconnect();
 
     if (!dueChapters.length) {
       return {

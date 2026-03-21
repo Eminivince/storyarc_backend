@@ -18,6 +18,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
 
     let statusCode = HttpStatus.INTERNAL_SERVER_ERROR;
     let message = "Internal server error";
+    let retryAfterSeconds: number | null = null;
 
     if (exception instanceof HttpException) {
       statusCode = exception.getStatus();
@@ -26,12 +27,23 @@ export class HttpExceptionFilter implements ExceptionFilter {
       if (typeof payload === "string") {
         message = payload;
       } else if (typeof payload === "object" && payload !== null) {
-        const candidate = (payload as { message?: string | string[] }).message;
+        const typedPayload = payload as {
+          message?: string | string[];
+          retryAfterSeconds?: number;
+        };
+        const candidate = typedPayload.message;
 
         if (Array.isArray(candidate)) {
           message = candidate.join(", ");
         } else if (typeof candidate === "string") {
           message = candidate;
+        }
+
+        if (
+          typeof typedPayload.retryAfterSeconds === "number" &&
+          typedPayload.retryAfterSeconds > 0
+        ) {
+          retryAfterSeconds = Math.ceil(typedPayload.retryAfterSeconds);
         }
       }
     }
@@ -45,10 +57,15 @@ export class HttpExceptionFilter implements ExceptionFilter {
       this.logger.warn(`${method} ${path} -> ${statusCode} ${message}`);
     }
 
+    if (retryAfterSeconds) {
+      response.header("Retry-After", String(retryAfterSeconds));
+    }
+
     response.status(statusCode).send({
       statusCode,
       message,
       path,
+      retryAfterSeconds,
       timestamp: new Date().toISOString(),
       requestId: request?.id ?? null,
     });

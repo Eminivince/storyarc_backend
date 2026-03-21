@@ -1,6 +1,15 @@
 type NodeEnv = "development" | "test" | "production";
+type AuthEmailDeliveryMode = "live" | "capture";
 
 export type AppEnv = {
+  authEmailDeliveryMode: AuthEmailDeliveryMode;
+  authLoginFailureBackoffSeconds: number[];
+  authLoginFailurePenaltyResetSeconds: number;
+  authLoginFailureThreshold: number;
+  authLoginFailureWindowSeconds: number;
+  authSignupRateLimitMax: number;
+  authSignupRateLimitWindowSeconds: number;
+  authTestSupportEnabled: boolean;
   nodeEnv: NodeEnv;
   port: number;
   databaseUrl: string;
@@ -74,6 +83,55 @@ function getOptionalStringEnv(name: string): string | null {
   return value.trim();
 }
 
+function getBooleanEnv(name: string, fallback = false): boolean {
+  const value = process.env[name];
+
+  if (!value || !value.trim()) {
+    return fallback;
+  }
+
+  const normalizedValue = value.trim().toLowerCase();
+
+  if (["1", "true", "yes", "on"].includes(normalizedValue)) {
+    return true;
+  }
+
+  if (["0", "false", "no", "off"].includes(normalizedValue)) {
+    return false;
+  }
+
+  throw new Error(`Invalid boolean environment variable: ${name}`);
+}
+
+function getNumberListEnv(name: string, fallback: number[]) {
+  const value = process.env[name];
+
+  if (!value || !value.trim()) {
+    return fallback;
+  }
+
+  const parsedValues = value
+    .split(",")
+    .map((entry) => Number(entry.trim()))
+    .filter((entry) => Number.isFinite(entry) && entry > 0);
+
+  if (parsedValues.length === 0) {
+    throw new Error(`Invalid numeric list environment variable: ${name}`);
+  }
+
+  return parsedValues;
+}
+
+function getAuthEmailDeliveryMode(): AuthEmailDeliveryMode {
+  const value = (process.env.AUTH_EMAIL_DELIVERY_MODE ?? "live").trim().toLowerCase();
+
+  if (value === "live" || value === "capture") {
+    return value;
+  }
+
+  throw new Error(`Invalid AUTH_EMAIL_DELIVERY_MODE value: ${value}`);
+}
+
 function getNodeEnv(): NodeEnv {
   const value = (process.env.NODE_ENV ?? "development").trim();
 
@@ -85,7 +143,29 @@ function getNodeEnv(): NodeEnv {
 }
 
 function parseEnv(): AppEnv {
+  const authEmailDeliveryMode = getAuthEmailDeliveryMode();
+
   return {
+    authEmailDeliveryMode,
+    authLoginFailureBackoffSeconds: getNumberListEnv(
+      "AUTH_LOGIN_FAILURE_BACKOFF_SECONDS",
+      [60, 300, 900, 1800],
+    ),
+    authLoginFailurePenaltyResetSeconds: getNumberEnv(
+      "AUTH_LOGIN_FAILURE_PENALTY_RESET_SECONDS",
+      12 * 60 * 60,
+    ),
+    authLoginFailureThreshold: getNumberEnv("AUTH_LOGIN_FAILURE_THRESHOLD", 5),
+    authLoginFailureWindowSeconds: getNumberEnv(
+      "AUTH_LOGIN_FAILURE_WINDOW_SECONDS",
+      15 * 60,
+    ),
+    authSignupRateLimitMax: getNumberEnv("AUTH_SIGNUP_RATE_LIMIT_MAX", 3),
+    authSignupRateLimitWindowSeconds: getNumberEnv(
+      "AUTH_SIGNUP_RATE_LIMIT_WINDOW_SECONDS",
+      30 * 60,
+    ),
+    authTestSupportEnabled: getBooleanEnv("AUTH_TEST_SUPPORT_ENABLED", false),
     nodeEnv: getNodeEnv(),
     port: getNumberEnv("PORT", 4000),
     databaseUrl: getStringEnv("DATABASE_URL"),
@@ -108,8 +188,14 @@ function parseEnv(): AppEnv {
     refreshTokenTtlDays: getNumberEnv("REFRESH_TOKEN_TTL_DAYS", 30),
     passwordResetCodeTtlMinutes: getNumberEnv("PASSWORD_RESET_CODE_TTL_MINUTES", 15),
     resetVerifiedTokenTtlMinutes: getNumberEnv("RESET_VERIFIED_TOKEN_TTL_MINUTES", 15),
-    resendApiKey: getStringEnv("RESEND_API_KEY"),
-    resendFromEmail: getStringEnv("RESEND_FROM_EMAIL"),
+    resendApiKey:
+      authEmailDeliveryMode === "capture"
+        ? getOptionalStringEnv("RESEND_API_KEY") ?? "captured-email-mode"
+        : getStringEnv("RESEND_API_KEY"),
+    resendFromEmail:
+      authEmailDeliveryMode === "capture"
+        ? getOptionalStringEnv("RESEND_FROM_EMAIL") ?? "TaleStead <capture@local.test>"
+        : getStringEnv("RESEND_FROM_EMAIL"),
     cryptomusMerchantId: getOptionalStringEnv("CRYPTOMUS_MERCHANT_ID"),
     cryptomusPaymentApiKey: getOptionalStringEnv("CRYPTOMUS_PAYMENT_API_KEY"),
     cryptomusCurrency: getStringEnv(

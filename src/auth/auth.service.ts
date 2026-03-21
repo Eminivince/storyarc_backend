@@ -7,7 +7,7 @@ import {
 } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { compare, hash } from "bcryptjs";
-import { createHash, randomBytes, randomInt } from "crypto";
+import { createHash, randomBytes, randomInt, timingSafeEqual } from "crypto";
 import { env } from "../config/env";
 import { PrismaService } from "../database/prisma.service";
 import { RedisService } from "../redis/redis.service";
@@ -33,6 +33,7 @@ import {
   VerifyResetCodeInput,
 } from "./auth.types";
 import { ResendEmailService } from "./resend-email.service";
+import { AuthThrottleService } from "./auth-throttle.service";
 import {
   buildSessionCacheKey,
   CachedSessionLookup,
@@ -44,6 +45,7 @@ const GOOGLE_OAUTH_STATE_TTL_SECONDS = 10 * 60;
 const GOOGLE_AUTHORIZATION_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo";
+const REFRESH_TOKEN_HASH_PREFIX = "sha256:";
 
 type AuthUserSnapshot = {
   id: string;
@@ -70,6 +72,7 @@ export class AuthService {
     private readonly jwtService: JwtService,
     private readonly redis: RedisService,
     private readonly resendEmailService: ResendEmailService,
+    private readonly authThrottleService: AuthThrottleService,
   ) {}
 
   async startGoogleAuth(input: GoogleAuthStartInput) {
@@ -165,8 +168,11 @@ export class AuthService {
     }
   }
 
-  async register(input: RegisterInput) {
+  async register(input: RegisterInput, requestMeta: RequestMeta) {
     const email = this.normalizeEmail(input.email);
+
+    await this.authThrottleService.assertSignupAllowed(email, requestMeta);
+
     const existingUser = await this.prisma.user.findUnique({
       where: { email },
       select: { id: true },
@@ -379,20 +385,10 @@ export class AuthService {
     }
   }
 
-  private getLockoutKey(email: string) {
-    return `auth:lockout:${email}`;
-  }
-
   async login(input: LoginInput, requestMeta: RequestMeta) {
     const email = this.normalizeEmail(input.email);
 
-    // Account lockout: reject after 5 failed attempts within 15 minutes
-    const lockoutKey = this.getLockoutKey(email);
-    const failedAttempts = await this.redis.getJson<number>(lockoutKey);
-
-    if (failedAttempts !== null && failedAttempts >= 5) {
-      throw new UnauthorizedException("Invalid email or password.");
-    }
+    await this.authThrottleService.assertLoginAllowed(email, requestMeta);
 
     const user = await this.prisma.user.findUnique({
       where: { email },
@@ -401,6 +397,7 @@ export class AuthService {
         creatorApplication: {
           select: {
             reviewNotes: true,
+            revenueShareContractApproved: true,
             reviewedAt: true,
             status: true,
             submittedAt: true,
@@ -414,7 +411,7 @@ export class AuthService {
     });
 
     if (!user?.credential) {
-      await this.redis.increment(lockoutKey, 900);
+      await this.authThrottleService.recordLoginFailure(email, requestMeta);
       throw new UnauthorizedException("Invalid email or password.");
     }
 
@@ -425,12 +422,11 @@ export class AuthService {
     const passwordMatches = await compare(input.password, user.credential.passwordHash);
 
     if (!passwordMatches) {
-      await this.redis.increment(lockoutKey, 900);
+      await this.authThrottleService.recordLoginFailure(email, requestMeta);
       throw new UnauthorizedException("Invalid email or password.");
     }
 
-    // Successful login: clear lockout counter
-    await this.redis.delete(lockoutKey);
+    await this.authThrottleService.clearLoginFailures(email, requestMeta);
 
     // Check if 2FA is enabled — if so, return a challenge instead of a session
     if (user.totpCredential?.verified) {
@@ -465,6 +461,7 @@ export class AuthService {
         creatorApplication: {
           select: {
             reviewNotes: true,
+            revenueShareContractApproved: true,
             reviewedAt: true,
             status: true,
             submittedAt: true,
@@ -593,6 +590,7 @@ export class AuthService {
             creatorApplication: {
               select: {
                 reviewNotes: true,
+                revenueShareContractApproved: true,
                 reviewedAt: true,
                 status: true,
                 submittedAt: true,
@@ -614,7 +612,7 @@ export class AuthService {
       throw new UnauthorizedException("Session is no longer active.");
     }
 
-    const refreshTokenMatches = await compare(
+    const refreshTokenMatches = await this.verifyRefreshToken(
       input.refreshToken,
       session.refreshTokenHash,
     );
@@ -823,6 +821,7 @@ export class AuthService {
         creatorApplication: {
           select: {
             reviewNotes: true,
+            revenueShareContractApproved: true,
             reviewedAt: true,
             status: true,
             submittedAt: true,
@@ -862,6 +861,7 @@ export class AuthService {
         creatorApplication: {
           select: {
             reviewNotes: true,
+            revenueShareContractApproved: true,
             reviewedAt: true,
             status: true,
             submittedAt: true,
@@ -921,6 +921,7 @@ export class AuthService {
         creatorApplication: {
           select: {
             reviewNotes: true,
+            revenueShareContractApproved: true,
             reviewedAt: true,
             status: true,
             submittedAt: true,
@@ -1105,6 +1106,7 @@ export class AuthService {
           creatorApplication: {
             select: {
               reviewNotes: true,
+              revenueShareContractApproved: true,
               reviewedAt: true,
               status: true,
               submittedAt: true,
@@ -1124,6 +1126,7 @@ export class AuthService {
             creatorApplication: {
               select: {
                 reviewNotes: true,
+                revenueShareContractApproved: true,
                 reviewedAt: true,
                 status: true,
                 submittedAt: true,
@@ -1186,6 +1189,7 @@ export class AuthService {
           creatorApplication: {
             select: {
               reviewNotes: true,
+              revenueShareContractApproved: true,
               reviewedAt: true,
               status: true,
               submittedAt: true,
@@ -1260,6 +1264,7 @@ export class AuthService {
               creatorApplication: {
                 select: {
                   reviewNotes: true,
+                  revenueShareContractApproved: true,
                   reviewedAt: true,
                   status: true,
                   submittedAt: true,
@@ -1381,7 +1386,7 @@ export class AuthService {
     const now = new Date();
     const accessTokenExpiresAt = this.addMinutes(now, env.accessTokenTtlMinutes);
     const refreshTokenExpiresAt = this.addDays(now, env.refreshTokenTtlDays);
-    const placeholderHash = await hash(this.generateOpaqueToken(), HASH_ROUNDS);
+    const placeholderHash = this.hashRefreshToken(this.generateOpaqueToken());
 
     const session = await this.prisma.session.create({
       data: {
@@ -1433,7 +1438,7 @@ export class AuthService {
       },
     );
 
-    const refreshTokenHash = await hash(refreshToken, HASH_ROUNDS);
+    const refreshTokenHash = this.hashRefreshToken(refreshToken);
 
     await this.prisma.session.update({
       where: { id: sessionId },
@@ -1481,6 +1486,29 @@ export class AuthService {
       onboarding: this.mapOnboarding(user.profile),
       has2FA: user.totpCredential?.verified ?? false,
     };
+  }
+
+  private hashRefreshToken(refreshToken: string) {
+    return `${REFRESH_TOKEN_HASH_PREFIX}${createHash("sha256")
+      .update(refreshToken)
+      .digest("hex")}`;
+  }
+
+  private async verifyRefreshToken(
+    refreshToken: string,
+    storedHash: string,
+  ) {
+    if (storedHash.startsWith(REFRESH_TOKEN_HASH_PREFIX)) {
+      const expectedHash = Buffer.from(this.hashRefreshToken(refreshToken));
+      const actualHash = Buffer.from(storedHash);
+
+      return (
+        expectedHash.length === actualHash.length &&
+        timingSafeEqual(expectedHash, actualHash)
+      );
+    }
+
+    return compare(refreshToken, storedHash);
   }
 
   private async cacheSessionLookup(input: {
@@ -1569,6 +1597,8 @@ export class AuthService {
 
     return {
       reviewNotes: creatorApplication.reviewNotes,
+      revenueShareContractApproved:
+        creatorApplication.revenueShareContractApproved ?? null,
       reviewedAt: creatorApplication.reviewedAt,
       status: creatorApplication.status,
       submittedAt: creatorApplication.submittedAt,
