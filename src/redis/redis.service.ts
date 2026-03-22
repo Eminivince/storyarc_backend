@@ -288,15 +288,11 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     this.fallbackEnabled = true;
     this.client.disconnect(false);
     this.logger.warn(
-      `Redis is unavailable. Falling back to in-memory storage for local development. ${this.describeError(error)}`,
+      `Redis is unavailable; using in-memory storage. Session cache, queues, and locks are per-process and not shared across replicas. ${this.describeError(error)}`,
     );
   }
 
   private canUseFallback(error: unknown) {
-    if (env.nodeEnv === "production") {
-      return false;
-    }
-
     return this.isRedisConnectionError(error);
   }
 
