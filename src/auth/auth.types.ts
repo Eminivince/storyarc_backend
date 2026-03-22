@@ -4,7 +4,8 @@ export const READING_STYLES = [
   "Binge-Worthy",
   "Community Focused",
 ] as const;
-export const READING_THEMES = ["Light", "Sepia", "Dark"] as const;
+/** Dark first — default reader experience for new accounts. */
+export const READING_THEMES = ["Dark", "Light", "Sepia"] as const;
 
 export type AppUserRole = (typeof USER_ROLES)[number];
 export type ReadingStyle = (typeof READING_STYLES)[number];

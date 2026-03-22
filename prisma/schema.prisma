@@ -469,7 +469,7 @@ model Profile {
   showActivity          Boolean   @default(true)
   selectedGenres        String[]  @default([])
   readingStyle          String?
-  readingTheme          String?
+  readingTheme          String?   @default("Dark")
   onboardingCompletedAt DateTime?
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
