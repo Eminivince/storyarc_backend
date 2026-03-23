@@ -1805,7 +1805,10 @@ export class MonetizationService implements OnModuleInit {
   // --- Flutterwave Integration ---
 
   private hasFlutterwaveConfiguration() {
-    return Boolean(env.flutterwaveClientId && env.flutterwaveClientSecret);
+    return Boolean(
+      env.flutterwaveSecretKey ||
+      (env.flutterwaveClientId && env.flutterwaveClientSecret),
+    );
   }
 
   private async getFlutterwaveAccessToken(): Promise<string> {
@@ -1973,15 +1976,13 @@ export class MonetizationService implements OnModuleInit {
       );
     }
 
-    // If we already have a transaction ID stored, verify the charge directly
-    const chargeId = purchase.flutterwaveTransactionId;
+    const transactionId = purchase.flutterwaveTransactionId;
 
-    if (chargeId) {
-      return this.verifyFlutterwaveCharge(userId, chargeId, purchase);
+    if (transactionId) {
+      return this.verifyFlutterwaveTransaction(userId, transactionId, purchase);
     }
 
-    // No charge ID yet — the Inline redirect appends transaction_id to the URL
-    // but we only receive the tx_ref here. Wait for webhook or return pending.
+    // No transaction ID yet — wait for webhook or return pending
     return {
       checkoutStatus: "pending" as const,
       message: this.getCheckoutStatusMessage("pending"),
@@ -1990,21 +1991,64 @@ export class MonetizationService implements OnModuleInit {
     };
   }
 
-  private async verifyFlutterwaveCharge(
+  /**
+   * Verify a Flutterwave transaction using the v3 verify endpoint.
+   * Inline checkout creates v3 transactions, so we use the v3 API with the secret key.
+   */
+  private async verifyFlutterwaveTransaction(
     userId: string,
-    chargeId: string,
+    transactionId: string,
     purchase: PurchaseWithRelations,
   ) {
+    if (!env.flutterwaveSecretKey) {
+      this.logger.warn(
+        "FLUTTERWAVE_SECRET_KEY not set — cannot verify transaction server-side.",
+      );
+
+      return {
+        checkoutStatus: "pending" as const,
+        message: this.getCheckoutStatusMessage("pending"),
+        reason: "verification-delay",
+        status: await this.getStatus(userId),
+      };
+    }
+
     let verifiedTx: FlutterwaveTransaction;
 
     try {
-      const verifyResponse = await this.flutterwaveRequest<{
-        data: FlutterwaveTransaction;
-      }>(`/charges/${chargeId}`, { method: "GET" });
-      verifiedTx = verifyResponse.data;
+      const response = await fetch(
+        `https://api.flutterwave.com/v3/transactions/${encodeURIComponent(transactionId)}/verify`,
+        {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${env.flutterwaveSecretKey}`,
+          },
+        },
+      );
+
+      const body = (await response.json().catch(() => null)) as {
+        status?: string;
+        message?: string;
+        data?: FlutterwaveTransaction;
+      } | null;
+
+      if (!response.ok || body?.status !== "success" || !body?.data) {
+        this.logger.warn(
+          `Flutterwave v3 verify failed for txn ${transactionId}: ${body?.message ?? response.status}`,
+        );
+
+        return {
+          checkoutStatus: "pending" as const,
+          message: this.getCheckoutStatusMessage("pending"),
+          reason: "verification-delay",
+          status: await this.getStatus(userId),
+        };
+      }
+
+      verifiedTx = body.data;
     } catch (error) {
       this.logger.warn(
-        `Flutterwave charge verification failed for ${chargeId}: ${error instanceof Error ? error.message : error}`,
+        `Flutterwave verify request failed for ${transactionId}: ${error instanceof Error ? error.message : error}`,
       );
 
       return {
