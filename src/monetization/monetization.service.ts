@@ -2388,8 +2388,6 @@ export class MonetizationService implements OnModuleInit {
         silverMonthlyPlanCode: env.paystackPlanSilverMonthly ?? null,
       },
       flutterwaveCodes: {
-        arcaneAnnualPlanId: env.flutterwavePlanArcaneAnnual ?? null,
-        arcaneMonthlyPlanId: env.flutterwavePlanArcaneMonthly ?? null,
         silverAnnualPlanId: env.flutterwavePlanSilverAnnual ?? null,
         silverMonthlyPlanId: env.flutterwavePlanSilverMonthly ?? null,
       },

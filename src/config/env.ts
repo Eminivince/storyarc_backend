@@ -45,8 +45,6 @@ export type AppEnv = {
   flutterwaveCurrency: string;
   flutterwavePlanSilverMonthly: string | null;
   flutterwavePlanSilverAnnual: string | null;
-  flutterwavePlanArcaneMonthly: string | null;
-  flutterwavePlanArcaneAnnual: string | null;
   cloudinaryCloudName: string | null;
   cloudinaryApiKey: string | null;
   cloudinaryApiSecret: string | null;
@@ -225,8 +223,6 @@ function parseEnv(): AppEnv {
     flutterwaveCurrency: getStringEnv("FLUTTERWAVE_CURRENCY", "NGN").toUpperCase(),
     flutterwavePlanSilverMonthly: getOptionalStringEnv("FLUTTERWAVE_PLAN_SILVER_MONTHLY"),
     flutterwavePlanSilverAnnual: getOptionalStringEnv("FLUTTERWAVE_PLAN_SILVER_ANNUAL"),
-    flutterwavePlanArcaneMonthly: getOptionalStringEnv("FLUTTERWAVE_PLAN_ARCANE_MONTHLY"),
-    flutterwavePlanArcaneAnnual: getOptionalStringEnv("FLUTTERWAVE_PLAN_ARCANE_ANNUAL"),
     cloudinaryCloudName: getOptionalStringEnv("CLOUDINARY_CLOUD_NAME"),
     cloudinaryApiKey: getOptionalStringEnv("CLOUDINARY_API_KEY"),
     cloudinaryApiSecret: getOptionalStringEnv("CLOUDINARY_API_SECRET"),
