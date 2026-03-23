@@ -200,6 +200,7 @@ type FlutterwaveWebhookPayload = {
 type MonetizationCatalogResponse = {
   checkoutProvider: CheckoutProviderValue;
   currency: string;
+  testMode: boolean;
   coinPackages: Array<{
     code: string;
     coins: number;
@@ -362,6 +363,13 @@ export class MonetizationService implements OnModuleInit {
     await this.cleanupLegacyStripeIndexes();
     await this.ensureSparseChapterEntitlementIndexes();
     await this.ensureCatalogBootstrapped();
+
+    if (this.hasFlutterwaveConfiguration()) {
+      const mode = env.nodeEnv === "production" ? "PRODUCTION" : "SANDBOX";
+      this.logger.log(
+        `Flutterwave ${mode} — API: ${this.flutterwaveApiBaseUrl}`,
+      );
+    }
   }
 
   async getCatalog() {
@@ -403,6 +411,7 @@ export class MonetizationService implements OnModuleInit {
     const response: MonetizationCatalogResponse = {
       checkoutProvider,
       currency,
+      testMode: env.nodeEnv !== "production",
       coinPackages: supportedCoinPackages.map((item) => ({
         code: item.code,
         coins: item.coins,
