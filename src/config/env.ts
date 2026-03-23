@@ -38,6 +38,8 @@ export type AppEnv = {
   paystackPlanSilverAnnual: string | null;
   paystackPlanArcaneMonthly: string | null;
   paystackPlanArcaneAnnual: string | null;
+  /** v3 Standard hosted checkout + transaction verify (Bearer FLWSECK_…). */
+  flutterwaveSecretKey: string | null;
   flutterwaveClientId: string | null;
   flutterwaveClientSecret: string | null;
   flutterwaveEncryptionKey: string | null;
@@ -216,6 +218,7 @@ function parseEnv(): AppEnv {
     paystackPlanSilverAnnual: getOptionalStringEnv("PAYSTACK_PLAN_SILVER_ANNUAL"),
     paystackPlanArcaneMonthly: getOptionalStringEnv("PAYSTACK_PLAN_ARCANE_MONTHLY"),
     paystackPlanArcaneAnnual: getOptionalStringEnv("PAYSTACK_PLAN_ARCANE_ANNUAL"),
+    flutterwaveSecretKey: getOptionalStringEnv("FLUTTERWAVE_SECRET_KEY"),
     flutterwaveClientId: getOptionalStringEnv("FLUTTERWAVE_CLIENT_ID"),
     flutterwaveClientSecret: getOptionalStringEnv("FLUTTERWAVE_CLIENT_SECRET"),
     flutterwaveEncryptionKey: getOptionalStringEnv("FLUTTERWAVE_ENCRYPTION_KEY"),

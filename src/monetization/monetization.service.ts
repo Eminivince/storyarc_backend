@@ -337,15 +337,12 @@ const CATALOG_CACHE_TTL_SECONDS = 60 * 60;
 @Injectable()
 export class MonetizationService implements OnModuleInit {
   private readonly cryptomusApiBaseUrl = "https://api.cryptomus.com/v1";
-  private readonly flutterwaveApiBaseUrl = "https://api.flutterwave.com";
-  private readonly flutterwaveTokenUrl =
-    "https://idp.flutterwave.com/realms/flutterwave/protocol/openid-connect/token";
+  /** Flutterwave Standard (hosted checkout) is v3: https://api.flutterwave.com/v3 */
+  private readonly flutterwaveV3ApiBaseUrl = "https://api.flutterwave.com/v3";
   private readonly paystackApiBaseUrl = "https://api.paystack.co";
   private readonly logger = new Logger(MonetizationService.name);
   private catalogBootstrapped = false;
   private catalogBootstrapPromise: Promise<void> | null = null;
-  private flutterwaveAccessToken: string | null = null;
-  private flutterwaveTokenExpiresAt: number = 0;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -1782,48 +1779,44 @@ export class MonetizationService implements OnModuleInit {
   // --- Flutterwave Integration ---
 
   private hasFlutterwaveConfiguration() {
-    return Boolean(env.flutterwaveClientId && env.flutterwaveClientSecret);
+    return Boolean(env.flutterwaveSecretKey);
   }
 
-  private async getFlutterwaveAccessToken(): Promise<string> {
-    if (!env.flutterwaveClientId || !env.flutterwaveClientSecret) {
+  private getFlutterwaveSecretAuthorization(): string {
+    if (!env.flutterwaveSecretKey) {
       throw new ServiceUnavailableException(
-        "FLUTTERWAVE_CLIENT_ID and FLUTTERWAVE_CLIENT_SECRET must be configured.",
+        "FLUTTERWAVE_SECRET_KEY must be configured for Flutterwave checkout. Use the v3 secret key from your Flutterwave dashboard (starts with FLWSECK_). OAuth Client ID / Client Secret (v4) are not used for Standard hosted checkout in this integration.",
       );
     }
 
-    if (this.flutterwaveAccessToken && Date.now() < this.flutterwaveTokenExpiresAt) {
-      return this.flutterwaveAccessToken;
-    }
+    return `Bearer ${env.flutterwaveSecretKey}`;
+  }
 
-    const response = await fetch(this.flutterwaveTokenUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({
-        client_id: env.flutterwaveClientId,
-        client_secret: env.flutterwaveClientSecret,
-        grant_type: "client_credentials",
-      }).toString(),
-    });
+  /** v3: returns null when the reference is unknown or payment not yet created (not an error). */
+  private async flutterwaveTransactionByReference(
+    reference: string,
+  ): Promise<FlutterwaveTransaction | null> {
+    const authorization = this.getFlutterwaveSecretAuthorization();
+    const response = await fetch(
+      `${this.flutterwaveV3ApiBaseUrl}/transactions/verify_by_reference?tx_ref=${encodeURIComponent(reference)}`,
+      {
+        headers: {
+          Authorization: authorization,
+          "Content-Type": "application/json",
+        },
+      },
+    );
 
     const body = (await response.json().catch(() => null)) as {
-      access_token?: string;
-      expires_in?: number;
-      error?: string;
-      error_description?: string;
+      status?: string;
+      data?: FlutterwaveTransaction;
     } | null;
 
-    if (!response.ok || !body?.access_token) {
-      const message =
-        body?.error_description ?? body?.error ?? "Failed to obtain Flutterwave access token.";
-      throw new ServiceUnavailableException(message);
+    if (!response.ok || body?.status !== "success" || !body?.data) {
+      return null;
     }
 
-    this.flutterwaveAccessToken = body.access_token;
-    const expiresIn = body.expires_in ?? 300;
-    this.flutterwaveTokenExpiresAt = Date.now() + (expiresIn - 30) * 1000;
-
-    return this.flutterwaveAccessToken;
+    return body.data;
   }
 
   private async flutterwaveRequest<T>(
@@ -1831,13 +1824,13 @@ export class MonetizationService implements OnModuleInit {
     init: RequestInit = {},
     traceId?: string,
   ): Promise<T> {
-    const accessToken = await this.getFlutterwaveAccessToken();
+    const authorization = this.getFlutterwaveSecretAuthorization();
 
-    const response = await fetch(`${this.flutterwaveApiBaseUrl}${path}`, {
+    const response = await fetch(`${this.flutterwaveV3ApiBaseUrl}${path}`, {
       ...init,
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${accessToken}`,
+        Authorization: authorization,
         ...(traceId ? { "X-Trace-Id": traceId } : {}),
         ...(init.headers ?? {}),
       },
@@ -1942,13 +1935,9 @@ export class MonetizationService implements OnModuleInit {
     reference: string,
     existingPurchase: PurchaseWithRelations | null,
   ) {
-    const txLookup = await this.flutterwaveRequest<{
-      data: FlutterwaveTransaction[];
-    }>(`/transactions?tx_ref=${encodeURIComponent(reference)}`);
+    const flwTransaction = await this.flutterwaveTransactionByReference(reference);
 
-    const flwTransaction = Array.isArray(txLookup.data) ? txLookup.data[0] : null;
-
-    if (!flwTransaction || !flwTransaction.id) {
+    if (!flwTransaction?.id) {
       return {
         checkoutStatus: "pending" as const,
         message: this.getCheckoutStatusMessage("pending"),
