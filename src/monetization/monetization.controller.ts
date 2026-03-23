@@ -192,9 +192,14 @@ export class FlutterwaveWebhookController {
   @SkipThrottle()
   @Post("webhook")
   async handleWebhook(
+    @Headers("flutterwave-signature") signature: string | undefined,
     @Headers("verif-hash") verifHash: string | undefined,
     @RawBody() rawBody: Buffer | undefined,
   ) {
-    return this.monetizationService.handleFlutterwaveWebhook(rawBody, verifHash);
+    return this.monetizationService.handleFlutterwaveWebhook(
+      rawBody,
+      signature,
+      verifHash,
+    );
   }
 }

@@ -337,11 +337,15 @@ const CATALOG_CACHE_TTL_SECONDS = 60 * 60;
 @Injectable()
 export class MonetizationService implements OnModuleInit {
   private readonly cryptomusApiBaseUrl = "https://api.cryptomus.com/v1";
-  private readonly flutterwaveApiBaseUrl = "https://api.flutterwave.com/v3";
+  private readonly flutterwaveApiBaseUrl = "https://api.flutterwave.com";
+  private readonly flutterwaveTokenUrl =
+    "https://idp.flutterwave.com/realms/flutterwave/protocol/openid-connect/token";
   private readonly paystackApiBaseUrl = "https://api.paystack.co";
   private readonly logger = new Logger(MonetizationService.name);
   private catalogBootstrapped = false;
   private catalogBootstrapPromise: Promise<void> | null = null;
+  private flutterwaveAccessToken: string | null = null;
+  private flutterwaveTokenExpiresAt: number = 0;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -1364,7 +1368,11 @@ export class MonetizationService implements OnModuleInit {
     };
   }
 
-  async handleFlutterwaveWebhook(rawBody: Buffer | undefined, verifHash?: string) {
+  async handleFlutterwaveWebhook(
+    rawBody: Buffer | undefined,
+    signature?: string,
+    verifHash?: string,
+  ) {
     if (!rawBody) {
       throw new BadRequestException("Flutterwave webhook raw body is required.");
     }
@@ -1375,8 +1383,22 @@ export class MonetizationService implements OnModuleInit {
       );
     }
 
-    if (!verifHash || verifHash !== env.flutterwaveWebhookSecret) {
-      throw new BadRequestException("Invalid Flutterwave webhook signature.");
+    // Primary: HMAC-SHA256 signature verification via flutterwave-signature header
+    if (signature) {
+      const expectedSignature = createHmac("sha256", env.flutterwaveWebhookSecret)
+        .update(rawBody)
+        .digest("hex");
+
+      if (!this.constantTimeEquals(signature.trim(), expectedSignature)) {
+        throw new BadRequestException("Invalid Flutterwave webhook signature.");
+      }
+    } else if (verifHash) {
+      // Fallback: simple verif-hash comparison
+      if (verifHash !== env.flutterwaveWebhookSecret) {
+        throw new BadRequestException("Invalid Flutterwave webhook signature.");
+      }
+    } else {
+      throw new BadRequestException("Missing Flutterwave webhook signature header.");
     }
 
     let payload: FlutterwaveWebhookPayload;
@@ -1759,21 +1781,64 @@ export class MonetizationService implements OnModuleInit {
 
   // --- Flutterwave Integration ---
 
+  private hasFlutterwaveConfiguration() {
+    return Boolean(env.flutterwaveClientId && env.flutterwaveClientSecret);
+  }
+
+  private async getFlutterwaveAccessToken(): Promise<string> {
+    if (!env.flutterwaveClientId || !env.flutterwaveClientSecret) {
+      throw new ServiceUnavailableException(
+        "FLUTTERWAVE_CLIENT_ID and FLUTTERWAVE_CLIENT_SECRET must be configured.",
+      );
+    }
+
+    if (this.flutterwaveAccessToken && Date.now() < this.flutterwaveTokenExpiresAt) {
+      return this.flutterwaveAccessToken;
+    }
+
+    const response = await fetch(this.flutterwaveTokenUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: env.flutterwaveClientId,
+        client_secret: env.flutterwaveClientSecret,
+        grant_type: "client_credentials",
+      }).toString(),
+    });
+
+    const body = (await response.json().catch(() => null)) as {
+      access_token?: string;
+      expires_in?: number;
+      error?: string;
+      error_description?: string;
+    } | null;
+
+    if (!response.ok || !body?.access_token) {
+      const message =
+        body?.error_description ?? body?.error ?? "Failed to obtain Flutterwave access token.";
+      throw new ServiceUnavailableException(message);
+    }
+
+    this.flutterwaveAccessToken = body.access_token;
+    const expiresIn = body.expires_in ?? 300;
+    this.flutterwaveTokenExpiresAt = Date.now() + (expiresIn - 30) * 1000;
+
+    return this.flutterwaveAccessToken;
+  }
+
   private async flutterwaveRequest<T>(
     path: string,
     init: RequestInit = {},
+    traceId?: string,
   ): Promise<T> {
-    if (!env.flutterwaveSecretKey) {
-      throw new ServiceUnavailableException(
-        "FLUTTERWAVE_SECRET_KEY is not configured.",
-      );
-    }
+    const accessToken = await this.getFlutterwaveAccessToken();
 
     const response = await fetch(`${this.flutterwaveApiBaseUrl}${path}`, {
       ...init,
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${env.flutterwaveSecretKey}`,
+        Authorization: `Bearer ${accessToken}`,
+        ...(traceId ? { "X-Trace-Id": traceId } : {}),
         ...(init.headers ?? {}),
       },
     });
@@ -3955,7 +4020,7 @@ export class MonetizationService implements OnModuleInit {
   }
 
   private getConfiguredCheckoutProvider(): CheckoutProvider {
-    if (env.flutterwaveSecretKey) {
+    if (this.hasFlutterwaveConfiguration()) {
       return PAYMENT_PROVIDER.FLUTTERWAVE;
     }
 
