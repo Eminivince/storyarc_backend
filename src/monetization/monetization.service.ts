@@ -168,13 +168,34 @@ type CryptomusApiResponse<T> = {
 
 const PAYMENT_PROVIDER = {
   CRYPTOMUS: "CRYPTOMUS",
+  FLUTTERWAVE: "FLUTTERWAVE",
   PAYSTACK: "PAYSTACK",
 } as const;
 
 type CheckoutProvider =
   (typeof PAYMENT_PROVIDER)[keyof typeof PAYMENT_PROVIDER];
 
-type CheckoutProviderValue = "cryptomus" | "paystack";
+type CheckoutProviderValue = "cryptomus" | "flutterwave" | "paystack";
+
+type FlutterwaveTransaction = {
+  id?: number | null;
+  tx_ref?: string | null;
+  flw_ref?: string | null;
+  amount?: number | null;
+  currency?: string | null;
+  status?: string | null;
+  payment_plan?: number | string | null;
+  customer?: {
+    email?: string | null;
+  } | null;
+  meta?: Record<string, unknown> | null;
+  created_at?: string | null;
+};
+
+type FlutterwaveWebhookPayload = {
+  event?: string;
+  data?: FlutterwaveTransaction;
+};
 
 type MonetizationCatalogResponse = {
   checkoutProvider: CheckoutProviderValue;
@@ -287,6 +308,16 @@ const PAYSTACK_MINIMUM_AMOUNT_BY_CURRENCY: Record<string, number> = {
   ZAR: 100,
 };
 
+const FLUTTERWAVE_MINIMUM_AMOUNT_BY_CURRENCY: Record<string, number> = {
+  GBP: 100,
+  GHS: 100,
+  KES: 100,
+  NGN: 10000,
+  USD: 100,
+  ZAR: 100,
+  EUR: 100,
+};
+
 const CRYPTOMUS_SUCCESS_STATUSES = new Set(["paid", "paid_over"]);
 const CRYPTOMUS_FAILED_STATUSES = new Set([
   "cancel",
@@ -306,6 +337,7 @@ const CATALOG_CACHE_TTL_SECONDS = 60 * 60;
 @Injectable()
 export class MonetizationService implements OnModuleInit {
   private readonly cryptomusApiBaseUrl = "https://api.cryptomus.com/v1";
+  private readonly flutterwaveApiBaseUrl = "https://api.flutterwave.com/v3";
   private readonly paystackApiBaseUrl = "https://api.paystack.co";
   private readonly logger = new Logger(MonetizationService.name);
   private catalogBootstrapped = false;
@@ -518,6 +550,17 @@ export class MonetizationService implements OnModuleInit {
       checkoutProvider,
     );
 
+    if (checkoutProvider === PAYMENT_PROVIDER.FLUTTERWAVE) {
+      return this.createFlutterwaveCheckoutSession({
+        frontendAppUrl,
+        input,
+        product,
+        purchase,
+        userId,
+        userEmail: user.email,
+      });
+    }
+
     if (checkoutProvider === PAYMENT_PROVIDER.CRYPTOMUS) {
       return this.createCryptomusCheckoutSession({
         frontendAppUrl,
@@ -601,7 +644,17 @@ export class MonetizationService implements OnModuleInit {
       throw new BadRequestException("This checkout reference does not belong to you.");
     }
 
-    if (this.getPurchaseProvider(referencedPurchase) === PAYMENT_PROVIDER.CRYPTOMUS) {
+    const purchaseProvider = this.getPurchaseProvider(referencedPurchase);
+
+    if (purchaseProvider === PAYMENT_PROVIDER.FLUTTERWAVE) {
+      return this.confirmFlutterwaveCheckoutSession(
+        userId,
+        input.reference,
+        referencedPurchase,
+      );
+    }
+
+    if (purchaseProvider === PAYMENT_PROVIDER.CRYPTOMUS) {
       const invoice = await this.verifyCryptomusPayment(input.reference);
       const purchase =
         referencedPurchase ??
@@ -1311,6 +1364,74 @@ export class MonetizationService implements OnModuleInit {
     };
   }
 
+  async handleFlutterwaveWebhook(rawBody: Buffer | undefined, verifHash?: string) {
+    if (!rawBody) {
+      throw new BadRequestException("Flutterwave webhook raw body is required.");
+    }
+
+    if (!env.flutterwaveWebhookSecret) {
+      throw new ServiceUnavailableException(
+        "FLUTTERWAVE_WEBHOOK_SECRET is not configured.",
+      );
+    }
+
+    if (!verifHash || verifHash !== env.flutterwaveWebhookSecret) {
+      throw new BadRequestException("Invalid Flutterwave webhook signature.");
+    }
+
+    let payload: FlutterwaveWebhookPayload;
+
+    try {
+      payload = JSON.parse(rawBody.toString("utf8")) as FlutterwaveWebhookPayload;
+    } catch {
+      throw new BadRequestException("Flutterwave webhook body is not valid JSON.");
+    }
+
+    const eventType = typeof payload.event === "string" ? payload.event.trim() : "";
+
+    if (!eventType) {
+      throw new BadRequestException("Flutterwave webhook event type is missing.");
+    }
+
+    const data = payload.data;
+    const eventKey = `${eventType}:${data?.id ?? data?.tx_ref ?? "unknown"}`;
+
+    const existingEvent = await this.prisma.flutterwaveWebhookEvent.findUnique({
+      where: { eventKey },
+    });
+
+    if (existingEvent) {
+      return { duplicate: true, received: true };
+    }
+
+    switch (eventType) {
+      case "charge.completed":
+        if (data && String(data.status ?? "").toLowerCase() === "successful") {
+          await this.processFlutterwaveTransaction(data);
+        }
+        break;
+      case "subscription.cancelled":
+        if (data) {
+          await this.handleFlutterwaveSubscriptionCancelled(data);
+        }
+        break;
+      default:
+        break;
+    }
+
+    try {
+      await this.prisma.flutterwaveWebhookEvent.create({
+        data: { eventKey, eventType, processedAt: new Date() },
+      });
+    } catch (error) {
+      if (!this.isUniqueConstraintError(error)) {
+        throw error;
+      }
+    }
+
+    return { received: true };
+  }
+
   async getChapterAccess(
     userId: string,
     input: { chapterId: string; storyId: string },
@@ -1521,10 +1642,23 @@ export class MonetizationService implements OnModuleInit {
       input.billing === "annual"
         ? plan.paystackAnnualPlanCode
         : plan.paystackMonthlyPlanCode;
+    const flutterwavePlanId =
+      input.billing === "annual"
+        ? plan.flutterwaveAnnualPlanId
+        : plan.flutterwaveMonthlyPlanId;
     const amountCents =
       input.billing === "annual" && plan.yearlyPriceCents
         ? plan.yearlyPriceCents
         : plan.monthlyPriceCents;
+
+    if (
+      paymentProvider === PAYMENT_PROVIDER.FLUTTERWAVE &&
+      !flutterwavePlanId
+    ) {
+      throw new ServiceUnavailableException(
+        `Flutterwave plan ID is not configured for plan ${plan.code} (${input.billing}).`,
+      );
+    }
 
     if (
       paymentProvider === PAYMENT_PROVIDER.PAYSTACK &&
@@ -1544,6 +1678,7 @@ export class MonetizationService implements OnModuleInit {
 
     return {
       amountCents,
+      flutterwavePlanId,
       paystackPlanCode,
       planId: plan.id,
     };
@@ -1622,6 +1757,533 @@ export class MonetizationService implements OnModuleInit {
     };
   }
 
+  // --- Flutterwave Integration ---
+
+  private async flutterwaveRequest<T>(
+    path: string,
+    init: RequestInit = {},
+  ): Promise<T> {
+    if (!env.flutterwaveSecretKey) {
+      throw new ServiceUnavailableException(
+        "FLUTTERWAVE_SECRET_KEY is not configured.",
+      );
+    }
+
+    const response = await fetch(`${this.flutterwaveApiBaseUrl}${path}`, {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${env.flutterwaveSecretKey}`,
+        ...(init.headers ?? {}),
+      },
+    });
+    const body = (await response.json().catch(() => null)) as
+      | { message?: string; status?: string; data?: unknown }
+      | null;
+
+    if (!response.ok || body?.status !== "success") {
+      const message =
+        body?.message?.trim() ||
+        `Flutterwave request to ${path} failed with status ${response.status}.`;
+
+      if (response.status >= 400 && response.status < 500) {
+        throw new BadRequestException(message);
+      }
+
+      throw new ServiceUnavailableException(message);
+    }
+
+    return body as T;
+  }
+
+  private async createFlutterwaveCheckoutSession({
+    frontendAppUrl,
+    input,
+    product,
+    purchase,
+    userId,
+    userEmail,
+  }: {
+    frontendAppUrl: string;
+    input: CreateCheckoutSessionInput;
+    product: { amountCents: number; flutterwavePlanId?: string | null };
+    purchase: PurchaseWithRelations;
+    userId: string;
+    userEmail: string;
+  }) {
+    const txRef =
+      purchase.flutterwaveTxRef ?? `fw-${purchase.id}-${Date.now()}`;
+
+    const successUrl = new URL("/checkout/status", frontendAppUrl);
+    successUrl.searchParams.set("billing", input.billing);
+    successUrl.searchParams.set("kind", input.kind);
+    successUrl.searchParams.set("productId", input.productId);
+    successUrl.searchParams.set("reference", txRef);
+    successUrl.searchParams.set("returnTo", input.returnTo);
+
+    const flutterwaveBody: Record<string, unknown> = {
+      tx_ref: txRef,
+      amount: product.amountCents / 100,
+      currency: this.getCheckoutCurrency(),
+      redirect_url: successUrl.toString(),
+      customer: { email: userEmail },
+      meta: {
+        purchaseId: purchase.id,
+        userId,
+        kind: input.kind,
+        productId: input.productId,
+        billingInterval: input.billing,
+        returnTo: input.returnTo,
+      },
+    };
+
+    if (input.kind === "plan" && product.flutterwavePlanId) {
+      flutterwaveBody.payment_plan = Number(product.flutterwavePlanId) || product.flutterwavePlanId;
+    }
+
+    const response = await this.flutterwaveRequest<{
+      data: { link: string };
+    }>("/payments", {
+      method: "POST",
+      body: JSON.stringify(flutterwaveBody),
+    });
+
+    const checkoutUrl = response.data?.link?.trim() || null;
+
+    await this.prisma.purchase.update({
+      where: { id: purchase.id },
+      data: {
+        paymentProvider: PAYMENT_PROVIDER.FLUTTERWAVE,
+        paymentReference: txRef,
+        flutterwaveTxRef: txRef,
+      },
+    });
+
+    if (!checkoutUrl) {
+      throw new ServiceUnavailableException(
+        "Flutterwave checkout URL was not returned.",
+      );
+    }
+
+    return {
+      checkoutUrl,
+      purchaseId: purchase.id,
+      reference: txRef,
+    };
+  }
+
+  private async confirmFlutterwaveCheckoutSession(
+    userId: string,
+    reference: string,
+    existingPurchase: PurchaseWithRelations | null,
+  ) {
+    const txLookup = await this.flutterwaveRequest<{
+      data: FlutterwaveTransaction[];
+    }>(`/transactions?tx_ref=${encodeURIComponent(reference)}`);
+
+    const flwTransaction = Array.isArray(txLookup.data) ? txLookup.data[0] : null;
+
+    if (!flwTransaction || !flwTransaction.id) {
+      return {
+        checkoutStatus: "pending" as const,
+        message: this.getCheckoutStatusMessage("pending"),
+        reason: "verification-delay",
+        status: await this.getStatus(userId),
+      };
+    }
+
+    const verifyResponse = await this.flutterwaveRequest<{
+      data: FlutterwaveTransaction;
+    }>(`/transactions/${flwTransaction.id}/verify`);
+
+    const verifiedTx = verifyResponse.data;
+    const purchase =
+      existingPurchase ??
+      (await this.findPurchaseForCheckoutReference(reference));
+
+    if (!purchase || purchase.userId !== userId) {
+      throw new BadRequestException(
+        "This checkout reference does not belong to you.",
+      );
+    }
+
+    const flwStatus = String(verifiedTx?.status ?? "").toLowerCase();
+    const checkoutStatus = this.mapFlutterwaveCheckoutStatus(flwStatus);
+
+    if (checkoutStatus === "success") {
+      this.assertFlutterwaveTransactionMatchesPurchase(verifiedTx, purchase);
+      await this.processFlutterwaveTransaction(verifiedTx, purchase);
+      this.emitWalletUpdate(userId);
+    } else {
+      await this.syncNonSuccessfulFlutterwavePurchase(
+        purchase,
+        verifiedTx,
+        checkoutStatus,
+      );
+    }
+
+    return {
+      checkoutStatus,
+      message: this.getCheckoutStatusMessage(checkoutStatus),
+      status: await this.getStatus(userId),
+    };
+  }
+
+  private async processFlutterwaveTransaction(
+    transaction: FlutterwaveTransaction,
+    purchase?: PurchaseWithRelations | null,
+  ) {
+    const resolvedPurchase =
+      purchase ??
+      (await this.findPurchaseForCheckoutReference(
+        String(transaction.tx_ref ?? ""),
+      ));
+
+    if (!resolvedPurchase) {
+      return;
+    }
+
+    this.assertFlutterwaveTransactionMatchesPurchase(transaction, resolvedPurchase);
+
+    if (resolvedPurchase.kind === PurchaseKind.COINS) {
+      await this.completeFlutterwaveCoinPurchase(resolvedPurchase, transaction);
+      await this.trySendPurchaseReceipt(resolvedPurchase);
+
+      try {
+        const amountCents = transaction.amount
+          ? Math.floor(Number(transaction.amount) * 100)
+          : 0;
+
+        if (amountCents > 0) {
+          await this.referralService.recordReferralCommission(
+            resolvedPurchase.userId,
+            amountCents,
+            resolvedPurchase.id,
+          );
+        }
+      } catch {
+        this.logger.warn(
+          `Referral commission recording failed for purchase ${resolvedPurchase.id}`,
+        );
+      }
+
+      return;
+    }
+
+    await this.completeFlutterwaveSubscriptionPurchase(resolvedPurchase, transaction);
+    await this.trySendPurchaseReceipt(resolvedPurchase);
+  }
+
+  private async completeFlutterwaveCoinPurchase(
+    purchase: PurchaseWithRelations,
+    transaction: FlutterwaveTransaction,
+  ) {
+    const coinPackage = purchase.coinPackage;
+
+    if (!coinPackage) {
+      throw new BadRequestException("Coin purchase is missing its package.");
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      const currentPurchase = await tx.purchase.findUnique({
+        where: { id: purchase.id },
+      });
+
+      if (!currentPurchase) {
+        throw new NotFoundException("Purchase not found.");
+      }
+
+      const existingLedgerEntry = await tx.walletLedgerEntry.findUnique({
+        where: {
+          idempotencyKey: `purchase:${purchase.id}:coins-credit`,
+        },
+      });
+
+      if (!existingLedgerEntry) {
+        const wallet = await this.getOrCreateWalletTx(tx, purchase.userId);
+        const coinsToCredit = coinPackage.coins + coinPackage.bonusCoins;
+        const nextBalance = wallet.balanceCoins + coinsToCredit;
+
+        await tx.wallet.update({
+          where: { id: wallet.id },
+          data: { balanceCoins: nextBalance },
+        });
+
+        await tx.walletLedgerEntry.create({
+          data: {
+            balanceAfter: nextBalance,
+            deltaCoins: coinsToCredit,
+            entryType: WalletLedgerEntryType.CREDIT,
+            idempotencyKey: `purchase:${purchase.id}:coins-credit`,
+            purchase: { connect: { id: purchase.id } },
+            reason: WalletLedgerReason.COIN_PURCHASE,
+            user: { connect: { id: purchase.userId } },
+            wallet: { connect: { id: wallet.id } },
+          },
+        });
+      }
+
+      await tx.purchase.update({
+        where: { id: purchase.id },
+        data: {
+          completedAt:
+            currentPurchase.completedAt ??
+            this.parseDateValue(transaction.created_at) ??
+            new Date(),
+          paymentProvider: PAYMENT_PROVIDER.FLUTTERWAVE,
+          paymentReference:
+            transaction.tx_ref ?? currentPurchase.paymentReference,
+          paymentSessionId:
+            transaction.id ? String(transaction.id) : currentPurchase.paymentSessionId,
+          flutterwaveTxRef:
+            transaction.tx_ref ?? currentPurchase.flutterwaveTxRef,
+          flutterwaveTransactionId:
+            transaction.id ? String(transaction.id) : currentPurchase.flutterwaveTransactionId,
+          flutterwaveFlwRef:
+            transaction.flw_ref ?? currentPurchase.flutterwaveFlwRef,
+          status: PurchaseStatus.COMPLETED,
+        },
+      });
+    });
+  }
+
+  private async completeFlutterwaveSubscriptionPurchase(
+    purchase: PurchaseWithRelations,
+    transaction: FlutterwaveTransaction,
+  ) {
+    const plan = purchase.plan;
+
+    if (!plan) {
+      throw new BadRequestException("Subscription purchase is missing its plan.");
+    }
+
+    const currentPeriodStart =
+      this.parseDateValue(transaction.created_at) ?? new Date();
+    const currentPeriodEnd = this.addBillingInterval(
+      currentPeriodStart,
+      purchase.billingInterval ?? BillingInterval.MONTHLY,
+    );
+
+    const flutterwavePaymentPlanId = transaction.payment_plan
+      ? String(transaction.payment_plan)
+      : null;
+
+    await this.prisma.$transaction(async (tx) => {
+      const currentPurchase = await tx.purchase.findUnique({
+        where: { id: purchase.id },
+      });
+
+      if (!currentPurchase) {
+        throw new NotFoundException("Purchase not found.");
+      }
+
+      await tx.purchase.update({
+        where: { id: purchase.id },
+        data: {
+          completedAt: currentPurchase.completedAt ?? currentPeriodStart,
+          paymentProvider: PAYMENT_PROVIDER.FLUTTERWAVE,
+          paymentReference:
+            transaction.tx_ref ?? currentPurchase.paymentReference,
+          paymentSessionId:
+            transaction.id ? String(transaction.id) : currentPurchase.paymentSessionId,
+          flutterwaveTxRef:
+            transaction.tx_ref ?? currentPurchase.flutterwaveTxRef,
+          flutterwaveTransactionId:
+            transaction.id ? String(transaction.id) : currentPurchase.flutterwaveTransactionId,
+          flutterwaveFlwRef:
+            transaction.flw_ref ?? currentPurchase.flutterwaveFlwRef,
+          status: PurchaseStatus.COMPLETED,
+        },
+      });
+
+      const existingSubscription = await tx.subscription.findFirst({
+        where: { userId: purchase.userId },
+        orderBy: { updatedAt: "desc" },
+      });
+
+      if (existingSubscription) {
+        await tx.subscription.update({
+          where: { id: existingSubscription.id },
+          data: {
+            billingInterval:
+              purchase.billingInterval ?? BillingInterval.MONTHLY,
+            cancelAtPeriodEnd: false,
+            currentPeriodEnd: currentPeriodEnd ?? existingSubscription.currentPeriodEnd,
+            currentPeriodStart:
+              currentPeriodStart ?? existingSubscription.currentPeriodStart,
+            planId: plan.id,
+            status: SubscriptionStatus.ACTIVE,
+            flutterwavePaymentPlanId:
+              flutterwavePaymentPlanId ?? existingSubscription.flutterwavePaymentPlanId,
+          },
+        });
+      } else {
+        await tx.subscription.create({
+          data: {
+            billingInterval:
+              purchase.billingInterval ?? BillingInterval.MONTHLY,
+            cancelAtPeriodEnd: false,
+            currentPeriodEnd,
+            currentPeriodStart,
+            plan: { connect: { id: plan.id } },
+            status: SubscriptionStatus.ACTIVE,
+            user: { connect: { id: purchase.userId } },
+            flutterwavePaymentPlanId,
+          },
+        });
+      }
+
+      if (plan.monthlyCoinGrant > 0) {
+        const existingLedgerEntry = await tx.walletLedgerEntry.findUnique({
+          where: {
+            idempotencyKey: `purchase:${purchase.id}:subscription-grant`,
+          },
+        });
+
+        if (!existingLedgerEntry) {
+          const wallet = await this.getOrCreateWalletTx(tx, purchase.userId);
+          const nextBalance = wallet.balanceCoins + plan.monthlyCoinGrant;
+
+          await tx.wallet.update({
+            where: { id: wallet.id },
+            data: { balanceCoins: nextBalance },
+          });
+
+          await tx.walletLedgerEntry.create({
+            data: {
+              balanceAfter: nextBalance,
+              deltaCoins: plan.monthlyCoinGrant,
+              entryType: WalletLedgerEntryType.CREDIT,
+              idempotencyKey: `purchase:${purchase.id}:subscription-grant`,
+              note: `Subscription grant: ${plan.name}`,
+              purchase: { connect: { id: purchase.id } },
+              reason: WalletLedgerReason.SUBSCRIPTION_GRANT,
+              user: { connect: { id: purchase.userId } },
+              wallet: { connect: { id: wallet.id } },
+            },
+          });
+        }
+      }
+    });
+  }
+
+  private async syncNonSuccessfulFlutterwavePurchase(
+    purchase: PurchaseWithRelations,
+    transaction: FlutterwaveTransaction,
+    checkoutStatus: "failed" | "pending",
+  ) {
+    const nextStatus =
+      checkoutStatus === "pending" ? PurchaseStatus.PENDING : PurchaseStatus.FAILED;
+
+    await this.prisma.purchase.update({
+      where: { id: purchase.id },
+      data: {
+        failedAt: checkoutStatus === "failed" ? new Date() : null,
+        paymentProvider: PAYMENT_PROVIDER.FLUTTERWAVE,
+        paymentReference:
+          transaction.tx_ref ?? purchase.paymentReference,
+        paymentSessionId:
+          transaction.id ? String(transaction.id) : purchase.paymentSessionId,
+        flutterwaveTxRef:
+          transaction.tx_ref ?? purchase.flutterwaveTxRef,
+        flutterwaveTransactionId:
+          transaction.id ? String(transaction.id) : purchase.flutterwaveTransactionId,
+        status: nextStatus,
+      },
+    });
+  }
+
+  private async handleFlutterwaveSubscriptionCancelled(
+    data: FlutterwaveTransaction,
+  ) {
+    const txRef = data.tx_ref;
+
+    if (!txRef) {
+      return;
+    }
+
+    const purchase = await this.findPurchaseForCheckoutReference(txRef);
+
+    if (!purchase) {
+      return;
+    }
+
+    const subscription = await this.prisma.subscription.findFirst({
+      where: { userId: purchase.userId },
+      orderBy: { updatedAt: "desc" },
+    });
+
+    if (subscription) {
+      await this.prisma.subscription.update({
+        where: { id: subscription.id },
+        data: {
+          cancelAtPeriodEnd: true,
+          status: SubscriptionStatus.CANCELED,
+        },
+      });
+    }
+  }
+
+  private mapFlutterwaveCheckoutStatus(flwStatus: string) {
+    switch (flwStatus) {
+      case "successful":
+        return "success" as const;
+      case "failed":
+      case "cancelled":
+        return "failed" as const;
+      default:
+        return "pending" as const;
+    }
+  }
+
+  private assertFlutterwaveTransactionMatchesPurchase(
+    transaction: FlutterwaveTransaction,
+    purchase: Pick<PurchaseWithRelations, "amountCents" | "currency" | "flutterwaveTxRef">,
+  ) {
+    const amount = transaction.amount ?? null;
+    const currency = transaction.currency?.toUpperCase() ?? null;
+
+    if (amount !== null) {
+      const expectedAmount = purchase.amountCents / 100;
+
+      if (Math.abs(amount - expectedAmount) > 0.01) {
+        throw new BadRequestException(
+          "Verified Flutterwave amount does not match the purchase.",
+        );
+      }
+    }
+
+    if (currency && currency !== purchase.currency.toUpperCase()) {
+      throw new BadRequestException(
+        "Verified Flutterwave currency does not match the purchase.",
+      );
+    }
+  }
+
+  private assertSupportedFlutterwaveAmount(
+    amountCents: number,
+    input: Pick<CreateCheckoutSessionInput, "kind" | "productId">,
+  ) {
+    const currency = env.flutterwaveCurrency.toUpperCase();
+    const minimumAmount =
+      FLUTTERWAVE_MINIMUM_AMOUNT_BY_CURRENCY[currency] ?? 0;
+
+    if (amountCents >= minimumAmount) {
+      return;
+    }
+
+    throw new BadRequestException(
+      `${input.kind === "coins" ? "Coin package" : "Subscription"} ${input.productId} is priced below Flutterwave's minimum for ${currency}. Minimum: ${minimumAmount}. Current: ${amountCents}.`,
+    );
+  }
+
+  private canProcessFlutterwaveAmount(amountCents: number) {
+    return (
+      amountCents >=
+      (FLUTTERWAVE_MINIMUM_AMOUNT_BY_CURRENCY[env.flutterwaveCurrency.toUpperCase()] ?? 0)
+    );
+  }
+
   private async ensureCatalogBootstrapped() {
     if (this.catalogBootstrapped) {
       return;
@@ -1659,6 +2321,12 @@ export class MonetizationService implements OnModuleInit {
         arcaneMonthlyPlanCode: env.paystackPlanArcaneMonthly ?? null,
         silverAnnualPlanCode: env.paystackPlanSilverAnnual ?? null,
         silverMonthlyPlanCode: env.paystackPlanSilverMonthly ?? null,
+      },
+      flutterwaveCodes: {
+        arcaneAnnualPlanId: env.flutterwavePlanArcaneAnnual ?? null,
+        arcaneMonthlyPlanId: env.flutterwavePlanArcaneMonthly ?? null,
+        silverAnnualPlanId: env.flutterwavePlanSilverAnnual ?? null,
+        silverMonthlyPlanId: env.flutterwavePlanSilverMonthly ?? null,
       },
       currency: this.getCheckoutCurrency(),
     })
@@ -3287,6 +3955,10 @@ export class MonetizationService implements OnModuleInit {
   }
 
   private getConfiguredCheckoutProvider(): CheckoutProvider {
+    if (env.flutterwaveSecretKey) {
+      return PAYMENT_PROVIDER.FLUTTERWAVE;
+    }
+
     if (this.hasCryptomusConfiguration()) {
       return PAYMENT_PROVIDER.CRYPTOMUS;
     }
@@ -3296,18 +3968,30 @@ export class MonetizationService implements OnModuleInit {
     }
 
     throw new ServiceUnavailableException(
-      "No checkout provider is configured. Set CRYPTOMUS_* or PAYSTACK_* credentials.",
+      "No checkout provider is configured. Set FLUTTERWAVE_SECRET_KEY.",
     );
   }
 
   private getCheckoutProviderValue(): CheckoutProviderValue {
-    return this.getConfiguredCheckoutProvider() === PAYMENT_PROVIDER.CRYPTOMUS
+    const provider = this.getConfiguredCheckoutProvider();
+
+    if (provider === PAYMENT_PROVIDER.FLUTTERWAVE) {
+      return "flutterwave";
+    }
+
+    return provider === PAYMENT_PROVIDER.CRYPTOMUS
       ? "cryptomus"
       : "paystack";
   }
 
   private getCheckoutCurrency() {
-    return this.getConfiguredCheckoutProvider() === PAYMENT_PROVIDER.CRYPTOMUS
+    const provider = this.getConfiguredCheckoutProvider();
+
+    if (provider === PAYMENT_PROVIDER.FLUTTERWAVE) {
+      return env.flutterwaveCurrency;
+    }
+
+    return provider === PAYMENT_PROVIDER.CRYPTOMUS
       ? env.cryptomusCurrency
       : env.paystackCurrency;
   }
@@ -3321,6 +4005,10 @@ export class MonetizationService implements OnModuleInit {
     input: Pick<CreateCheckoutSessionInput, "kind" | "productId">,
     paymentProvider: CheckoutProvider,
   ) {
+    if (paymentProvider === PAYMENT_PROVIDER.FLUTTERWAVE) {
+      return this.assertSupportedFlutterwaveAmount(amountCents, input);
+    }
+
     if (paymentProvider === PAYMENT_PROVIDER.CRYPTOMUS) {
       if (amountCents > 0) {
         return;
@@ -3335,7 +4023,13 @@ export class MonetizationService implements OnModuleInit {
   }
 
   private canProcessCheckoutAmount(amountCents: number) {
-    if (this.getConfiguredCheckoutProvider() === PAYMENT_PROVIDER.CRYPTOMUS) {
+    const provider = this.getConfiguredCheckoutProvider();
+
+    if (provider === PAYMENT_PROVIDER.FLUTTERWAVE) {
+      return this.canProcessFlutterwaveAmount(amountCents);
+    }
+
+    if (provider === PAYMENT_PROVIDER.CRYPTOMUS) {
       return amountCents > 0;
     }
 
@@ -3345,7 +4039,7 @@ export class MonetizationService implements OnModuleInit {
   private getPurchaseProvider(
     purchase?: Pick<PurchaseWithRelations, "paymentProvider"> | null,
   ) {
-    return purchase?.paymentProvider ?? PAYMENT_PROVIDER.PAYSTACK;
+    return purchase?.paymentProvider ?? this.getConfiguredCheckoutProvider();
   }
 
   private formatAmountCents(amountCents: number) {
@@ -3633,6 +4327,8 @@ export class MonetizationService implements OnModuleInit {
           { paymentSessionId: trimmedReference },
           { paystackReference: trimmedReference },
           { paystackTransactionId: trimmedReference },
+          { flutterwaveTxRef: trimmedReference },
+          { flutterwaveTransactionId: trimmedReference },
         ],
       },
       include: {
@@ -4373,8 +5069,19 @@ export class MonetizationService implements OnModuleInit {
       return { message: "Subscription is already set to cancel at period end." };
     }
 
-    // If Paystack subscription, disable it via API
-    if (subscription.paystackSubscriptionCode) {
+    // Cancel via the relevant provider API
+    if (subscription.flutterwaveSubscriptionId) {
+      try {
+        await this.flutterwaveRequest(
+          `/subscriptions/${subscription.flutterwaveSubscriptionId}/cancel`,
+          { method: "PUT" },
+        );
+      } catch (error) {
+        this.logger.error(
+          `Failed to cancel Flutterwave subscription ${subscription.flutterwaveSubscriptionId}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    } else if (subscription.paystackSubscriptionCode) {
       try {
         await fetch("https://api.paystack.co/subscription/disable", {
           method: "POST",

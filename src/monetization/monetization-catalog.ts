@@ -11,6 +11,13 @@ type PlanCodes = {
   silverMonthlyPlanCode?: string | null;
 };
 
+type FlutterwavePlanCodes = {
+  arcaneAnnualPlanId?: string | null;
+  arcaneMonthlyPlanId?: string | null;
+  silverAnnualPlanId?: string | null;
+  silverMonthlyPlanId?: string | null;
+};
+
 type CatalogCurrency = "GHS" | "KES" | "NGN" | "USD" | "ZAR";
 type PlanPriceKey = "arcane" | "silver";
 type CoinPackagePriceKey = "bag" | "box" | "chest" | "pouch" | "vault";
@@ -225,9 +232,11 @@ function getPriceProfile(currency: string) {
 
 export function buildDefaultPlans({
   codes = {},
+  flutterwaveCodes = {},
   currency = "USD",
 }: {
   codes?: PlanCodes;
+  flutterwaveCodes?: FlutterwavePlanCodes;
   currency?: string;
 } = {}) {
   const pricing = getPriceProfile(currency);
@@ -238,6 +247,8 @@ export function buildDefaultPlans({
       monthlyPriceCents: pricing.plans.silver.monthlyPriceCents,
       paystackAnnualPlanCode: codes.silverAnnualPlanCode ?? null,
       paystackMonthlyPlanCode: codes.silverMonthlyPlanCode ?? null,
+      flutterwaveMonthlyPlanId: flutterwaveCodes.silverMonthlyPlanId ?? null,
+      flutterwaveAnnualPlanId: flutterwaveCodes.silverAnnualPlanId ?? null,
       yearlyPriceCents: pricing.plans.silver.yearlyPriceCents,
     },
     {
@@ -245,6 +256,8 @@ export function buildDefaultPlans({
       monthlyPriceCents: pricing.plans.arcane.monthlyPriceCents,
       paystackAnnualPlanCode: codes.arcaneAnnualPlanCode ?? null,
       paystackMonthlyPlanCode: codes.arcaneMonthlyPlanCode ?? null,
+      flutterwaveMonthlyPlanId: flutterwaveCodes.arcaneMonthlyPlanId ?? null,
+      flutterwaveAnnualPlanId: flutterwaveCodes.arcaneAnnualPlanId ?? null,
       yearlyPriceCents: pricing.plans.arcane.yearlyPriceCents,
     },
   ] as const;
@@ -289,13 +302,15 @@ export async function ensureDefaultMonetizationCatalog(
   db: MonetizationCatalogDb,
   {
     codes = {},
+    flutterwaveCodes = {},
     currency = "USD",
   }: {
     codes?: PlanCodes;
+    flutterwaveCodes?: FlutterwavePlanCodes;
     currency?: string;
   } = {},
 ) {
-  const plans = buildDefaultPlans({ codes, currency });
+  const plans = buildDefaultPlans({ codes, flutterwaveCodes, currency });
   const coinPackages = buildDefaultCoinPackages(currency);
 
   for (const plan of plans) {
@@ -320,6 +335,8 @@ export async function ensureDefaultMonetizationCatalog(
           name: plan.name,
           paystackAnnualPlanCode: plan.paystackAnnualPlanCode,
           paystackMonthlyPlanCode: plan.paystackMonthlyPlanCode,
+          flutterwaveMonthlyPlanId: plan.flutterwaveMonthlyPlanId,
+          flutterwaveAnnualPlanId: plan.flutterwaveAnnualPlanId,
           yearlyPriceCents: plan.yearlyPriceCents,
         },
       });

@@ -184,3 +184,17 @@ export class CryptomusWebhookController {
     return this.monetizationService.handleCryptomusWebhook(rawBody);
   }
 }
+
+@Controller("monetization/flutterwave")
+export class FlutterwaveWebhookController {
+  constructor(private readonly monetizationService: MonetizationService) {}
+
+  @SkipThrottle()
+  @Post("webhook")
+  async handleWebhook(
+    @Headers("verif-hash") verifHash: string | undefined,
+    @RawBody() rawBody: Buffer | undefined,
+  ) {
+    return this.monetizationService.handleFlutterwaveWebhook(rawBody, verifHash);
+  }
+}

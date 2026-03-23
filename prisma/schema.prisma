@@ -71,6 +71,7 @@ enum PurchaseStatus {
 enum PaymentProvider {
   PAYSTACK
   CRYPTOMUS
+  FLUTTERWAVE
 }
 
 enum BillingInterval {
@@ -1033,9 +1034,11 @@ model Plan {
   monthlyPriceCents       Int
   yearlyPriceCents        Int?
   monthlyCoinGrant        Int            @default(0)
-  paystackMonthlyPlanCode String?
-  paystackAnnualPlanCode  String?
-  createdAt               DateTime       @default(now())
+  paystackMonthlyPlanCode  String?
+  paystackAnnualPlanCode   String?
+  flutterwaveMonthlyPlanId String?
+  flutterwaveAnnualPlanId  String?
+  createdAt                DateTime       @default(now())
   updatedAt               DateTime       @updatedAt
   purchases               Purchase[]
   subscriptions           Subscription[]
@@ -1084,9 +1087,12 @@ model Purchase {
   currency                 String               @default("usd")
   paystackReference        String?
   paystackTransactionId    String?
-  paystackSubscriptionCode String?
-  paystackCustomerCode     String?
-  planId                   String?
+  paystackSubscriptionCode  String?
+  paystackCustomerCode      String?
+  flutterwaveTxRef          String?
+  flutterwaveTransactionId  String?
+  flutterwaveFlwRef         String?
+  planId                    String?
   coinPackageId            String?
   returnTo                 String?
   idempotencyKey           String               @unique
@@ -1107,6 +1113,8 @@ model Purchase {
   @@index([paystackReference])
   @@index([paystackTransactionId])
   @@index([paystackSubscriptionCode])
+  @@index([flutterwaveTxRef])
+  @@index([flutterwaveTransactionId])
   @@map("purchases")
 }
 
@@ -1116,10 +1124,12 @@ model Subscription {
   planId                   String
   status                   SubscriptionStatus @default(INCOMPLETE)
   billingInterval          BillingInterval
-  paystackCustomerCode     String?
-  paystackSubscriptionCode String?
-  paystackPlanCode         String?
-  currentPeriodStart       DateTime?
+  paystackCustomerCode        String?
+  paystackSubscriptionCode    String?
+  paystackPlanCode            String?
+  flutterwaveSubscriptionId   String?
+  flutterwavePaymentPlanId    String?
+  currentPeriodStart          DateTime?
   currentPeriodEnd         DateTime?
   cancelAtPeriodEnd        Boolean            @default(false)
   lastCoinGrantAt          DateTime?
@@ -1130,6 +1140,7 @@ model Subscription {
 
   @@index([userId, status])
   @@index([paystackSubscriptionCode])
+  @@index([flutterwaveSubscriptionId])
   @@map("subscriptions")
 }
 
@@ -1733,6 +1744,16 @@ model PaystackWebhookEvent {
   createdAt        DateTime @default(now())
 
   @@map("paystack_webhook_events")
+}
+
+model FlutterwaveWebhookEvent {
+  id          String   @id @default(cuid())
+  eventKey    String   @unique
+  eventType   String
+  processedAt DateTime
+  createdAt   DateTime @default(now())
+
+  @@map("flutterwave_webhook_events")
 }
 
 // --- Phase 1: Security ---

@@ -4,6 +4,7 @@ import { EngagementModule } from "../engagement/engagement.module";
 import { RedisModule } from "../redis/redis.module";
 import {
   CryptomusWebhookController,
+  FlutterwaveWebhookController,
   MonetizationController,
   PaystackWebhookController,
 } from "./monetization.controller";
@@ -13,6 +14,7 @@ import { MonetizationService } from "./monetization.service";
   imports: [AuthModule, EngagementModule, RedisModule],
   controllers: [
     MonetizationController,
+    FlutterwaveWebhookController,
     PaystackWebhookController,
     CryptomusWebhookController,
   ],

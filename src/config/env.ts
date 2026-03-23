@@ -38,6 +38,13 @@ export type AppEnv = {
   paystackPlanSilverAnnual: string | null;
   paystackPlanArcaneMonthly: string | null;
   paystackPlanArcaneAnnual: string | null;
+  flutterwaveSecretKey: string | null;
+  flutterwaveWebhookSecret: string | null;
+  flutterwaveCurrency: string;
+  flutterwavePlanSilverMonthly: string | null;
+  flutterwavePlanSilverAnnual: string | null;
+  flutterwavePlanArcaneMonthly: string | null;
+  flutterwavePlanArcaneAnnual: string | null;
   cloudinaryCloudName: string | null;
   cloudinaryApiKey: string | null;
   cloudinaryApiSecret: string | null;
@@ -209,6 +216,13 @@ function parseEnv(): AppEnv {
     paystackPlanSilverAnnual: getOptionalStringEnv("PAYSTACK_PLAN_SILVER_ANNUAL"),
     paystackPlanArcaneMonthly: getOptionalStringEnv("PAYSTACK_PLAN_ARCANE_MONTHLY"),
     paystackPlanArcaneAnnual: getOptionalStringEnv("PAYSTACK_PLAN_ARCANE_ANNUAL"),
+    flutterwaveSecretKey: getOptionalStringEnv("FLUTTERWAVE_SECRET_KEY"),
+    flutterwaveWebhookSecret: getOptionalStringEnv("FLUTTERWAVE_WEBHOOK_SECRET"),
+    flutterwaveCurrency: getStringEnv("FLUTTERWAVE_CURRENCY", "NGN").toUpperCase(),
+    flutterwavePlanSilverMonthly: getOptionalStringEnv("FLUTTERWAVE_PLAN_SILVER_MONTHLY"),
+    flutterwavePlanSilverAnnual: getOptionalStringEnv("FLUTTERWAVE_PLAN_SILVER_ANNUAL"),
+    flutterwavePlanArcaneMonthly: getOptionalStringEnv("FLUTTERWAVE_PLAN_ARCANE_MONTHLY"),
+    flutterwavePlanArcaneAnnual: getOptionalStringEnv("FLUTTERWAVE_PLAN_ARCANE_ANNUAL"),
     cloudinaryCloudName: getOptionalStringEnv("CLOUDINARY_CLOUD_NAME"),
     cloudinaryApiKey: getOptionalStringEnv("CLOUDINARY_API_KEY"),
     cloudinaryApiSecret: getOptionalStringEnv("CLOUDINARY_API_SECRET"),
