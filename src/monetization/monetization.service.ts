@@ -337,7 +337,10 @@ const CATALOG_CACHE_TTL_SECONDS = 60 * 60;
 @Injectable()
 export class MonetizationService implements OnModuleInit {
   private readonly cryptomusApiBaseUrl = "https://api.cryptomus.com/v1";
-  private readonly flutterwaveApiBaseUrl = "https://api.flutterwave.com";
+  private readonly flutterwaveApiBaseUrl =
+    env.nodeEnv === "production"
+      ? "https://f4bexperience.flutterwave.com"
+      : "https://developersandbox-api.flutterwave.com";
   private readonly flutterwaveTokenUrl =
     "https://idp.flutterwave.com/realms/flutterwave/protocol/openid-connect/token";
   private readonly paystackApiBaseUrl = "https://api.paystack.co";
@@ -651,6 +654,15 @@ export class MonetizationService implements OnModuleInit {
     const purchaseProvider = this.getPurchaseProvider(referencedPurchase);
 
     if (purchaseProvider === PAYMENT_PROVIDER.FLUTTERWAVE) {
+      // If frontend provides a transactionId from Inline redirect, store it first
+      if (input.transactionId && referencedPurchase && !referencedPurchase.flutterwaveTransactionId) {
+        await this.prisma.purchase.update({
+          where: { id: referencedPurchase.id },
+          data: { flutterwaveTransactionId: input.transactionId },
+        });
+        referencedPurchase.flutterwaveTransactionId = input.transactionId;
+      }
+
       return this.confirmFlutterwaveCheckoutSession(
         userId,
         input.reference,
@@ -1387,7 +1399,7 @@ export class MonetizationService implements OnModuleInit {
     if (signature) {
       const expectedSignature = createHmac("sha256", env.flutterwaveWebhookSecret)
         .update(rawBody)
-        .digest("hex");
+        .digest("base64");
 
       if (!this.constantTimeEquals(signature.trim(), expectedSignature)) {
         throw new BadRequestException("Invalid Flutterwave webhook signature.");
@@ -1427,11 +1439,13 @@ export class MonetizationService implements OnModuleInit {
     }
 
     switch (eventType) {
-      case "charge.completed":
-        if (data && String(data.status ?? "").toLowerCase() === "successful") {
+      case "charge.completed": {
+        const chargeStatus = String(data?.status ?? "").toLowerCase();
+        if (data && (chargeStatus === "successful" || chargeStatus === "succeeded")) {
           await this.processFlutterwaveTransaction(data);
         }
         break;
+      }
       case "subscription.cancelled":
         if (data) {
           await this.handleFlutterwaveSubscriptionCancelled(data);
@@ -1832,13 +1846,15 @@ export class MonetizationService implements OnModuleInit {
     traceId?: string,
   ): Promise<T> {
     const accessToken = await this.getFlutterwaveAccessToken();
+    const idempotencyKey = `fw-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 
     const response = await fetch(`${this.flutterwaveApiBaseUrl}${path}`, {
       ...init,
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${accessToken}`,
-        ...(traceId ? { "X-Trace-Id": traceId } : {}),
+        "X-Trace-Id": traceId ?? idempotencyKey,
+        "X-Idempotency-Key": idempotencyKey,
         ...(init.headers ?? {}),
       },
     });
@@ -1846,7 +1862,7 @@ export class MonetizationService implements OnModuleInit {
       | { message?: string; status?: string; data?: unknown }
       | null;
 
-    if (!response.ok || body?.status !== "success") {
+    if (!response.ok) {
       const message =
         body?.message?.trim() ||
         `Flutterwave request to ${path} failed with status ${response.status}.`;
@@ -1876,44 +1892,21 @@ export class MonetizationService implements OnModuleInit {
     userId: string;
     userEmail: string;
   }) {
+    if (!env.flutterwavePublicKey) {
+      throw new ServiceUnavailableException(
+        "FLUTTERWAVE_PUBLIC_KEY is not configured.",
+      );
+    }
+
     const txRef =
       purchase.flutterwaveTxRef ?? `fw-${purchase.id}-${Date.now()}`;
 
-    const successUrl = new URL("/checkout/status", frontendAppUrl);
-    successUrl.searchParams.set("billing", input.billing);
-    successUrl.searchParams.set("kind", input.kind);
-    successUrl.searchParams.set("productId", input.productId);
-    successUrl.searchParams.set("reference", txRef);
-    successUrl.searchParams.set("returnTo", input.returnTo);
-
-    const flutterwaveBody: Record<string, unknown> = {
-      tx_ref: txRef,
-      amount: product.amountCents / 100,
-      currency: this.getCheckoutCurrency(),
-      redirect_url: successUrl.toString(),
-      customer: { email: userEmail },
-      meta: {
-        purchaseId: purchase.id,
-        userId,
-        kind: input.kind,
-        productId: input.productId,
-        billingInterval: input.billing,
-        returnTo: input.returnTo,
-      },
-    };
-
-    if (input.kind === "plan" && product.flutterwavePlanId) {
-      flutterwaveBody.payment_plan = Number(product.flutterwavePlanId) || product.flutterwavePlanId;
-    }
-
-    const response = await this.flutterwaveRequest<{
-      data: { link: string };
-    }>("/payments", {
-      method: "POST",
-      body: JSON.stringify(flutterwaveBody),
-    });
-
-    const checkoutUrl = response.data?.link?.trim() || null;
+    const redirectUrl = new URL("/checkout/status", frontendAppUrl);
+    redirectUrl.searchParams.set("billing", input.billing);
+    redirectUrl.searchParams.set("kind", input.kind);
+    redirectUrl.searchParams.set("productId", input.productId);
+    redirectUrl.searchParams.set("reference", txRef);
+    redirectUrl.searchParams.set("returnTo", input.returnTo);
 
     await this.prisma.purchase.update({
       where: { id: purchase.id },
@@ -1924,16 +1917,35 @@ export class MonetizationService implements OnModuleInit {
       },
     });
 
-    if (!checkoutUrl) {
-      throw new ServiceUnavailableException(
-        "Flutterwave checkout URL was not returned.",
-      );
-    }
-
+    // Return Inline config — frontend opens FlutterwaveCheckout() modal
     return {
-      checkoutUrl,
       purchaseId: purchase.id,
       reference: txRef,
+      inlineConfig: {
+        public_key: env.flutterwavePublicKey,
+        tx_ref: txRef,
+        amount: product.amountCents / 100,
+        currency: this.getCheckoutCurrency(),
+        redirect_url: redirectUrl.toString(),
+        customer: { email: userEmail },
+        payment_plan: input.kind === "plan" && product.flutterwavePlanId
+          ? (Number(product.flutterwavePlanId) || product.flutterwavePlanId)
+          : undefined,
+        meta: {
+          purchaseId: purchase.id,
+          userId,
+          kind: input.kind,
+          productId: input.productId,
+          billingInterval: input.billing,
+        },
+        customizations: {
+          title: "TaleStead",
+          description:
+            input.kind === "coins"
+              ? "Coin purchase"
+              : `${input.billing === "annual" ? "Annual" : "Monthly"} subscription`,
+        },
+      },
     };
   }
 
@@ -1942,26 +1954,6 @@ export class MonetizationService implements OnModuleInit {
     reference: string,
     existingPurchase: PurchaseWithRelations | null,
   ) {
-    const txLookup = await this.flutterwaveRequest<{
-      data: FlutterwaveTransaction[];
-    }>(`/transactions?tx_ref=${encodeURIComponent(reference)}`);
-
-    const flwTransaction = Array.isArray(txLookup.data) ? txLookup.data[0] : null;
-
-    if (!flwTransaction || !flwTransaction.id) {
-      return {
-        checkoutStatus: "pending" as const,
-        message: this.getCheckoutStatusMessage("pending"),
-        reason: "verification-delay",
-        status: await this.getStatus(userId),
-      };
-    }
-
-    const verifyResponse = await this.flutterwaveRequest<{
-      data: FlutterwaveTransaction;
-    }>(`/transactions/${flwTransaction.id}/verify`);
-
-    const verifiedTx = verifyResponse.data;
     const purchase =
       existingPurchase ??
       (await this.findPurchaseForCheckoutReference(reference));
@@ -1970,6 +1962,48 @@ export class MonetizationService implements OnModuleInit {
       throw new BadRequestException(
         "This checkout reference does not belong to you.",
       );
+    }
+
+    // If we already have a transaction ID stored, verify the charge directly
+    const chargeId = purchase.flutterwaveTransactionId;
+
+    if (chargeId) {
+      return this.verifyFlutterwaveCharge(userId, chargeId, purchase);
+    }
+
+    // No charge ID yet — the Inline redirect appends transaction_id to the URL
+    // but we only receive the tx_ref here. Wait for webhook or return pending.
+    return {
+      checkoutStatus: "pending" as const,
+      message: this.getCheckoutStatusMessage("pending"),
+      reason: "verification-delay",
+      status: await this.getStatus(userId),
+    };
+  }
+
+  private async verifyFlutterwaveCharge(
+    userId: string,
+    chargeId: string,
+    purchase: PurchaseWithRelations,
+  ) {
+    let verifiedTx: FlutterwaveTransaction;
+
+    try {
+      const verifyResponse = await this.flutterwaveRequest<{
+        data: FlutterwaveTransaction;
+      }>(`/charges/${chargeId}`, { method: "GET" });
+      verifiedTx = verifyResponse.data;
+    } catch (error) {
+      this.logger.warn(
+        `Flutterwave charge verification failed for ${chargeId}: ${error instanceof Error ? error.message : error}`,
+      );
+
+      return {
+        checkoutStatus: "pending" as const,
+        message: this.getCheckoutStatusMessage("pending"),
+        reason: "verification-delay",
+        status: await this.getStatus(userId),
+      };
     }
 
     const flwStatus = String(verifiedTx?.status ?? "").toLowerCase();
@@ -2292,6 +2326,7 @@ export class MonetizationService implements OnModuleInit {
   private mapFlutterwaveCheckoutStatus(flwStatus: string) {
     switch (flwStatus) {
       case "successful":
+      case "succeeded":
         return "success" as const;
       case "failed":
       case "cancelled":
@@ -4031,7 +4066,7 @@ export class MonetizationService implements OnModuleInit {
     }
 
     throw new ServiceUnavailableException(
-      "No checkout provider is configured. Set FLUTTERWAVE_SECRET_KEY.",
+      "No checkout provider is configured. Set FLUTTERWAVE_CLIENT_ID and FLUTTERWAVE_CLIENT_SECRET.",
     );
   }
 

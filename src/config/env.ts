@@ -40,6 +40,7 @@ export type AppEnv = {
   paystackPlanArcaneAnnual: string | null;
   flutterwaveClientId: string | null;
   flutterwaveClientSecret: string | null;
+  flutterwavePublicKey: string | null;
   flutterwaveEncryptionKey: string | null;
   flutterwaveWebhookSecret: string | null;
   flutterwaveCurrency: string;
@@ -218,6 +219,7 @@ function parseEnv(): AppEnv {
     paystackPlanArcaneAnnual: getOptionalStringEnv("PAYSTACK_PLAN_ARCANE_ANNUAL"),
     flutterwaveClientId: getOptionalStringEnv("FLUTTERWAVE_CLIENT_ID"),
     flutterwaveClientSecret: getOptionalStringEnv("FLUTTERWAVE_CLIENT_SECRET"),
+    flutterwavePublicKey: getOptionalStringEnv("FLUTTERWAVE_PUBLIC_KEY"),
     flutterwaveEncryptionKey: getOptionalStringEnv("FLUTTERWAVE_ENCRYPTION_KEY"),
     flutterwaveWebhookSecret: getOptionalStringEnv("FLUTTERWAVE_WEBHOOK_SECRET"),
     flutterwaveCurrency: getStringEnv("FLUTTERWAVE_CURRENCY", "NGN").toUpperCase(),

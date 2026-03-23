@@ -16,6 +16,7 @@ export type CreateCheckoutSessionInput = {
 
 export type ConfirmCheckoutSessionInput = {
   reference: string;
+  transactionId?: string;
 };
 
 export type ChapterUnlockInput = {

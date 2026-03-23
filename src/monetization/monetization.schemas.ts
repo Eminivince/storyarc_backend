@@ -140,11 +140,17 @@ export function parseConfirmCheckoutSessionBody(
   const referenceField =
     typeof record.reference === "string" ? "reference" : "sessionId";
 
+  const transactionId =
+    typeof record.transactionId === "string" && record.transactionId.trim()
+      ? record.transactionId.trim()
+      : undefined;
+
   return {
     reference: getTrimmedString(record, referenceField, {
       minLength: 8,
       maxLength: 255,
     }),
+    transactionId,
   };
 }
 
