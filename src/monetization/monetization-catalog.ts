@@ -317,11 +317,13 @@ export async function ensureDefaultMonetizationCatalog(
     codes = {},
     flutterwaveCodes = {},
     polarCodes = {},
+    polarCoinProductId = null,
     currency = "USD",
   }: {
     codes?: PlanCodes;
     flutterwaveCodes?: FlutterwavePlanCodes;
     polarCodes?: PolarPlanCodes;
+    polarCoinProductId?: string | null;
     currency?: string;
   } = {},
 ) {
@@ -389,6 +391,7 @@ export async function ensureDefaultMonetizationCatalog(
           description: coinPackage.description,
           name: coinPackage.name,
           priceCents: coinPackage.priceCents,
+          ...(polarCoinProductId ? { polarProductId: polarCoinProductId } : {}),
         },
       });
       continue;
@@ -398,6 +401,7 @@ export async function ensureDefaultMonetizationCatalog(
       data: {
         active: true,
         ...coinPackage,
+        ...(polarCoinProductId ? { polarProductId: polarCoinProductId } : {}),
       },
     });
   }

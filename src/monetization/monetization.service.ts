@@ -1691,9 +1691,19 @@ export class MonetizationService implements OnModuleInit {
         throw new NotFoundException("Coin package not found.");
       }
 
+      if (
+        paymentProvider === PAYMENT_PROVIDER.POLAR &&
+        !coinPackage.polarProductId
+      ) {
+        throw new ServiceUnavailableException(
+          `Polar product ID is not configured for coin package ${coinPackage.code}.`,
+        );
+      }
+
       return {
         amountCents: coinPackage.priceCents,
         coinPackageId: coinPackage.id,
+        polarProductId: coinPackage.polarProductId,
       };
     }
 
@@ -1986,31 +1996,29 @@ export class MonetizationService implements OnModuleInit {
       billingInterval: input.billing,
     };
 
-    let checkoutBody: Record<string, unknown>;
+    // Polar requires a product ID for all checkouts.
+    // For subscriptions, use the plan's Polar product ID.
+    // For coins, use the coin package's Polar product ID (must be a custom-priced product).
+    const polarProductId = product.polarProductId;
 
-    if (input.kind === "plan" && product.polarProductId) {
-      checkoutBody = {
-        product_id: product.polarProductId,
-        customer_email: userEmail,
-        success_url: successUrl.toString(),
-        metadata,
-      };
-    } else {
-      // Coin packages use amount-based checkout
-      checkoutBody = {
-        amount: product.amountCents,
-        currency: env.polarCurrency.toLowerCase(),
-        product_name: input.kind === "coins" ? "Coin Purchase" : "Subscription",
-        customer_email: userEmail,
-        success_url: successUrl.toString(),
-        metadata,
-      };
+    if (!polarProductId) {
+      throw new ServiceUnavailableException(
+        "Polar product ID is not configured for this product.",
+      );
     }
+
+    const checkoutBody: Record<string, unknown> = {
+      products: [polarProductId],
+      customer_email: userEmail,
+      success_url: successUrl.toString(),
+      metadata,
+      ...(input.kind === "coins" ? { amount: product.amountCents } : {}),
+    };
 
     const response = await this.polarRequest<{
       id?: string;
       url?: string;
-    }>("/v1/checkouts/custom", {
+    }>("/v1/checkouts/sessions", {
       method: "POST",
       body: JSON.stringify(checkoutBody),
     });
@@ -2068,9 +2076,9 @@ export class MonetizationService implements OnModuleInit {
       const checkout = await this.polarRequest<{
         id?: string;
         status?: string;
-        product_id?: string;
-        subscription_id?: string;
-      }>(`/v1/checkouts/custom/${checkoutId}`, {
+        product?: { id?: string } | null;
+        subscription_id?: string | null;
+      }>(`/v1/checkouts/sessions/${checkoutId}`, {
         method: "GET",
       });
 
@@ -2083,7 +2091,7 @@ export class MonetizationService implements OnModuleInit {
           await this.processPolarCheckoutSuccess({
             checkoutId: checkout.id ?? checkoutId,
             subscriptionId: checkout.subscription_id ?? null,
-            productId: checkout.product_id ?? null,
+            productId: checkout.product?.id ?? null,
           }, purchase);
           this.emitWalletUpdate(userId);
         }
@@ -3177,6 +3185,7 @@ export class MonetizationService implements OnModuleInit {
         silverAnnualProductId: env.polarPlanSilverAnnual ?? null,
         silverMonthlyProductId: env.polarPlanSilverMonthly ?? null,
       },
+      polarCoinProductId: env.polarCoinProductId,
       currency: this.getCheckoutCurrency(),
     })
       .then(({ coinPackageCodes, planCodes }) => {

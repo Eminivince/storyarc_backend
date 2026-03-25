@@ -50,6 +50,7 @@ export type AppEnv = {
   polarWebhookSecret: string | null;
   polarOrganizationId: string | null;
   polarCurrency: string;
+  polarCoinProductId: string | null;
   polarPlanSilverMonthly: string | null;
   polarPlanSilverAnnual: string | null;
   polarPlanArcaneMonthly: string | null;
@@ -225,7 +226,9 @@ function parseEnv(): AppEnv {
     paystackPlanSilverAnnual: getOptionalStringEnv("PAYSTACK_PLAN_SILVER_ANNUAL"),
     paystackPlanArcaneMonthly: getOptionalStringEnv("PAYSTACK_PLAN_ARCANE_MONTHLY"),
     paystackPlanArcaneAnnual: getOptionalStringEnv("PAYSTACK_PLAN_ARCANE_ANNUAL"),
-    flutterwaveSecretKey: getOptionalStringEnv("FLUTTERWAVE_SECRET_KEY"),
+    flutterwaveSecretKey:
+      getOptionalStringEnv("FLUTTERWAVE_SECRET_KEY") ??
+      getOptionalStringEnv("FLUTTERWAVE_CLIENT_SECRET"),
     flutterwavePublicKey: getOptionalStringEnv("FLUTTERWAVE_PUBLIC_KEY"),
     flutterwaveEncryptionKey: getOptionalStringEnv("FLUTTERWAVE_ENCRYPTION_KEY"),
     flutterwaveWebhookSecret: getOptionalStringEnv("FLUTTERWAVE_WEBHOOK_SECRET"),
@@ -236,6 +239,7 @@ function parseEnv(): AppEnv {
     polarWebhookSecret: getOptionalStringEnv("POLAR_WEBHOOK_SECRET"),
     polarOrganizationId: getOptionalStringEnv("POLAR_ORGANIZATION_ID"),
     polarCurrency: getStringEnv("POLAR_CURRENCY", "USD").toUpperCase(),
+    polarCoinProductId: getOptionalStringEnv("POLAR_COIN_PRODUCT_ID"),
     polarPlanSilverMonthly: getOptionalStringEnv("POLAR_PLAN_SILVER_MONTHLY"),
     polarPlanSilverAnnual: getOptionalStringEnv("POLAR_PLAN_SILVER_ANNUAL"),
     polarPlanArcaneMonthly: getOptionalStringEnv("POLAR_PLAN_ARCANE_MONTHLY"),

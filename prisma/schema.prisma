@@ -1057,10 +1057,11 @@ model CoinPackage {
   active      Boolean    @default(true)
   coins       Int
   bonusCoins  Int        @default(0)
-  priceCents  Int
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
-  purchases   Purchase[]
+  priceCents     Int
+  polarProductId String?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+  purchases      Purchase[]
 
   @@map("coin_packages")
 }
