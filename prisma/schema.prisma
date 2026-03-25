@@ -72,6 +72,7 @@ enum PaymentProvider {
   PAYSTACK
   CRYPTOMUS
   FLUTTERWAVE
+  POLAR
 }
 
 enum BillingInterval {
@@ -1038,6 +1039,8 @@ model Plan {
   paystackAnnualPlanCode   String?
   flutterwaveMonthlyPlanId String?
   flutterwaveAnnualPlanId  String?
+  polarMonthlyProductId    String?
+  polarAnnualProductId     String?
   createdAt                DateTime       @default(now())
   updatedAt               DateTime       @updatedAt
   purchases               Purchase[]
@@ -1092,6 +1095,8 @@ model Purchase {
   flutterwaveTxRef          String?
   flutterwaveTransactionId  String?
   flutterwaveFlwRef         String?
+  polarCheckoutId           String?
+  polarOrderId              String?
   planId                    String?
   coinPackageId            String?
   returnTo                 String?
@@ -1115,6 +1120,8 @@ model Purchase {
   @@index([paystackSubscriptionCode])
   @@index([flutterwaveTxRef])
   @@index([flutterwaveTransactionId])
+  @@index([polarCheckoutId])
+  @@index([polarOrderId])
   @@map("purchases")
 }
 
@@ -1129,6 +1136,8 @@ model Subscription {
   paystackPlanCode            String?
   flutterwaveSubscriptionId   String?
   flutterwavePaymentPlanId    String?
+  polarSubscriptionId         String?
+  polarProductId              String?
   currentPeriodStart          DateTime?
   currentPeriodEnd         DateTime?
   cancelAtPeriodEnd        Boolean            @default(false)
@@ -1141,6 +1150,7 @@ model Subscription {
   @@index([userId, status])
   @@index([paystackSubscriptionCode])
   @@index([flutterwaveSubscriptionId])
+  @@index([polarSubscriptionId])
   @@map("subscriptions")
 }
 
@@ -1754,6 +1764,16 @@ model FlutterwaveWebhookEvent {
   createdAt   DateTime @default(now())
 
   @@map("flutterwave_webhook_events")
+}
+
+model PolarWebhookEvent {
+  id            String   @id @default(cuid())
+  polarEventKey String   @unique
+  eventType     String
+  processedAt   DateTime
+  createdAt     DateTime @default(now())
+
+  @@map("polar_webhook_events")
 }
 
 // --- Phase 1: Security ---

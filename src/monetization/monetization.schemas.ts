@@ -2,6 +2,7 @@ import { BadRequestException } from "@nestjs/common";
 import {
   CHECKOUT_BILLING_INTERVALS,
   CHECKOUT_KINDS,
+  CHECKOUT_PROVIDERS,
   CHAPTER_UNLOCK_BATCH_MODES,
   ChapterUnlockBatchInput,
   ChapterUnlockInput,
@@ -126,6 +127,7 @@ export function parseCreateCheckoutSessionBody(
       minLength: 2,
       maxLength: 80,
     }),
+    provider: getEnumValue(record, "provider", CHECKOUT_PROVIDERS),
     returnTo: getTrimmedString(record, "returnTo", {
       minLength: 1,
       maxLength: 500,
@@ -140,10 +142,13 @@ export function parseConfirmCheckoutSessionBody(
   const referenceField =
     typeof record.reference === "string" ? "reference" : "sessionId";
 
+  const rawTid = record.transactionId;
   const transactionId =
-    typeof record.transactionId === "string" && record.transactionId.trim()
-      ? record.transactionId.trim()
-      : undefined;
+    typeof rawTid === "string" && rawTid.trim()
+      ? rawTid.trim()
+      : typeof rawTid === "number" && Number.isFinite(rawTid)
+        ? String(Math.trunc(rawTid))
+        : undefined;
 
   return {
     reference: getTrimmedString(record, referenceField, {
