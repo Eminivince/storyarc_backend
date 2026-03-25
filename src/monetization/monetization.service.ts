@@ -170,12 +170,19 @@ const PAYMENT_PROVIDER = {
   CRYPTOMUS: "CRYPTOMUS",
   FLUTTERWAVE: "FLUTTERWAVE",
   PAYSTACK: "PAYSTACK",
+  POLAR: "POLAR",
 } as const;
 
 type CheckoutProvider =
   (typeof PAYMENT_PROVIDER)[keyof typeof PAYMENT_PROVIDER];
 
-type CheckoutProviderValue = "cryptomus" | "flutterwave" | "paystack";
+type CheckoutProviderValue = "cryptomus" | "flutterwave" | "paystack" | "polar";
+
+type ProviderInfo = {
+  id: CheckoutProviderValue;
+  currency: string;
+  label: string;
+};
 
 type FlutterwaveTransaction = {
   id?: number | null;
@@ -198,8 +205,10 @@ type FlutterwaveWebhookPayload = {
 };
 
 type MonetizationCatalogResponse = {
+  availableProviders: ProviderInfo[];
   checkoutProvider: CheckoutProviderValue;
   currency: string;
+  testMode: boolean;
   coinPackages: Array<{
     code: string;
     coins: number;
@@ -340,6 +349,7 @@ export class MonetizationService implements OnModuleInit {
   /** Flutterwave Standard (hosted checkout) is v3: https://api.flutterwave.com/v3 */
   private readonly flutterwaveV3ApiBaseUrl = "https://api.flutterwave.com/v3";
   private readonly paystackApiBaseUrl = "https://api.paystack.co";
+  private readonly polarApiBaseUrl = "https://api.polar.sh";
   private readonly logger = new Logger(MonetizationService.name);
   private catalogBootstrapped = false;
   private catalogBootstrapPromise: Promise<void> | null = null;
@@ -356,6 +366,13 @@ export class MonetizationService implements OnModuleInit {
     await this.cleanupLegacyStripeIndexes();
     await this.ensureSparseChapterEntitlementIndexes();
     await this.ensureCatalogBootstrapped();
+
+    if (this.hasFlutterwaveConfiguration()) {
+      const mode = env.nodeEnv === "production" ? "PRODUCTION" : "SANDBOX";
+      this.logger.log(
+        `Flutterwave ${mode} — API: ${this.flutterwaveV3ApiBaseUrl}`,
+      );
+    }
   }
 
   async getCatalog() {
@@ -395,8 +412,10 @@ export class MonetizationService implements OnModuleInit {
     });
 
     const response: MonetizationCatalogResponse = {
+      availableProviders: this.getAvailableProviders(),
       checkoutProvider,
       currency,
+      testMode: env.nodeEnv !== "production",
       coinPackages: supportedCoinPackages.map((item) => ({
         code: item.code,
         coins: item.coins,
@@ -460,6 +479,7 @@ export class MonetizationService implements OnModuleInit {
 
     return {
       activePlanId: subscription?.plan.code ?? "free",
+      availableProviders: this.getAvailableProviders(),
       billingCycle: subscription
         ? this.toFrontendBillingInterval(subscription.billingInterval)
         : "monthly",
@@ -530,7 +550,7 @@ export class MonetizationService implements OnModuleInit {
     request: AuthenticatedRequest,
   ) {
     const frontendAppUrl = this.getFrontendAppUrl();
-    const checkoutProvider = this.getConfiguredCheckoutProvider();
+    const checkoutProvider = this.resolveRequestedProvider(input.provider);
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: {
@@ -568,6 +588,17 @@ export class MonetizationService implements OnModuleInit {
         input,
         purchase,
         request,
+      });
+    }
+
+    if (checkoutProvider === PAYMENT_PROVIDER.POLAR) {
+      return this.createPolarCheckoutSession({
+        frontendAppUrl,
+        input,
+        product,
+        purchase,
+        userId,
+        userEmail: user.email,
       });
     }
 
@@ -648,6 +679,15 @@ export class MonetizationService implements OnModuleInit {
     const purchaseProvider = this.getPurchaseProvider(referencedPurchase);
 
     if (purchaseProvider === PAYMENT_PROVIDER.FLUTTERWAVE) {
+      // If frontend provides a transactionId from Inline redirect, store it first
+      if (input.transactionId && referencedPurchase && !referencedPurchase.flutterwaveTransactionId) {
+        await this.prisma.purchase.update({
+          where: { id: referencedPurchase.id },
+          data: { flutterwaveTransactionId: input.transactionId },
+        });
+        referencedPurchase.flutterwaveTransactionId = input.transactionId;
+      }
+
       return this.confirmFlutterwaveCheckoutSession(
         userId,
         input.reference,
@@ -689,6 +729,14 @@ export class MonetizationService implements OnModuleInit {
         message: this.getCheckoutStatusMessage(checkoutStatus),
         status: await this.getStatus(userId),
       };
+    }
+
+    if (purchaseProvider === PAYMENT_PROVIDER.POLAR) {
+      return this.confirmPolarCheckoutSession(
+        userId,
+        input.reference,
+        referencedPurchase,
+      );
     }
 
     const transaction = await this.verifyPaystackTransaction(input.reference);
@@ -1384,7 +1432,7 @@ export class MonetizationService implements OnModuleInit {
     if (signature) {
       const expectedSignature = createHmac("sha256", env.flutterwaveWebhookSecret)
         .update(rawBody)
-        .digest("hex");
+        .digest("base64");
 
       if (!this.constantTimeEquals(signature.trim(), expectedSignature)) {
         throw new BadRequestException("Invalid Flutterwave webhook signature.");
@@ -1424,11 +1472,13 @@ export class MonetizationService implements OnModuleInit {
     }
 
     switch (eventType) {
-      case "charge.completed":
-        if (data && String(data.status ?? "").toLowerCase() === "successful") {
+      case "charge.completed": {
+        const chargeStatus = String(data?.status ?? "").toLowerCase();
+        if (data && (chargeStatus === "successful" || chargeStatus === "succeeded")) {
           await this.processFlutterwaveTransaction(data);
         }
         break;
+      }
       case "subscription.cancelled":
         if (data) {
           await this.handleFlutterwaveSubscriptionCancelled(data);
@@ -1665,6 +1715,10 @@ export class MonetizationService implements OnModuleInit {
       input.billing === "annual"
         ? plan.flutterwaveAnnualPlanId
         : plan.flutterwaveMonthlyPlanId;
+    const polarProductId =
+      input.billing === "annual"
+        ? plan.polarAnnualProductId
+        : plan.polarMonthlyProductId;
     const amountCents =
       input.billing === "annual" && plan.yearlyPriceCents
         ? plan.yearlyPriceCents
@@ -1688,6 +1742,15 @@ export class MonetizationService implements OnModuleInit {
       );
     }
 
+    if (
+      paymentProvider === PAYMENT_PROVIDER.POLAR &&
+      !polarProductId
+    ) {
+      throw new ServiceUnavailableException(
+        `Polar product ID is not configured for plan ${plan.code} (${input.billing}).`,
+      );
+    }
+
     if (paymentProvider === PAYMENT_PROVIDER.PAYSTACK) {
       this.assertValidPaystackPlanCode(
         paystackPlanCode!,
@@ -1700,6 +1763,7 @@ export class MonetizationService implements OnModuleInit {
       flutterwavePlanId,
       paystackPlanCode,
       planId: plan.id,
+      polarProductId,
     };
   }
 
@@ -1839,7 +1903,7 @@ export class MonetizationService implements OnModuleInit {
       | { message?: string; status?: string; data?: unknown }
       | null;
 
-    if (!response.ok || body?.status !== "success") {
+    if (!response.ok) {
       const message =
         body?.message?.trim() ||
         `Flutterwave request to ${path} failed with status ${response.status}.`;
@@ -1853,6 +1917,627 @@ export class MonetizationService implements OnModuleInit {
 
     return body as T;
   }
+
+  // ── Polar ──────────────────────────────────────────────────────────
+
+  private async polarRequest<T>(
+    path: string,
+    init: RequestInit,
+  ): Promise<T> {
+    if (!env.polarAccessToken) {
+      throw new ServiceUnavailableException(
+        "Polar access token is not configured.",
+      );
+    }
+
+    const url = `${this.polarApiBaseUrl}${path}`;
+    const response = await fetch(url, {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${env.polarAccessToken}`,
+        ...(init.headers as Record<string, string> | undefined),
+      },
+    });
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => "unknown");
+      this.logger.error(
+        `Polar API error ${response.status}: ${text.slice(0, 500)}`,
+      );
+      throw new ServiceUnavailableException("Polar payment service error.");
+    }
+
+    return response.json() as Promise<T>;
+  }
+
+  private async createPolarCheckoutSession({
+    frontendAppUrl,
+    input,
+    product,
+    purchase,
+    userId,
+    userEmail,
+  }: {
+    frontendAppUrl: string;
+    input: CreateCheckoutSessionInput;
+    product: {
+      amountCents: number;
+      coinPackageId?: string;
+      planId?: string;
+      polarProductId?: string | null;
+    };
+    purchase: PurchaseWithRelations;
+    userId: string;
+    userEmail: string;
+  }) {
+    const successUrl = new URL("/checkout/status", frontendAppUrl);
+    successUrl.searchParams.set("billing", input.billing);
+    successUrl.searchParams.set("kind", input.kind);
+    successUrl.searchParams.set("productId", input.productId);
+    successUrl.searchParams.set("returnTo", input.returnTo);
+    // Reference will be added after we get the checkout ID
+
+    const metadata: Record<string, string> = {
+      purchaseId: purchase.id,
+      userId,
+      kind: input.kind,
+      productId: input.productId,
+      billingInterval: input.billing,
+    };
+
+    let checkoutBody: Record<string, unknown>;
+
+    if (input.kind === "plan" && product.polarProductId) {
+      checkoutBody = {
+        product_id: product.polarProductId,
+        customer_email: userEmail,
+        success_url: successUrl.toString(),
+        metadata,
+      };
+    } else {
+      // Coin packages use amount-based checkout
+      checkoutBody = {
+        amount: product.amountCents,
+        currency: env.polarCurrency.toLowerCase(),
+        product_name: input.kind === "coins" ? "Coin Purchase" : "Subscription",
+        customer_email: userEmail,
+        success_url: successUrl.toString(),
+        metadata,
+      };
+    }
+
+    const response = await this.polarRequest<{
+      id?: string;
+      url?: string;
+    }>("/v1/checkouts/custom", {
+      method: "POST",
+      body: JSON.stringify(checkoutBody),
+    });
+
+    const checkoutUrl = response.url?.trim() || null;
+    const polarCheckoutId = response.id?.trim() || null;
+
+    if (!checkoutUrl) {
+      throw new ServiceUnavailableException(
+        "Polar checkout URL was not returned.",
+      );
+    }
+
+    // Append the reference to the success URL
+    const updatedSuccessUrl = new URL(checkoutUrl);
+    // The success_url was already set; reference is the purchase ID
+    const reference = polarCheckoutId ?? purchase.id;
+
+    await this.prisma.purchase.update({
+      where: { id: purchase.id },
+      data: {
+        paymentProvider: PAYMENT_PROVIDER.POLAR,
+        paymentReference: reference,
+        polarCheckoutId,
+      },
+    });
+
+    return {
+      checkoutUrl,
+      purchaseId: purchase.id,
+      reference,
+    };
+  }
+
+  private async confirmPolarCheckoutSession(
+    userId: string,
+    reference: string,
+    existingPurchase: PurchaseWithRelations | null,
+  ) {
+    const purchase =
+      existingPurchase ??
+      (await this.findPurchaseForCheckoutReference(reference));
+
+    if (!purchase || purchase.userId !== userId) {
+      throw new BadRequestException(
+        "This checkout reference does not belong to you.",
+      );
+    }
+
+    const checkoutId = purchase.polarCheckoutId ?? reference;
+
+    let checkoutStatus: "success" | "pending" | "failed";
+
+    try {
+      const checkout = await this.polarRequest<{
+        id?: string;
+        status?: string;
+        product_id?: string;
+        subscription_id?: string;
+      }>(`/v1/checkouts/custom/${checkoutId}`, {
+        method: "GET",
+      });
+
+      const polarStatus = String(checkout.status ?? "").toLowerCase();
+
+      if (polarStatus === "succeeded" || polarStatus === "confirmed") {
+        checkoutStatus = "success";
+
+        if (purchase.status !== PurchaseStatus.COMPLETED) {
+          await this.processPolarCheckoutSuccess({
+            checkoutId: checkout.id ?? checkoutId,
+            subscriptionId: checkout.subscription_id ?? null,
+            productId: checkout.product_id ?? null,
+          }, purchase);
+          this.emitWalletUpdate(userId);
+        }
+      } else if (polarStatus === "failed" || polarStatus === "expired") {
+        checkoutStatus = "failed";
+        await this.prisma.purchase.update({
+          where: { id: purchase.id },
+          data: {
+            failedAt: new Date(),
+            status: PurchaseStatus.FAILED,
+          },
+        });
+      } else {
+        checkoutStatus = "pending";
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Polar checkout verification failed for ${checkoutId}: ${error instanceof Error ? error.message : error}`,
+      );
+      checkoutStatus = "pending";
+    }
+
+    return {
+      checkoutStatus,
+      message: this.getCheckoutStatusMessage(checkoutStatus),
+      status: await this.getStatus(userId),
+    };
+  }
+
+  async handlePolarWebhook(
+    rawBody: Buffer | undefined,
+    webhookId: string | undefined,
+    webhookTimestamp: string | undefined,
+    signature: string | undefined,
+  ) {
+    if (!rawBody) {
+      throw new BadRequestException("Polar webhook raw body is required.");
+    }
+
+    if (!signature || !webhookId || !webhookTimestamp) {
+      throw new BadRequestException(
+        "Missing Polar webhook headers (webhook-id, webhook-timestamp, webhook-signature).",
+      );
+    }
+
+    if (!env.polarWebhookSecret) {
+      throw new ServiceUnavailableException(
+        "POLAR_WEBHOOK_SECRET is not configured.",
+      );
+    }
+
+    // Polar uses svix-based webhook signatures
+    // Signed content: "{msgId}.{timestamp}.{body}"
+    // Signature header: space-separated "v1,<base64>" entries
+    // Secret is base64-encoded (strip "whsec_" prefix if present)
+    const bodyString = rawBody.toString("utf8");
+    const signedContent = `${webhookId}.${webhookTimestamp}.${bodyString}`;
+    const secretRaw = env.polarWebhookSecret.startsWith("whsec_")
+      ? env.polarWebhookSecret.slice(6)
+      : env.polarWebhookSecret;
+    const secretBytes = Buffer.from(secretRaw, "base64");
+    const signatureParts = signature.split(" ");
+    let verified = false;
+
+    for (const part of signatureParts) {
+      const [version, sig] = part.split(",");
+
+      if (version !== "v1" || !sig) {
+        continue;
+      }
+
+      const expectedSignature = createHmac("sha256", secretBytes)
+        .update(signedContent)
+        .digest("base64");
+
+      if (this.constantTimeEquals(sig, expectedSignature)) {
+        verified = true;
+        break;
+      }
+    }
+
+    if (!verified) {
+      throw new BadRequestException("Invalid Polar webhook signature.");
+    }
+
+    const payload = JSON.parse(bodyString) as {
+      type?: string;
+      data?: Record<string, unknown>;
+    };
+
+    const eventType = payload.type ?? "";
+    const eventData = payload.data ?? {};
+
+    this.logger.log(`Polar webhook received: ${eventType}`);
+
+    const eventKey = `polar:${eventType}:${String(eventData.id ?? eventData.checkout_id ?? Date.now())}`;
+
+    const existingEvent = await this.prisma.polarWebhookEvent.findUnique({
+      where: { polarEventKey: eventKey },
+    });
+
+    if (existingEvent) {
+      return { duplicate: true, received: true };
+    }
+
+    switch (eventType) {
+      case "checkout.updated": {
+        const status = String(eventData.status ?? "").toLowerCase();
+
+        if (status === "succeeded" || status === "confirmed") {
+          await this.handlePolarCheckoutSuccess(eventData);
+        }
+
+        break;
+      }
+      case "subscription.updated":
+      case "subscription.active": {
+        await this.handlePolarSubscriptionUpdated(eventData);
+        break;
+      }
+      case "subscription.canceled":
+      case "subscription.revoked": {
+        await this.handlePolarSubscriptionCanceled(eventData);
+        break;
+      }
+    }
+
+    try {
+      await this.prisma.polarWebhookEvent.create({
+        data: {
+          polarEventKey: eventKey,
+          eventType,
+          processedAt: new Date(),
+        },
+      });
+    } catch (error) {
+      if (!this.isUniqueConstraintError(error)) {
+        throw error;
+      }
+    }
+
+    return { received: true };
+  }
+
+  private async handlePolarCheckoutSuccess(
+    eventData: Record<string, unknown>,
+  ) {
+    const checkoutId = String(eventData.id ?? "").trim();
+
+    if (!checkoutId) {
+      return;
+    }
+
+    const purchase = await this.findPurchaseForCheckoutReference(checkoutId);
+
+    if (!purchase || purchase.status === PurchaseStatus.COMPLETED) {
+      return;
+    }
+
+    await this.processPolarCheckoutSuccess(
+      {
+        checkoutId,
+        subscriptionId: typeof eventData.subscription_id === "string"
+          ? eventData.subscription_id
+          : null,
+        productId: typeof eventData.product_id === "string"
+          ? eventData.product_id
+          : null,
+      },
+      purchase,
+    );
+
+    this.emitWalletUpdate(purchase.userId);
+  }
+
+  private async processPolarCheckoutSuccess(
+    polar: {
+      checkoutId: string;
+      subscriptionId: string | null;
+      productId: string | null;
+    },
+    purchase: PurchaseWithRelations,
+  ) {
+    if (purchase.status === PurchaseStatus.COMPLETED) {
+      return;
+    }
+
+    if (purchase.kind === PurchaseKind.COINS) {
+      await this.completePolarCoinPurchase(purchase, polar);
+      await this.trySendPurchaseReceipt(purchase);
+
+      try {
+        if (purchase.amountCents > 0) {
+          await this.referralService.recordReferralCommission(
+            purchase.userId,
+            purchase.amountCents,
+            purchase.id,
+          );
+        }
+      } catch {
+        this.logger.warn(
+          `Referral commission recording failed for purchase ${purchase.id}`,
+        );
+      }
+
+      return;
+    }
+
+    await this.completePolarSubscriptionPurchase(purchase, polar);
+    await this.trySendPurchaseReceipt(purchase);
+  }
+
+  private async completePolarCoinPurchase(
+    purchase: PurchaseWithRelations,
+    polar: { checkoutId: string },
+  ) {
+    const coinPackage = purchase.coinPackage;
+
+    if (!coinPackage) {
+      throw new BadRequestException("Coin purchase is missing its package.");
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      const currentPurchase = await tx.purchase.findUnique({
+        where: { id: purchase.id },
+      });
+
+      if (!currentPurchase) {
+        throw new NotFoundException("Purchase not found.");
+      }
+
+      const existingLedgerEntry = await tx.walletLedgerEntry.findUnique({
+        where: {
+          idempotencyKey: `purchase:${purchase.id}:coins-credit`,
+        },
+      });
+
+      if (!existingLedgerEntry) {
+        const wallet = await this.getOrCreateWalletTx(tx, purchase.userId);
+        const coinsToCredit = coinPackage.coins + coinPackage.bonusCoins;
+        const nextBalance = wallet.balanceCoins + coinsToCredit;
+
+        await tx.wallet.update({
+          where: { id: wallet.id },
+          data: { balanceCoins: nextBalance },
+        });
+
+        await tx.walletLedgerEntry.create({
+          data: {
+            balanceAfter: nextBalance,
+            deltaCoins: coinsToCredit,
+            entryType: WalletLedgerEntryType.CREDIT,
+            idempotencyKey: `purchase:${purchase.id}:coins-credit`,
+            purchase: { connect: { id: purchase.id } },
+            reason: WalletLedgerReason.COIN_PURCHASE,
+            user: { connect: { id: purchase.userId } },
+            wallet: { connect: { id: wallet.id } },
+          },
+        });
+      }
+
+      await tx.purchase.update({
+        where: { id: purchase.id },
+        data: {
+          completedAt: currentPurchase.completedAt ?? new Date(),
+          paymentProvider: PAYMENT_PROVIDER.POLAR,
+          paymentReference: polar.checkoutId ?? currentPurchase.paymentReference,
+          polarCheckoutId: polar.checkoutId ?? currentPurchase.polarCheckoutId,
+          status: PurchaseStatus.COMPLETED,
+        },
+      });
+    });
+  }
+
+  private async completePolarSubscriptionPurchase(
+    purchase: PurchaseWithRelations,
+    polar: {
+      checkoutId: string;
+      subscriptionId: string | null;
+      productId: string | null;
+    },
+  ) {
+    const plan = purchase.plan;
+
+    if (!plan) {
+      throw new BadRequestException("Subscription purchase is missing its plan.");
+    }
+
+    const currentPeriodStart = new Date();
+    const currentPeriodEnd = this.addBillingInterval(
+      currentPeriodStart,
+      purchase.billingInterval ?? BillingInterval.MONTHLY,
+    );
+
+    await this.prisma.$transaction(async (tx) => {
+      const currentPurchase = await tx.purchase.findUnique({
+        where: { id: purchase.id },
+      });
+
+      if (!currentPurchase) {
+        throw new NotFoundException("Purchase not found.");
+      }
+
+      await tx.purchase.update({
+        where: { id: purchase.id },
+        data: {
+          completedAt: currentPurchase.completedAt ?? currentPeriodStart,
+          paymentProvider: PAYMENT_PROVIDER.POLAR,
+          paymentReference: polar.checkoutId ?? currentPurchase.paymentReference,
+          polarCheckoutId: polar.checkoutId ?? currentPurchase.polarCheckoutId,
+          polarOrderId: polar.subscriptionId ?? currentPurchase.polarOrderId,
+          status: PurchaseStatus.COMPLETED,
+        },
+      });
+
+      const existingSubscription = await tx.subscription.findFirst({
+        where: { userId: purchase.userId },
+        orderBy: { updatedAt: "desc" },
+      });
+
+      if (existingSubscription) {
+        await tx.subscription.update({
+          where: { id: existingSubscription.id },
+          data: {
+            billingInterval:
+              purchase.billingInterval ?? BillingInterval.MONTHLY,
+            cancelAtPeriodEnd: false,
+            currentPeriodEnd: currentPeriodEnd ?? existingSubscription.currentPeriodEnd,
+            currentPeriodStart:
+              currentPeriodStart ?? existingSubscription.currentPeriodStart,
+            planId: plan.id,
+            status: SubscriptionStatus.ACTIVE,
+            polarSubscriptionId:
+              polar.subscriptionId ?? existingSubscription.polarSubscriptionId,
+            polarProductId:
+              polar.productId ?? existingSubscription.polarProductId,
+          },
+        });
+      } else {
+        await tx.subscription.create({
+          data: {
+            billingInterval:
+              purchase.billingInterval ?? BillingInterval.MONTHLY,
+            cancelAtPeriodEnd: false,
+            currentPeriodEnd,
+            currentPeriodStart,
+            plan: { connect: { id: plan.id } },
+            status: SubscriptionStatus.ACTIVE,
+            user: { connect: { id: purchase.userId } },
+            polarSubscriptionId: polar.subscriptionId,
+            polarProductId: polar.productId,
+          },
+        });
+      }
+
+      if (plan.monthlyCoinGrant > 0) {
+        const existingLedgerEntry = await tx.walletLedgerEntry.findUnique({
+          where: {
+            idempotencyKey: `purchase:${purchase.id}:subscription-grant`,
+          },
+        });
+
+        if (!existingLedgerEntry) {
+          const wallet = await this.getOrCreateWalletTx(tx, purchase.userId);
+          const nextBalance = wallet.balanceCoins + plan.monthlyCoinGrant;
+
+          await tx.wallet.update({
+            where: { id: wallet.id },
+            data: { balanceCoins: nextBalance },
+          });
+
+          await tx.walletLedgerEntry.create({
+            data: {
+              balanceAfter: nextBalance,
+              deltaCoins: plan.monthlyCoinGrant,
+              entryType: WalletLedgerEntryType.CREDIT,
+              idempotencyKey: `purchase:${purchase.id}:subscription-grant`,
+              purchase: { connect: { id: purchase.id } },
+              reason: WalletLedgerReason.SUBSCRIPTION_GRANT,
+              user: { connect: { id: purchase.userId } },
+              wallet: { connect: { id: wallet.id } },
+            },
+          });
+        }
+      }
+    });
+  }
+
+  private async handlePolarSubscriptionUpdated(
+    eventData: Record<string, unknown>,
+  ) {
+    const polarSubscriptionId = String(eventData.id ?? "").trim();
+
+    if (!polarSubscriptionId) {
+      return;
+    }
+
+    const subscription = await this.prisma.subscription.findFirst({
+      where: { polarSubscriptionId },
+    });
+
+    if (!subscription) {
+      return;
+    }
+
+    const status = String(eventData.status ?? "").toLowerCase();
+
+    if (status === "active") {
+      const currentPeriodStart = this.parseDateValue(
+        eventData.current_period_start as string | null,
+      );
+      const currentPeriodEnd = this.parseDateValue(
+        eventData.current_period_end as string | null,
+      );
+
+      await this.prisma.subscription.update({
+        where: { id: subscription.id },
+        data: {
+          status: SubscriptionStatus.ACTIVE,
+          cancelAtPeriodEnd: false,
+          ...(currentPeriodStart ? { currentPeriodStart } : {}),
+          ...(currentPeriodEnd ? { currentPeriodEnd } : {}),
+        },
+      });
+    }
+  }
+
+  private async handlePolarSubscriptionCanceled(
+    eventData: Record<string, unknown>,
+  ) {
+    const polarSubscriptionId = String(eventData.id ?? "").trim();
+
+    if (!polarSubscriptionId) {
+      return;
+    }
+
+    const subscription = await this.prisma.subscription.findFirst({
+      where: { polarSubscriptionId },
+    });
+
+    if (!subscription) {
+      return;
+    }
+
+    await this.prisma.subscription.update({
+      where: { id: subscription.id },
+      data: {
+        cancelAtPeriodEnd: true,
+        status: SubscriptionStatus.CANCELED,
+      },
+    });
+  }
+
+  // ── Flutterwave ───────────────────────────────────────────────────
 
   private async createFlutterwaveCheckoutSession({
     frontendAppUrl,
@@ -1869,44 +2554,21 @@ export class MonetizationService implements OnModuleInit {
     userId: string;
     userEmail: string;
   }) {
+    if (!env.flutterwavePublicKey) {
+      throw new ServiceUnavailableException(
+        "FLUTTERWAVE_PUBLIC_KEY is not configured.",
+      );
+    }
+
     const txRef =
       purchase.flutterwaveTxRef ?? `fw-${purchase.id}-${Date.now()}`;
 
-    const successUrl = new URL("/checkout/status", frontendAppUrl);
-    successUrl.searchParams.set("billing", input.billing);
-    successUrl.searchParams.set("kind", input.kind);
-    successUrl.searchParams.set("productId", input.productId);
-    successUrl.searchParams.set("reference", txRef);
-    successUrl.searchParams.set("returnTo", input.returnTo);
-
-    const flutterwaveBody: Record<string, unknown> = {
-      tx_ref: txRef,
-      amount: product.amountCents / 100,
-      currency: this.getCheckoutCurrency(),
-      redirect_url: successUrl.toString(),
-      customer: { email: userEmail },
-      meta: {
-        purchaseId: purchase.id,
-        userId,
-        kind: input.kind,
-        productId: input.productId,
-        billingInterval: input.billing,
-        returnTo: input.returnTo,
-      },
-    };
-
-    if (input.kind === "plan" && product.flutterwavePlanId) {
-      flutterwaveBody.payment_plan = Number(product.flutterwavePlanId) || product.flutterwavePlanId;
-    }
-
-    const response = await this.flutterwaveRequest<{
-      data: { link: string };
-    }>("/payments", {
-      method: "POST",
-      body: JSON.stringify(flutterwaveBody),
-    });
-
-    const checkoutUrl = response.data?.link?.trim() || null;
+    const redirectUrl = new URL("/checkout/status", frontendAppUrl);
+    redirectUrl.searchParams.set("billing", input.billing);
+    redirectUrl.searchParams.set("kind", input.kind);
+    redirectUrl.searchParams.set("productId", input.productId);
+    redirectUrl.searchParams.set("reference", txRef);
+    redirectUrl.searchParams.set("returnTo", input.returnTo);
 
     await this.prisma.purchase.update({
       where: { id: purchase.id },
@@ -1917,16 +2579,35 @@ export class MonetizationService implements OnModuleInit {
       },
     });
 
-    if (!checkoutUrl) {
-      throw new ServiceUnavailableException(
-        "Flutterwave checkout URL was not returned.",
-      );
-    }
-
+    // Return Inline config — frontend opens FlutterwaveCheckout() modal
     return {
-      checkoutUrl,
       purchaseId: purchase.id,
       reference: txRef,
+      inlineConfig: {
+        public_key: env.flutterwavePublicKey,
+        tx_ref: txRef,
+        amount: product.amountCents / 100,
+        currency: this.getCheckoutCurrency(),
+        redirect_url: redirectUrl.toString(),
+        customer: { email: userEmail },
+        payment_plan: input.kind === "plan" && product.flutterwavePlanId
+          ? (Number(product.flutterwavePlanId) || product.flutterwavePlanId)
+          : undefined,
+        meta: {
+          purchaseId: purchase.id,
+          userId,
+          kind: input.kind,
+          productId: input.productId,
+          billingInterval: input.billing,
+        },
+        customizations: {
+          title: "TaleStead",
+          description:
+            input.kind === "coins"
+              ? "Coin purchase"
+              : `${input.billing === "annual" ? "Annual" : "Monthly"} subscription`,
+        },
+      },
     };
   }
 
@@ -1959,6 +2640,115 @@ export class MonetizationService implements OnModuleInit {
       throw new BadRequestException(
         "This checkout reference does not belong to you.",
       );
+    }
+
+    let transactionId = purchase.flutterwaveTransactionId?.trim() || null;
+
+    this.logger.log(
+      `Flutterwave confirm: ref=${reference.slice(0, 12)}… storedTxnId=${Boolean(transactionId)}`,
+    );
+
+    if (!transactionId && env.flutterwaveSecretKey) {
+      const byRef = await this.flutterwaveTransactionByReference(reference);
+      if (byRef?.id != null) {
+        transactionId = String(byRef.id);
+        await this.prisma.purchase.update({
+          where: { id: purchase.id },
+          data: { flutterwaveTransactionId: transactionId },
+        });
+        purchase.flutterwaveTransactionId = transactionId;
+        this.logger.log(
+          `Resolved flutterwaveTransactionId=${transactionId} via verify_by_reference`,
+        );
+      }
+    }
+
+    if (transactionId) {
+      return this.verifyFlutterwaveTransaction(userId, transactionId, purchase);
+    }
+
+    this.logger.warn(
+      `Flutterwave confirm: no transactionId found after tx_ref lookup for ref=${reference.slice(0, 12)}…`,
+    );
+
+    return {
+      checkoutStatus: "pending" as const,
+      message: this.getCheckoutStatusMessage("pending"),
+      reason: "verification-delay",
+      status: await this.getStatus(userId),
+    };
+  }
+
+  /**
+   * Verify a Flutterwave transaction using the v3 verify endpoint.
+   * Inline checkout creates v3 transactions, so we use the v3 API with the secret key.
+   */
+  private async verifyFlutterwaveTransaction(
+    userId: string,
+    transactionId: string,
+    purchase: PurchaseWithRelations,
+  ) {
+    if (!env.flutterwaveSecretKey) {
+      this.logger.warn(
+        "FLUTTERWAVE_SECRET_KEY not set — cannot verify transaction server-side.",
+      );
+
+      return {
+        checkoutStatus: "pending" as const,
+        message: this.getCheckoutStatusMessage("pending"),
+        reason: "verification-delay",
+        status: await this.getStatus(userId),
+      };
+    }
+
+    let verifiedTx: FlutterwaveTransaction;
+
+    try {
+      const response = await fetch(
+        `https://api.flutterwave.com/v3/transactions/${encodeURIComponent(transactionId)}/verify`,
+        {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${env.flutterwaveSecretKey}`,
+          },
+        },
+      );
+
+      const body = (await response.json().catch(() => null)) as {
+        status?: string;
+        message?: string;
+        data?: FlutterwaveTransaction;
+      } | null;
+
+      this.logger.log(
+        `Flutterwave v3 verify txn=${transactionId}: ok=${response.ok} apiStatus=${body?.status ?? "null"}`,
+      );
+
+      if (!response.ok || body?.status !== "success" || !body?.data) {
+        this.logger.warn(
+          `Flutterwave v3 verify failed for txn ${transactionId}: ${body?.message ?? response.status}`,
+        );
+
+        return {
+          checkoutStatus: "pending" as const,
+          message: this.getCheckoutStatusMessage("pending"),
+          reason: "verification-delay",
+          status: await this.getStatus(userId),
+        };
+      }
+
+      verifiedTx = body.data;
+    } catch (error) {
+      this.logger.warn(
+        `Flutterwave verify request failed for ${transactionId}: ${error instanceof Error ? error.message : error}`,
+      );
+
+      return {
+        checkoutStatus: "pending" as const,
+        message: this.getCheckoutStatusMessage("pending"),
+        reason: "verification-delay",
+        status: await this.getStatus(userId),
+      };
     }
 
     const flwStatus = String(verifiedTx?.status ?? "").toLowerCase();
@@ -2281,6 +3071,7 @@ export class MonetizationService implements OnModuleInit {
   private mapFlutterwaveCheckoutStatus(flwStatus: string) {
     switch (flwStatus) {
       case "successful":
+      case "succeeded":
         return "success" as const;
       case "failed":
       case "cancelled":
@@ -2379,6 +3170,12 @@ export class MonetizationService implements OnModuleInit {
       flutterwaveCodes: {
         silverAnnualPlanId: env.flutterwavePlanSilverAnnual ?? null,
         silverMonthlyPlanId: env.flutterwavePlanSilverMonthly ?? null,
+      },
+      polarCodes: {
+        arcaneAnnualProductId: env.polarPlanArcaneAnnual ?? null,
+        arcaneMonthlyProductId: env.polarPlanArcaneMonthly ?? null,
+        silverAnnualProductId: env.polarPlanSilverAnnual ?? null,
+        silverMonthlyProductId: env.polarPlanSilverMonthly ?? null,
       },
       currency: this.getCheckoutCurrency(),
     })
@@ -4006,46 +4803,117 @@ export class MonetizationService implements OnModuleInit {
     return Boolean(env.cryptomusMerchantId && env.cryptomusPaymentApiKey);
   }
 
-  private getConfiguredCheckoutProvider(): CheckoutProvider {
+  private hasPolarConfiguration() {
+    return Boolean(env.polarAccessToken);
+  }
+
+  private getConfiguredCheckoutProviders(): CheckoutProvider[] {
+    const providers: CheckoutProvider[] = [];
+
     if (this.hasFlutterwaveConfiguration()) {
-      return PAYMENT_PROVIDER.FLUTTERWAVE;
+      providers.push(PAYMENT_PROVIDER.FLUTTERWAVE);
     }
 
     if (this.hasCryptomusConfiguration()) {
-      return PAYMENT_PROVIDER.CRYPTOMUS;
+      providers.push(PAYMENT_PROVIDER.CRYPTOMUS);
     }
 
     if (env.paystackSecretKey) {
-      return PAYMENT_PROVIDER.PAYSTACK;
+      providers.push(PAYMENT_PROVIDER.PAYSTACK);
+    }
+
+    if (this.hasPolarConfiguration()) {
+      providers.push(PAYMENT_PROVIDER.POLAR);
+    }
+
+    return providers;
+  }
+
+  private getConfiguredCheckoutProvider(): CheckoutProvider {
+    const providers = this.getConfiguredCheckoutProviders();
+
+    if (providers.length > 0) {
+      return providers[0];
     }
 
     throw new ServiceUnavailableException(
-      "No checkout provider is configured. Set FLUTTERWAVE_SECRET_KEY.",
+      "No checkout provider is configured.",
     );
   }
 
-  private getCheckoutProviderValue(): CheckoutProviderValue {
-    const provider = this.getConfiguredCheckoutProvider();
+  private resolveRequestedProvider(
+    requested: CheckoutProviderValue,
+  ): CheckoutProvider {
+    const providerMap: Record<CheckoutProviderValue, CheckoutProvider> = {
+      cryptomus: PAYMENT_PROVIDER.CRYPTOMUS,
+      flutterwave: PAYMENT_PROVIDER.FLUTTERWAVE,
+      paystack: PAYMENT_PROVIDER.PAYSTACK,
+      polar: PAYMENT_PROVIDER.POLAR,
+    };
 
-    if (provider === PAYMENT_PROVIDER.FLUTTERWAVE) {
-      return "flutterwave";
+    const provider = providerMap[requested];
+    const configured = this.getConfiguredCheckoutProviders();
+
+    if (!configured.includes(provider)) {
+      throw new BadRequestException(
+        `Payment provider "${requested}" is not available.`,
+      );
     }
 
-    return provider === PAYMENT_PROVIDER.CRYPTOMUS
-      ? "cryptomus"
-      : "paystack";
+    return provider;
+  }
+
+  private toProviderValue(provider: CheckoutProvider): CheckoutProviderValue {
+    const map: Record<CheckoutProvider, CheckoutProviderValue> = {
+      CRYPTOMUS: "cryptomus",
+      FLUTTERWAVE: "flutterwave",
+      PAYSTACK: "paystack",
+      POLAR: "polar",
+    };
+
+    return map[provider];
+  }
+
+  private getCurrencyForProvider(provider: CheckoutProvider): string {
+    switch (provider) {
+      case PAYMENT_PROVIDER.FLUTTERWAVE:
+        return env.flutterwaveCurrency;
+      case PAYMENT_PROVIDER.CRYPTOMUS:
+        return env.cryptomusCurrency;
+      case PAYMENT_PROVIDER.POLAR:
+        return env.polarCurrency;
+      default:
+        return env.paystackCurrency;
+    }
+  }
+
+  private getProviderLabel(provider: CheckoutProvider): string {
+    switch (provider) {
+      case PAYMENT_PROVIDER.FLUTTERWAVE:
+        return "Flutterwave";
+      case PAYMENT_PROVIDER.CRYPTOMUS:
+        return "Cryptomus";
+      case PAYMENT_PROVIDER.POLAR:
+        return "Polar";
+      default:
+        return "Paystack";
+    }
+  }
+
+  private getAvailableProviders(): ProviderInfo[] {
+    return this.getConfiguredCheckoutProviders().map((p) => ({
+      id: this.toProviderValue(p),
+      currency: this.getCurrencyForProvider(p),
+      label: this.getProviderLabel(p),
+    }));
+  }
+
+  private getCheckoutProviderValue(): CheckoutProviderValue {
+    return this.toProviderValue(this.getConfiguredCheckoutProvider());
   }
 
   private getCheckoutCurrency() {
-    const provider = this.getConfiguredCheckoutProvider();
-
-    if (provider === PAYMENT_PROVIDER.FLUTTERWAVE) {
-      return env.flutterwaveCurrency;
-    }
-
-    return provider === PAYMENT_PROVIDER.CRYPTOMUS
-      ? env.cryptomusCurrency
-      : env.paystackCurrency;
+    return this.getCurrencyForProvider(this.getConfiguredCheckoutProvider());
   }
 
   private getCatalogCacheKey(checkoutProvider: CheckoutProviderValue, currency: string) {
@@ -4061,7 +4929,7 @@ export class MonetizationService implements OnModuleInit {
       return this.assertSupportedFlutterwaveAmount(amountCents, input);
     }
 
-    if (paymentProvider === PAYMENT_PROVIDER.CRYPTOMUS) {
+    if (paymentProvider === PAYMENT_PROVIDER.CRYPTOMUS || paymentProvider === PAYMENT_PROVIDER.POLAR) {
       if (amountCents > 0) {
         return;
       }
@@ -4081,7 +4949,7 @@ export class MonetizationService implements OnModuleInit {
       return this.canProcessFlutterwaveAmount(amountCents);
     }
 
-    if (provider === PAYMENT_PROVIDER.CRYPTOMUS) {
+    if (provider === PAYMENT_PROVIDER.CRYPTOMUS || provider === PAYMENT_PROVIDER.POLAR) {
       return amountCents > 0;
     }
 
@@ -4381,6 +5249,8 @@ export class MonetizationService implements OnModuleInit {
           { paystackTransactionId: trimmedReference },
           { flutterwaveTxRef: trimmedReference },
           { flutterwaveTransactionId: trimmedReference },
+          { polarCheckoutId: trimmedReference },
+          { polarOrderId: trimmedReference },
         ],
       },
       include: {

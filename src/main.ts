@@ -101,6 +101,7 @@ async function bootstrap() {
     credentials: true,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
     allowedHeaders: ["Content-Type", "Authorization", "Accept"],
+    exposedHeaders: ["Retry-After"],
   });
   // Enable HTTP compression globally (gzip/deflate) via Fastify plugin.
   // @fastify/compress@7 is compatible with Fastify 5.x (used by Nest 11).

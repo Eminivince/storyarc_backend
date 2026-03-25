@@ -40,13 +40,20 @@ export type AppEnv = {
   paystackPlanArcaneAnnual: string | null;
   /** v3 Standard hosted checkout + transaction verify (Bearer FLWSECK_…). */
   flutterwaveSecretKey: string | null;
-  flutterwaveClientId: string | null;
-  flutterwaveClientSecret: string | null;
+  flutterwavePublicKey: string | null;
   flutterwaveEncryptionKey: string | null;
   flutterwaveWebhookSecret: string | null;
   flutterwaveCurrency: string;
   flutterwavePlanSilverMonthly: string | null;
   flutterwavePlanSilverAnnual: string | null;
+  polarAccessToken: string | null;
+  polarWebhookSecret: string | null;
+  polarOrganizationId: string | null;
+  polarCurrency: string;
+  polarPlanSilverMonthly: string | null;
+  polarPlanSilverAnnual: string | null;
+  polarPlanArcaneMonthly: string | null;
+  polarPlanArcaneAnnual: string | null;
   cloudinaryCloudName: string | null;
   cloudinaryApiKey: string | null;
   cloudinaryApiSecret: string | null;
@@ -219,13 +226,20 @@ function parseEnv(): AppEnv {
     paystackPlanArcaneMonthly: getOptionalStringEnv("PAYSTACK_PLAN_ARCANE_MONTHLY"),
     paystackPlanArcaneAnnual: getOptionalStringEnv("PAYSTACK_PLAN_ARCANE_ANNUAL"),
     flutterwaveSecretKey: getOptionalStringEnv("FLUTTERWAVE_SECRET_KEY"),
-    flutterwaveClientId: getOptionalStringEnv("FLUTTERWAVE_CLIENT_ID"),
-    flutterwaveClientSecret: getOptionalStringEnv("FLUTTERWAVE_CLIENT_SECRET"),
+    flutterwavePublicKey: getOptionalStringEnv("FLUTTERWAVE_PUBLIC_KEY"),
     flutterwaveEncryptionKey: getOptionalStringEnv("FLUTTERWAVE_ENCRYPTION_KEY"),
     flutterwaveWebhookSecret: getOptionalStringEnv("FLUTTERWAVE_WEBHOOK_SECRET"),
     flutterwaveCurrency: getStringEnv("FLUTTERWAVE_CURRENCY", "NGN").toUpperCase(),
     flutterwavePlanSilverMonthly: getOptionalStringEnv("FLUTTERWAVE_PLAN_SILVER_MONTHLY"),
     flutterwavePlanSilverAnnual: getOptionalStringEnv("FLUTTERWAVE_PLAN_SILVER_ANNUAL"),
+    polarAccessToken: getOptionalStringEnv("POLAR_ACCESS_TOKEN"),
+    polarWebhookSecret: getOptionalStringEnv("POLAR_WEBHOOK_SECRET"),
+    polarOrganizationId: getOptionalStringEnv("POLAR_ORGANIZATION_ID"),
+    polarCurrency: getStringEnv("POLAR_CURRENCY", "USD").toUpperCase(),
+    polarPlanSilverMonthly: getOptionalStringEnv("POLAR_PLAN_SILVER_MONTHLY"),
+    polarPlanSilverAnnual: getOptionalStringEnv("POLAR_PLAN_SILVER_ANNUAL"),
+    polarPlanArcaneMonthly: getOptionalStringEnv("POLAR_PLAN_ARCANE_MONTHLY"),
+    polarPlanArcaneAnnual: getOptionalStringEnv("POLAR_PLAN_ARCANE_ANNUAL"),
     cloudinaryCloudName: getOptionalStringEnv("CLOUDINARY_CLOUD_NAME"),
     cloudinaryApiKey: getOptionalStringEnv("CLOUDINARY_API_KEY"),
     cloudinaryApiSecret: getOptionalStringEnv("CLOUDINARY_API_SECRET"),

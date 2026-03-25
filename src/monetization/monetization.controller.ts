@@ -185,6 +185,27 @@ export class CryptomusWebhookController {
   }
 }
 
+@Controller("monetization/polar")
+export class PolarWebhookController {
+  constructor(private readonly monetizationService: MonetizationService) {}
+
+  @SkipThrottle()
+  @Post("webhook")
+  async handleWebhook(
+    @Headers("webhook-id") webhookId: string | undefined,
+    @Headers("webhook-timestamp") webhookTimestamp: string | undefined,
+    @Headers("webhook-signature") signature: string | undefined,
+    @RawBody() rawBody: Buffer | undefined,
+  ) {
+    return this.monetizationService.handlePolarWebhook(
+      rawBody,
+      webhookId,
+      webhookTimestamp,
+      signature,
+    );
+  }
+}
+
 @Controller("monetization/flutterwave")
 export class FlutterwaveWebhookController {
   constructor(private readonly monetizationService: MonetizationService) {}

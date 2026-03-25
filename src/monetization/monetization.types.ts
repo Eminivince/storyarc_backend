@@ -1,21 +1,30 @@
 export const CHECKOUT_KINDS = ["coins", "plan"] as const;
 export const CHECKOUT_BILLING_INTERVALS = ["monthly", "annual"] as const;
 export const CHAPTER_UNLOCK_BATCH_MODES = ["next", "all"] as const;
+export const CHECKOUT_PROVIDERS = [
+  "cryptomus",
+  "flutterwave",
+  "paystack",
+  "polar",
+] as const;
 
 export type CheckoutKind = (typeof CHECKOUT_KINDS)[number];
 export type CheckoutBillingInterval =
   (typeof CHECKOUT_BILLING_INTERVALS)[number];
+export type CheckoutProviderValue = (typeof CHECKOUT_PROVIDERS)[number];
 
 export type CreateCheckoutSessionInput = {
   billing: CheckoutBillingInterval;
   idempotencyKey: string;
   kind: CheckoutKind;
   productId: string;
+  provider: CheckoutProviderValue;
   returnTo: string;
 };
 
 export type ConfirmCheckoutSessionInput = {
   reference: string;
+  transactionId?: string;
 };
 
 export type ChapterUnlockInput = {

@@ -7,6 +7,7 @@ import {
   FlutterwaveWebhookController,
   MonetizationController,
   PaystackWebhookController,
+  PolarWebhookController,
 } from "./monetization.controller";
 import { MonetizationService } from "./monetization.service";
 
@@ -17,6 +18,7 @@ import { MonetizationService } from "./monetization.service";
     FlutterwaveWebhookController,
     PaystackWebhookController,
     CryptomusWebhookController,
+    PolarWebhookController,
   ],
   providers: [MonetizationService],
   exports: [MonetizationService],
