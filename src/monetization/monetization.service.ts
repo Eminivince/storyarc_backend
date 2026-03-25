@@ -188,7 +188,9 @@ type FlutterwaveTransaction = {
   id?: number | null;
   tx_ref?: string | null;
   flw_ref?: string | null;
-  amount?: number | null;
+  /** Charged amount in major currency units (Flutterwave verify). */
+  amount?: number | string | null;
+  charged_amount?: number | string | null;
   currency?: string | null;
   status?: string | null;
   payment_plan?: number | string | null;
@@ -1422,28 +1424,46 @@ export class MonetizationService implements OnModuleInit {
       throw new BadRequestException("Flutterwave webhook raw body is required.");
     }
 
-    if (!env.flutterwaveWebhookSecret) {
+    const secret = env.flutterwaveWebhookSecret?.trim() ?? "";
+
+    if (!secret) {
       throw new ServiceUnavailableException(
         "FLUTTERWAVE_WEBHOOK_SECRET is not configured.",
       );
     }
 
-    // Primary: HMAC-SHA256 signature verification via flutterwave-signature header
-    if (signature) {
-      const expectedSignature = createHmac("sha256", env.flutterwaveWebhookSecret)
+    // Flutterwave v3 docs: dashboard "secret hash" is sent as `verif-hash` (exact match).
+    // Some requests also include `flutterwave-signature` (HMAC). We used to prefer HMAC first;
+    // when both are present, HMAC often fails (encoding/algorithm mismatch) while verif-hash is correct → 400.
+    const vh = verifHash?.trim();
+    const sig = signature?.trim();
+    let verified = false;
+
+    if (vh) {
+      verified = this.constantTimeEquals(vh, secret);
+    }
+
+    if (!verified && sig) {
+      const expectedB64 = createHmac("sha256", secret)
         .update(rawBody)
         .digest("base64");
+      verified = this.constantTimeEquals(sig, expectedB64);
+      if (!verified) {
+        const expectedHex = createHmac("sha256", secret)
+          .update(rawBody)
+          .digest("hex");
+        verified = this.constantTimeEquals(sig.toLowerCase(), expectedHex.toLowerCase());
+      }
+    }
 
-      if (!this.constantTimeEquals(signature.trim(), expectedSignature)) {
-        throw new BadRequestException("Invalid Flutterwave webhook signature.");
+    if (!verified) {
+      if (!vh && !sig) {
+        throw new BadRequestException(
+          "Missing Flutterwave webhook headers (verif-hash or flutterwave-signature).",
+        );
       }
-    } else if (verifHash) {
-      // Fallback: simple verif-hash comparison
-      if (verifHash !== env.flutterwaveWebhookSecret) {
-        throw new BadRequestException("Invalid Flutterwave webhook signature.");
-      }
-    } else {
-      throw new BadRequestException("Missing Flutterwave webhook signature header.");
+
+      throw new BadRequestException("Invalid Flutterwave webhook signature.");
     }
 
     let payload: FlutterwaveWebhookPayload;
@@ -2018,7 +2038,7 @@ export class MonetizationService implements OnModuleInit {
     const response = await this.polarRequest<{
       id?: string;
       url?: string;
-    }>("/v1/checkouts/sessions", {
+    }>("/v1/checkouts/", {
       method: "POST",
       body: JSON.stringify(checkoutBody),
     });
@@ -2078,7 +2098,7 @@ export class MonetizationService implements OnModuleInit {
         status?: string;
         product?: { id?: string } | null;
         subscription_id?: string | null;
-      }>(`/v1/checkouts/sessions/${checkoutId}`, {
+      }>(`/v1/checkouts/${encodeURIComponent(checkoutId)}`, {
         method: "GET",
       });
 
@@ -2624,22 +2644,6 @@ export class MonetizationService implements OnModuleInit {
     reference: string,
     existingPurchase: PurchaseWithRelations | null,
   ) {
-    const flwTransaction = await this.flutterwaveTransactionByReference(reference);
-
-    if (!flwTransaction?.id) {
-      return {
-        checkoutStatus: "pending" as const,
-        message: this.getCheckoutStatusMessage("pending"),
-        reason: "verification-delay",
-        status: await this.getStatus(userId),
-      };
-    }
-
-    const verifyResponse = await this.flutterwaveRequest<{
-      data: FlutterwaveTransaction;
-    }>(`/transactions/${flwTransaction.id}/verify`);
-
-    const verifiedTx = verifyResponse.data;
     const purchase =
       existingPurchase ??
       (await this.findPurchaseForCheckoutReference(reference));
@@ -2650,41 +2654,35 @@ export class MonetizationService implements OnModuleInit {
       );
     }
 
-    let transactionId = purchase.flutterwaveTransactionId?.trim() || null;
+    const byRef = await this.flutterwaveTransactionByReference(reference);
+
+    if (!byRef?.id) {
+      this.logger.log(
+        `Flutterwave confirm: verify_by_reference empty for ref=${reference.slice(0, 16)}…`,
+      );
+      return {
+        checkoutStatus: "pending" as const,
+        message: this.getCheckoutStatusMessage("pending"),
+        reason: "verification-delay",
+        status: await this.getStatus(userId),
+      };
+    }
+
+    const transactionId = String(byRef.id);
+    if (!purchase.flutterwaveTransactionId) {
+      await this.prisma.purchase.update({
+        where: { id: purchase.id },
+        data: { flutterwaveTransactionId: transactionId },
+      });
+      purchase.flutterwaveTransactionId = transactionId;
+    }
 
     this.logger.log(
-      `Flutterwave confirm: ref=${reference.slice(0, 12)}… storedTxnId=${Boolean(transactionId)}`,
+      `Flutterwave confirm: ref=${reference.slice(0, 12)}… txnId=${transactionId}`,
     );
 
-    if (!transactionId && env.flutterwaveSecretKey) {
-      const byRef = await this.flutterwaveTransactionByReference(reference);
-      if (byRef?.id != null) {
-        transactionId = String(byRef.id);
-        await this.prisma.purchase.update({
-          where: { id: purchase.id },
-          data: { flutterwaveTransactionId: transactionId },
-        });
-        purchase.flutterwaveTransactionId = transactionId;
-        this.logger.log(
-          `Resolved flutterwaveTransactionId=${transactionId} via verify_by_reference`,
-        );
-      }
-    }
-
-    if (transactionId) {
-      return this.verifyFlutterwaveTransaction(userId, transactionId, purchase);
-    }
-
-    this.logger.warn(
-      `Flutterwave confirm: no transactionId found after tx_ref lookup for ref=${reference.slice(0, 12)}…`,
-    );
-
-    return {
-      checkoutStatus: "pending" as const,
-      message: this.getCheckoutStatusMessage("pending"),
-      reason: "verification-delay",
-      status: await this.getStatus(userId),
-    };
+    // Single v3 verify path (avoid extra flutterwaveRequest that could 503 and surface as "pending" in the UI).
+    return this.verifyFlutterwaveTransaction(userId, transactionId, purchase);
   }
 
   /**
@@ -2728,11 +2726,16 @@ export class MonetizationService implements OnModuleInit {
         data?: FlutterwaveTransaction;
       } | null;
 
+      const apiOk =
+        String(body?.status ?? "")
+          .trim()
+          .toLowerCase() === "success";
+
       this.logger.log(
-        `Flutterwave v3 verify txn=${transactionId}: ok=${response.ok} apiStatus=${body?.status ?? "null"}`,
+        `Flutterwave v3 verify txn=${transactionId}: httpOk=${response.ok} apiStatus=${body?.status ?? "null"} normalizedOk=${apiOk}`,
       );
 
-      if (!response.ok || body?.status !== "success" || !body?.data) {
+      if (!response.ok || !apiOk || !body?.data) {
         this.logger.warn(
           `Flutterwave v3 verify failed for txn ${transactionId}: ${body?.message ?? response.status}`,
         );
@@ -2802,9 +2805,10 @@ export class MonetizationService implements OnModuleInit {
       await this.trySendPurchaseReceipt(resolvedPurchase);
 
       try {
-        const amountCents = transaction.amount
-          ? Math.floor(Number(transaction.amount) * 100)
-          : 0;
+        const amountCents =
+          this.flutterwaveMajorAmountToCents(
+            transaction.charged_amount ?? transaction.amount,
+          ) ?? 0;
 
         if (amountCents > 0) {
           await this.referralService.recordReferralCommission(
@@ -2896,6 +2900,9 @@ export class MonetizationService implements OnModuleInit {
           status: PurchaseStatus.COMPLETED,
         },
       });
+    }, {
+      maxWait: 10_000,
+      timeout: 20_000,
     });
   }
 
@@ -3016,6 +3023,9 @@ export class MonetizationService implements OnModuleInit {
           });
         }
       }
+    }, {
+      maxWait: 10_000,
+      timeout: 20_000,
     });
   }
 
@@ -3077,29 +3087,54 @@ export class MonetizationService implements OnModuleInit {
   }
 
   private mapFlutterwaveCheckoutStatus(flwStatus: string) {
-    switch (flwStatus) {
+    const normalized = flwStatus.trim().toLowerCase();
+    switch (normalized) {
       case "successful":
       case "succeeded":
+      case "success":
+      case "completed":
+      case "complete":
         return "success" as const;
       case "failed":
       case "cancelled":
+      case "canceled":
         return "failed" as const;
       default:
         return "pending" as const;
     }
   }
 
+  private flutterwaveMajorAmountToCents(
+    value: number | string | null | undefined,
+  ): number | null {
+    if (value === null || value === undefined) {
+      return null;
+    }
+    const n = Number(value);
+    if (!Number.isFinite(n)) {
+      return null;
+    }
+    return Math.round(n * 100);
+  }
+
   private assertFlutterwaveTransactionMatchesPurchase(
     transaction: FlutterwaveTransaction,
     purchase: Pick<PurchaseWithRelations, "amountCents" | "currency" | "flutterwaveTxRef">,
   ) {
-    const amount = transaction.amount ?? null;
     const currency = transaction.currency?.toUpperCase() ?? null;
+    const paidCents =
+      this.flutterwaveMajorAmountToCents(
+        transaction.charged_amount ?? transaction.amount,
+      ) ?? null;
 
-    if (amount !== null) {
-      const expectedAmount = purchase.amountCents / 100;
-
-      if (Math.abs(amount - expectedAmount) > 0.01) {
+    if (paidCents !== null) {
+      const expectedCents = purchase.amountCents;
+      const drift = Math.abs(paidCents - expectedCents);
+      // Allow tiny float / rounding drift (Flutterwave sometimes returns 2dp majors).
+      if (drift > 2) {
+        this.logger.warn(
+          `Flutterwave amount mismatch: paidCents=${paidCents} expectedCents=${expectedCents} tx=${transaction.id}`,
+        );
         throw new BadRequestException(
           "Verified Flutterwave amount does not match the purchase.",
         );
