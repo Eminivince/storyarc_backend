@@ -159,6 +159,10 @@ export type RegisterFcmTokenInput = {
   device?: string;
 };
 
+export type AcceptTermsInput = {
+  version: string;
+};
+
 export type ChangePasswordInput = {
   currentPassword: string;
   newPassword: string;

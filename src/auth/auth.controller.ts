@@ -15,6 +15,7 @@ import { AccessTokenGuard } from "../common/guards/access-token.guard";
 import { throttleForgotPassword } from "../common/throttler/throttler.constants";
 import { AuthenticatedRequest } from "../common/types/request-with-auth.type";
 import {
+  parseAcceptTermsBody,
   parseChangeEmailBody,
   parseChangePasswordBody,
   parseDeleteAccountBody,
@@ -199,6 +200,24 @@ export class AuthController {
   ) {
     const { password, code } = parseTotpDisableBody(body);
     return this.totpService.disable(request.auth!.userId, password, code);
+  }
+
+  // --- Terms Tracking ---
+
+  @UseGuards(AccessTokenGuard)
+  @Get("terms-status")
+  async getTermsStatus(@Req() request: AuthenticatedRequest) {
+    return this.authService.getTermsStatus(request.auth!.userId);
+  }
+
+  @UseGuards(AccessTokenGuard)
+  @Post("accept-terms")
+  async acceptTerms(
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    const { version } = parseAcceptTermsBody(body);
+    return this.authService.acceptTerms(request.auth!.userId, version);
   }
 
   // --- Account Management ---

@@ -323,6 +323,8 @@ export class AuthService {
         profile: {
           create: {
             displayName: pendingRegistration.displayName,
+            termsAcceptedVersion: AuthService.CURRENT_TERMS_VERSION,
+            termsAcceptedAt: new Date(),
           },
         },
         credential: {
@@ -570,6 +572,35 @@ export class AuthService {
     }
 
     return { message: "Your account has been deleted." };
+  }
+
+  static readonly CURRENT_TERMS_VERSION = "2025-03-31";
+
+  async getTermsStatus(userId: string) {
+    const profile = await this.prisma.profile.findUnique({
+      where: { userId },
+      select: { termsAcceptedVersion: true, termsAcceptedAt: true },
+    });
+
+    return {
+      currentVersion: AuthService.CURRENT_TERMS_VERSION,
+      acceptedVersion: profile?.termsAcceptedVersion ?? null,
+      acceptedAt: profile?.termsAcceptedAt?.toISOString() ?? null,
+      needsAcceptance:
+        profile?.termsAcceptedVersion !== AuthService.CURRENT_TERMS_VERSION,
+    };
+  }
+
+  async acceptTerms(userId: string, version: string) {
+    await this.prisma.profile.update({
+      where: { userId },
+      data: {
+        termsAcceptedVersion: version,
+        termsAcceptedAt: new Date(),
+      },
+    });
+
+    return { message: "Terms accepted.", version };
   }
 
   async changePassword(

@@ -1,5 +1,6 @@
 import { BadRequestException } from "@nestjs/common";
 import {
+  AcceptTermsInput,
   ChangeEmailInput,
   ChangePasswordInput,
   DeleteAccountInput,
@@ -391,6 +392,17 @@ export function parseRegisterFcmTokenBody(body: unknown): RegisterFcmTokenInput 
   return {
     token: getTrimmedString(record, "token", { minLength: 10, maxLength: 4096 }),
     device: getOptionalTrimmedString(record, "device", { maxLength: 255 }) ?? undefined,
+  };
+}
+
+export function parseAcceptTermsBody(body: unknown): AcceptTermsInput {
+  const record = getObjectBody(body);
+
+  return {
+    version: getTrimmedString(record, "version", {
+      minLength: 1,
+      maxLength: 20,
+    }),
   };
 }
 
