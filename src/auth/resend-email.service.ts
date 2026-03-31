@@ -434,4 +434,43 @@ Welcome aboard — we're glad you're here.`;
       );
     }
   }
+
+  async sendDataExportReady(params: {
+    email: string;
+    userName: string;
+    dataJson: string;
+  }) {
+    const result = await this.resend.emails.send({
+      from: env.resendFromEmail,
+      to: params.email,
+      subject: "Your TaleStead Data Export",
+      text: `Hi ${params.userName}, your data export is attached to this email.`,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 520px; margin: 0 auto; padding: 24px; color: #111827;">
+          <p style="font-size: 16px; margin-bottom: 16px;">Hi ${escapeHtmlForEmail(params.userName)},</p>
+          <h1 style="font-size: 24px; margin: 0 0 16px;">Your Data Export</h1>
+          <p style="font-size: 16px; line-height: 1.6; color: #374151;">
+            Your personal data export is attached to this email as a JSON file.
+            This includes your profile, reading history, reviews, purchases, and engagement data.
+          </p>
+          <p style="font-size: 14px; line-height: 1.6; color: #6b7280; margin-top: 16px;">
+            This export was generated at your request under GDPR Article 20 (right to data portability).
+            If you did not request this, please contact support immediately.
+          </p>
+        </div>
+      `,
+      attachments: [
+        {
+          filename: "talestead-data-export.json",
+          content: Buffer.from(params.dataJson).toString("base64"),
+        },
+      ],
+    });
+
+    if (result.error) {
+      this.logger.error(
+        `Resend error while sending data export: ${result.error.message}`,
+      );
+    }
+  }
 }

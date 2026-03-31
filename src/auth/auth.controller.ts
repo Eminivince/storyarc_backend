@@ -262,6 +262,13 @@ export class AuthController {
   }
 
   @UseGuards(AccessTokenGuard)
+  @Throttle({ default: { ttl: 86400000, limit: 1 } })
+  @Post("account/data-export")
+  async requestDataExport(@Req() request: AuthenticatedRequest) {
+    return this.authService.requestDataExport(request.auth!.userId);
+  }
+
+  @UseGuards(AccessTokenGuard)
   @Post("account/delete")
   async deleteAccount(
     @Body() body: unknown,

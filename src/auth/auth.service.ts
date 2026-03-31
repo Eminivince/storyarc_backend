@@ -49,6 +49,7 @@ const REFRESH_TOKEN_HASH_PREFIX = "sha256:";
 
 type AuthUserSnapshot = {
   id: string;
+  birthYear?: number | null;
   email: string;
   role: AppUserRole;
   status: UserStatus;
@@ -468,6 +469,7 @@ export class AuthService {
 
     return this.createSessionResponse(
       {
+        birthYear: user.birthYear,
         id: user.id,
         email: user.email,
         role: user.role,
@@ -502,6 +504,7 @@ export class AuthService {
 
     return this.createSessionResponse(
       {
+        birthYear: user.birthYear,
         id: user.id,
         email: user.email,
         role: user.role,
@@ -572,6 +575,127 @@ export class AuthService {
     }
 
     return { message: "Your account has been deleted." };
+  }
+
+  async requestDataExport(userId: string) {
+    const user = await this.prisma.user.findUniqueOrThrow({
+      where: { id: userId },
+      include: {
+        profile: true,
+        readingProgress: {
+          take: 500,
+          orderBy: { updatedAt: "desc" },
+          select: {
+            storyId: true,
+            publishedChapterId: true,
+            progressPercent: true,
+            updatedAt: true,
+          },
+        },
+        reviews: {
+          take: 200,
+          orderBy: { createdAt: "desc" },
+          select: {
+            storyId: true,
+            rating: true,
+            body: true,
+            createdAt: true,
+          },
+        },
+        purchases: {
+          take: 500,
+          orderBy: { createdAt: "desc" },
+          select: {
+            id: true,
+            kind: true,
+            amountCents: true,
+            currency: true,
+            status: true,
+            createdAt: true,
+          },
+        },
+        bookmarks: {
+          take: 200,
+          orderBy: { createdAt: "desc" },
+          select: {
+            storyId: true,
+            publishedChapterId: true,
+            createdAt: true,
+          },
+        },
+        readingLists: {
+          take: 50,
+          include: {
+            items: {
+              take: 100,
+              select: { storyId: true, createdAt: true },
+            },
+          },
+        },
+        dailyCheckIns: {
+          take: 365,
+          orderBy: { checkedInAt: "desc" },
+          select: { checkedInAt: true, rewardPoints: true },
+        },
+        follows: {
+          take: 200,
+          select: { targetType: true, subjectKey: true, createdAt: true },
+        },
+        comments: {
+          take: 500,
+          orderBy: { createdAt: "desc" },
+          select: {
+            publishedChapterId: true,
+            body: true,
+            createdAt: true,
+          },
+        },
+      },
+    });
+
+    const exportData = {
+      exportedAt: new Date().toISOString(),
+      account: {
+        id: user.id,
+        email: user.email,
+        role: user.role,
+        birthYear: user.birthYear,
+        createdAt: user.createdAt,
+      },
+      profile: user.profile
+        ? {
+            displayName: user.profile.displayName,
+            bio: user.profile.bio,
+            location: user.profile.location,
+            tagline: user.profile.tagline,
+            website: user.profile.website,
+            twitter: user.profile.twitter,
+            discord: user.profile.discord,
+          }
+        : null,
+      readingProgress: user.readingProgress,
+      reviews: user.reviews,
+      purchases: user.purchases,
+      bookmarks: user.bookmarks,
+      readingLists: user.readingLists.map((list: { name: string; description: string | null; items: unknown[] }) => ({
+        name: list.name,
+        description: list.description,
+        items: list.items,
+      })),
+      dailyCheckIns: user.dailyCheckIns,
+      follows: user.follows,
+      comments: user.comments,
+    };
+
+    const dataJson = JSON.stringify(exportData, null, 2);
+
+    await this.resendEmailService.sendDataExportReady({
+      email: user.email,
+      userName: user.profile?.displayName ?? "TaleStead User",
+      dataJson,
+    });
+
+    return { message: "Your data export has been sent to your email address." };
   }
 
   static readonly CURRENT_TERMS_VERSION = "2025-03-31";
@@ -1030,6 +1154,7 @@ export class AuthService {
 
     return {
       user: this.mapUser({
+        birthYear: user.birthYear,
         creatorApplication: user.creatorApplication,
         id: user.id,
         email: user.email,
@@ -1804,6 +1929,8 @@ export class AuthService {
   private mapUser(user: AuthUserSnapshot) {
     return {
       avatarUrl: user.profile?.avatarUrl ?? null,
+      birthYear: user.birthYear ?? null,
+      contentFiltering: user.profile?.contentFiltering ?? true,
       creatorApplication: this.mapCreatorApplication(user.creatorApplication),
       id: user.id,
       email: user.email,
