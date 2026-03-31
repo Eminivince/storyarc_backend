@@ -14,6 +14,10 @@ import {
   StoryRankingKind,
   StoryStatus,
 } from "@prisma/client";
+import {
+  labelFromGenreOrTagSlug,
+  sortGenresForReaderDisplay,
+} from "../catalog/story-genres";
 import { PrismaService } from "../database/prisma.service";
 import { RedisService } from "../redis/redis.service";
 import { isStoryLive } from "../utils/book-admin";
@@ -645,7 +649,7 @@ export class StoryRankingsService implements OnModuleDestroy, OnModuleInit {
   }
 
   private getGenreListCacheKey() {
-    return "reader:rankings:genres";
+    return "reader:rankings:genres:v2";
   }
 
   private async getCachedGenreList() {
@@ -662,10 +666,12 @@ export class StoryRankingsService implements OnModuleDestroy, OnModuleInit {
       orderBy: { name: "asc" },
       select: { name: true, slug: true },
     });
-    const mappedGenres = genres.map((genre) => ({
-      label: genre.name,
-      slug: genre.slug,
-    }));
+    const mappedGenres = sortGenresForReaderDisplay(
+      genres.map((genre) => ({
+        label: genre.name,
+        slug: genre.slug,
+      })),
+    );
 
     await this.redisService.setJson(
       cacheKey,
@@ -1283,11 +1289,7 @@ export class StoryRankingsService implements OnModuleDestroy, OnModuleInit {
   }
 
   private slugToLabel(slug: string) {
-    return slug
-      .split("-")
-      .filter(Boolean)
-      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-      .join(" ");
+    return labelFromGenreOrTagSlug(slug);
   }
 
   private mapStoryStatus(status: StoryStatus) {

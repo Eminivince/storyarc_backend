@@ -69,6 +69,8 @@ export type LoginInput = {
 
 export type GoogleAuthStartInput = {
   nextPath: string | null;
+  client: "web" | "mobile";
+  mobileRedirectUri: string | null;
 };
 
 export type GoogleAuthCallbackInput = {
@@ -80,6 +82,8 @@ export type GoogleAuthCallbackInput = {
 
 export type PendingGoogleAuthPayload = {
   nextPath: string | null;
+  /** Full URL (web page or custom scheme) that receives `#accessToken` / `?error` after OAuth. */
+  callbackBaseUrl: string;
 };
 
 export type RefreshInput = {

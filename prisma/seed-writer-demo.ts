@@ -12,7 +12,7 @@ import {
   UserRole,
   UserStatus,
 } from "@prisma/client";
-
+import { STORY_GENRES } from "../src/catalog/story-genres";
 import dotenv from "dotenv";
 dotenv.config();
 
@@ -75,28 +75,9 @@ const loadReaderSeed = {
     "Load-test reader account for TaleStead.",
 };
 
-const genreCatalog = {
-  fantasy: {
-    description: "Epic worlds, magic systems, and ancient destinies.",
-    name: "Fantasy",
-  },
-  mystery: {
-    description: "Suspense, shadows, and dangerous secrets.",
-    name: "Mystery",
-  },
-  romance: {
-    description: "Emotional relationships and character-driven tension.",
-    name: "Romance",
-  },
-  "sci-fi": {
-    description: "Futuristic settings, advanced tech, and cosmic stakes.",
-    name: "Sci-Fi",
-  },
-  supernatural: {
-    description: "Dark powers, cursed bloodlines, and eerie transformations.",
-    name: "Supernatural",
-  },
-} as const;
+const genreCatalog: Record<string, { description: string; name: string }> = Object.fromEntries(
+  STORY_GENRES.map((g) => [g.slug, { description: g.description, name: g.name }]),
+);
 
 const tagCatalog = {
   "forbidden-love": "Forbidden Love",
@@ -125,7 +106,7 @@ type StorySeed = {
   bannerImageUrl: string;
   cardImageUrl: string;
   coverImageUrl: string;
-  genreSlugs: Array<keyof typeof genreCatalog>;
+  genreSlugs: string[];
   maturityRating: string;
   premise: string;
   protagonist: string;
@@ -339,7 +320,7 @@ const stories: StorySeed[] = [
       "https://lh3.googleusercontent.com/aida-public/AB6AXuCZlq_xmsMUKyy23pPY0MLEhA9DBAibewCgSaVJ6PFkQJUQwMpU7zY-KIk14WS7_ZbZAiJCXgF-bVs9TN_CVFk5Lic8yaFnDsW25kLi4bB2MIW25Cm0UCO7D1O7dYbXhqsZlugDNn5EpMKbSoZg86JqAJH2Z_ar6BcZPBzzzugateEKXrQ87egp0xcO-uzqs66tsQ03HuN18ZGDmIc569hJf7o6-t5zsmP8h3fpojuKBrpy-P1yjE68MnXSQNq1cB8HS-2MvLtfhUE",
     coverImageUrl:
       "https://lh3.googleusercontent.com/aida-public/AB6AXuCZlq_xmsMUKyy23pPY0MLEhA9DBAibewCgSaVJ6PFkQJUQwMpU7zY-KIk14WS7_ZbZAiJCXgF-bVs9TN_CVFk5Lic8yaFnDsW25kLi4bB2MIW25Cm0UCO7D1O7dYbXhqsZlugDNn5EpMKbSoZg86JqAJH2Z_ar6BcZPBzzzugateEKXrQ87egp0xcO-uzqs66tsQ03HuN18ZGDmIc569hJf7o6-t5zsmP8h3fpojuKBrpy-P1yjE68MnXSQNq1cB8HS-2MvLtfhUE",
-    genreSlugs: ["supernatural", "romance", "fantasy"],
+    genreSlugs: ["werewolf", "romance", "fantasy"],
     maturityRating: "18+",
     premise:
       "Every tide season on Saint Aris carries voices out of the sea caves, and this year one of them is speaking with the drowned prince's authority.",
@@ -788,7 +769,9 @@ function buildLoadReaderShareSlug(index: number, listIndex: number) {
 function buildLoadReaderSelectedGenres(index: number) {
   const template = stories[index % stories.length];
 
-  return template.genreSlugs.map((genreSlug) => genreCatalog[genreSlug].name);
+  return template.genreSlugs
+    .map((genreSlug) => genreCatalog[genreSlug]?.name)
+    .filter((name): name is string => Boolean(name));
 }
 
 function pickDistinctItems<T>(items: T[], count: number, seed: number) {
@@ -922,6 +905,10 @@ async function ensureGenresAndTags(storySeeds: StorySeed[]) {
 
   for (const genreSlug of genreSlugs) {
     const genre = genreCatalog[genreSlug];
+    if (!genre) {
+      console.warn(`[seed] Skipping unknown genre slug: ${genreSlug}`);
+      continue;
+    }
     const existingGenre = await prisma.genre.findUnique({
       where: {
         slug: genreSlug,

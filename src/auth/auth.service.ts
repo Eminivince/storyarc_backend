@@ -76,9 +76,11 @@ export class AuthService {
   ) {}
 
   async startGoogleAuth(input: GoogleAuthStartInput) {
+    const callbackBaseUrl = this.resolveGoogleOauthCallbackBaseUrl(input);
+
     if (!this.isGoogleAuthConfigured()) {
       return {
-        url: this.buildGoogleCallbackErrorUrl("google_not_configured"),
+        url: this.buildGoogleCallbackErrorUrl(callbackBaseUrl, "google_not_configured"),
       };
     }
 
@@ -88,6 +90,7 @@ export class AuthService {
       this.getGoogleAuthStateKey(state),
       {
         nextPath: input.nextPath,
+        callbackBaseUrl,
       } satisfies PendingGoogleAuthPayload,
       GOOGLE_OAUTH_STATE_TTL_SECONDS,
     );
@@ -110,40 +113,60 @@ export class AuthService {
     input: GoogleAuthCallbackInput,
     requestMeta: RequestMeta,
   ) {
+    const fallbackBase = this.getGoogleFrontendCallbackBaseUrl();
+
     if (!this.isGoogleAuthConfigured()) {
       return {
-        url: this.buildGoogleCallbackErrorUrl("google_not_configured"),
+        url: this.buildGoogleCallbackErrorUrl(fallbackBase, "google_not_configured"),
       };
     }
 
+    const redisKey = input.state ? this.getGoogleAuthStateKey(input.state) : null;
+    const pendingPeek = redisKey
+      ? await this.redis.getJson<PendingGoogleAuthPayload>(redisKey)
+      : null;
+
     if (input.error) {
+      if (redisKey && pendingPeek) {
+        await this.redis.delete(redisKey);
+      }
+
+      const base = pendingPeek?.callbackBaseUrl ?? fallbackBase;
+
       return {
         url: this.buildGoogleCallbackErrorUrl(
-          input.error === "access_denied"
-            ? "google_access_denied"
-            : "google_auth_failed",
+          base,
+          input.error === "access_denied" ? "google_access_denied" : "google_auth_failed",
         ),
       };
     }
 
     if (!input.code || !input.state) {
+      if (redisKey && pendingPeek) {
+        await this.redis.delete(redisKey);
+      }
+
+      const base = pendingPeek?.callbackBaseUrl ?? fallbackBase;
+
       return {
-        url: this.buildGoogleCallbackErrorUrl("google_auth_failed"),
+        url: this.buildGoogleCallbackErrorUrl(base, "google_auth_failed"),
       };
     }
 
-    const redisKey = this.getGoogleAuthStateKey(input.state);
+    const redisKeyResolved = this.getGoogleAuthStateKey(input.state);
     const pendingGoogleAuth = await this.redis.getJson<PendingGoogleAuthPayload>(
-      redisKey,
+      redisKeyResolved,
     );
 
-    await this.redis.delete(redisKey);
+    await this.redis.delete(redisKeyResolved);
 
     if (!pendingGoogleAuth) {
       return {
-        url: this.buildGoogleCallbackErrorUrl("google_state_invalid"),
+        url: this.buildGoogleCallbackErrorUrl(fallbackBase, "google_state_invalid"),
       };
     }
+
+    const callbackBaseUrl = pendingGoogleAuth.callbackBaseUrl;
 
     try {
       const googleTokens = await this.exchangeGoogleCodeForTokens(input.code);
@@ -154,7 +177,7 @@ export class AuthService {
       );
 
       return {
-        url: this.buildGoogleCallbackSuccessUrl({
+        url: this.buildGoogleCallbackSuccessUrl(callbackBaseUrl, {
           nextPath: pendingGoogleAuth.nextPath,
           tokens: authResponse.tokens,
         }),
@@ -162,6 +185,7 @@ export class AuthService {
     } catch (error) {
       return {
         url: this.buildGoogleCallbackErrorUrl(
+          callbackBaseUrl,
           this.getGoogleCallbackErrorCode(error),
         ),
       };
@@ -1350,23 +1374,71 @@ export class AuthService {
     return `${frontendBase}/auth/google/callback`;
   }
 
-  private buildGoogleCallbackErrorUrl(errorCode: string) {
+  private resolveGoogleOauthCallbackBaseUrl(input: GoogleAuthStartInput): string {
+    if (input.client === "mobile") {
+      const uri = input.mobileRedirectUri ?? env.mobileOAuthCallbackUrl;
+
+      if (!uri?.trim()) {
+        throw new BadRequestException(
+          "Mobile Google sign-in requires the mobile_redirect query parameter (or MOBILE_OAUTH_CALLBACK_URL on the server).",
+        );
+      }
+
+      this.assertSafeMobileOAuthRedirectUri(uri);
+
+      return uri.trim();
+    }
+
+    return this.getGoogleFrontendCallbackBaseUrl();
+  }
+
+  private assertSafeMobileOAuthRedirectUri(uri: string): void {
+    const trimmed = uri.trim();
+
+    if (!trimmed.startsWith("storyarc://") && !trimmed.startsWith("exp://")) {
+      throw new BadRequestException(
+        "mobile_redirect must use the storyarc:// or exp:// scheme.",
+      );
+    }
+
+    if (/\s/.test(trimmed)) {
+      throw new BadRequestException("mobile_redirect must not contain whitespace.");
+    }
+
+    if (!trimmed.includes("auth/google/callback")) {
+      throw new BadRequestException(
+        "mobile_redirect must target the auth/google/callback path.",
+      );
+    }
+
+    try {
+      // eslint-disable-next-line no-new
+      new URL(trimmed);
+    } catch {
+      throw new BadRequestException("mobile_redirect must be a valid URL.");
+    }
+  }
+
+  private buildGoogleCallbackErrorUrl(callbackBaseUrl: string, errorCode: string) {
     const params = new URLSearchParams({
       error: errorCode,
     });
 
-    return `${this.getGoogleFrontendCallbackBaseUrl()}?${params.toString()}`;
+    return `${callbackBaseUrl}?${params.toString()}`;
   }
 
-  private buildGoogleCallbackSuccessUrl(input: {
-    nextPath: string | null;
-    tokens: {
-      accessToken: string;
-      expiresInSeconds: number;
-      refreshToken: string;
-      tokenType: string;
-    };
-  }) {
+  private buildGoogleCallbackSuccessUrl(
+    callbackBaseUrl: string,
+    input: {
+      nextPath: string | null;
+      tokens: {
+        accessToken: string;
+        expiresInSeconds: number;
+        refreshToken: string;
+        tokenType: string;
+      };
+    },
+  ) {
     const hash = new URLSearchParams({
       accessToken: input.tokens.accessToken,
       refreshToken: input.tokens.refreshToken,
@@ -1376,7 +1448,7 @@ export class AuthService {
       hash.set("next", input.nextPath);
     }
 
-    return `${this.getGoogleFrontendCallbackBaseUrl()}#${hash.toString()}`;
+    return `${callbackBaseUrl}#${hash.toString()}`;
   }
 
   private async createSessionResponse(

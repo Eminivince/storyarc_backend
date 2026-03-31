@@ -17,6 +17,7 @@
     "prisma:seed:badges": "node --env-file=.env -r ts-node/register/transpile-only prisma/seed-badges.ts",
     "prisma:set-user-role": "node --env-file=.env -r ts-node/register/transpile-only prisma/set-user-role.ts",
     "prisma:delete-all-books": "node --env-file=.env -r ts-node/register/transpile-only prisma/delete-all-books.ts",
+    "email:creator-approved": "node --env-file=.env -r ts-node/register/transpile-only scripts/send-creator-application-approved-email.ts",
     "postinstall": "prisma generate"
   },
   "keywords": [

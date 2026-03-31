@@ -62,6 +62,8 @@ export type AppEnv = {
   googleClientId: string | null;
   googleClientSecret: string | null;
   googleRedirectUri: string | null;
+  /** Fallback OAuth landing URL when the app omits `mobile_redirect` on `/auth/google/start`. */
+  mobileOAuthCallbackUrl: string | null;
 };
 
 function getStringEnv(name: string, fallback?: string): string {
@@ -75,7 +77,9 @@ function getStringEnv(name: string, fallback?: string): string {
 }
 
 function getNumberEnv(name: string, fallback?: number): number {
-  const rawValue = process.env[name] ?? (fallback !== undefined ? String(fallback) : undefined);
+  const rawValue =
+    process.env[name] ??
+    (fallback !== undefined ? String(fallback) : undefined);
 
   if (!rawValue) {
     throw new Error(`Missing required numeric environment variable: ${name}`);
@@ -140,7 +144,9 @@ function getNumberListEnv(name: string, fallback: number[]) {
 }
 
 function getAuthEmailDeliveryMode(): AuthEmailDeliveryMode {
-  const value = (process.env.AUTH_EMAIL_DELIVERY_MODE ?? "live").trim().toLowerCase();
+  const value = (process.env.AUTH_EMAIL_DELIVERY_MODE ?? "live")
+    .trim()
+    .toLowerCase();
 
   if (value === "live" || value === "capture") {
     return value;
@@ -197,21 +203,31 @@ function parseEnv(): AppEnv {
       "REGISTRATION_CODE_SECRET",
       getStringEnv("PASSWORD_RESET_CODE_SECRET"),
     ),
-    registrationCodeTtlMinutes: getNumberEnv("REGISTRATION_CODE_TTL_MINUTES", 15),
+    registrationCodeTtlMinutes: getNumberEnv(
+      "REGISTRATION_CODE_TTL_MINUTES",
+      15,
+    ),
     jwtAccessSecret: getStringEnv("JWT_ACCESS_SECRET"),
     jwtRefreshSecret: getStringEnv("JWT_REFRESH_SECRET"),
     passwordResetCodeSecret: getStringEnv("PASSWORD_RESET_CODE_SECRET"),
     accessTokenTtlMinutes: getNumberEnv("ACCESS_TOKEN_TTL_MINUTES", 15),
     refreshTokenTtlDays: getNumberEnv("REFRESH_TOKEN_TTL_DAYS", 30),
-    passwordResetCodeTtlMinutes: getNumberEnv("PASSWORD_RESET_CODE_TTL_MINUTES", 15),
-    resetVerifiedTokenTtlMinutes: getNumberEnv("RESET_VERIFIED_TOKEN_TTL_MINUTES", 15),
+    passwordResetCodeTtlMinutes: getNumberEnv(
+      "PASSWORD_RESET_CODE_TTL_MINUTES",
+      15,
+    ),
+    resetVerifiedTokenTtlMinutes: getNumberEnv(
+      "RESET_VERIFIED_TOKEN_TTL_MINUTES",
+      15,
+    ),
     resendApiKey:
       authEmailDeliveryMode === "capture"
-        ? getOptionalStringEnv("RESEND_API_KEY") ?? "captured-email-mode"
+        ? (getOptionalStringEnv("RESEND_API_KEY") ?? "captured-email-mode")
         : getStringEnv("RESEND_API_KEY"),
     resendFromEmail:
       authEmailDeliveryMode === "capture"
-        ? getOptionalStringEnv("RESEND_FROM_EMAIL") ?? "TaleStead <capture@local.test>"
+        ? (getOptionalStringEnv("RESEND_FROM_EMAIL") ??
+          "TaleStead <capture@local.test>")
         : getStringEnv("RESEND_FROM_EMAIL"),
     cryptomusMerchantId: getOptionalStringEnv("CRYPTOMUS_MERCHANT_ID"),
     cryptomusPaymentApiKey: getOptionalStringEnv("CRYPTOMUS_PAYMENT_API_KEY"),
@@ -222,19 +238,38 @@ function parseEnv(): AppEnv {
     paystackSecretKey: getOptionalStringEnv("PAYSTACK_SECRET_KEY"),
     paystackWebhookSecret: getOptionalStringEnv("PAYSTACK_WEBHOOK_SECRET"),
     paystackCurrency: getStringEnv("PAYSTACK_CURRENCY", "USD").toUpperCase(),
-    paystackPlanSilverMonthly: getOptionalStringEnv("PAYSTACK_PLAN_SILVER_MONTHLY"),
-    paystackPlanSilverAnnual: getOptionalStringEnv("PAYSTACK_PLAN_SILVER_ANNUAL"),
-    paystackPlanArcaneMonthly: getOptionalStringEnv("PAYSTACK_PLAN_ARCANE_MONTHLY"),
-    paystackPlanArcaneAnnual: getOptionalStringEnv("PAYSTACK_PLAN_ARCANE_ANNUAL"),
+    paystackPlanSilverMonthly: getOptionalStringEnv(
+      "PAYSTACK_PLAN_SILVER_MONTHLY",
+    ),
+    paystackPlanSilverAnnual: getOptionalStringEnv(
+      "PAYSTACK_PLAN_SILVER_ANNUAL",
+    ),
+    paystackPlanArcaneMonthly: getOptionalStringEnv(
+      "PAYSTACK_PLAN_ARCANE_MONTHLY",
+    ),
+    paystackPlanArcaneAnnual: getOptionalStringEnv(
+      "PAYSTACK_PLAN_ARCANE_ANNUAL",
+    ),
     flutterwaveSecretKey:
       getOptionalStringEnv("FLUTTERWAVE_SECRET_KEY") ??
       getOptionalStringEnv("FLUTTERWAVE_CLIENT_SECRET"),
     flutterwavePublicKey: getOptionalStringEnv("FLUTTERWAVE_PUBLIC_KEY"),
-    flutterwaveEncryptionKey: getOptionalStringEnv("FLUTTERWAVE_ENCRYPTION_KEY"),
-    flutterwaveWebhookSecret: getOptionalStringEnv("FLUTTERWAVE_WEBHOOK_SECRET"),
-    flutterwaveCurrency: getStringEnv("FLUTTERWAVE_CURRENCY", "NGN").toUpperCase(),
-    flutterwavePlanSilverMonthly: getOptionalStringEnv("FLUTTERWAVE_PLAN_SILVER_MONTHLY"),
-    flutterwavePlanSilverAnnual: getOptionalStringEnv("FLUTTERWAVE_PLAN_SILVER_ANNUAL"),
+    flutterwaveEncryptionKey: getOptionalStringEnv(
+      "FLUTTERWAVE_ENCRYPTION_KEY",
+    ),
+    flutterwaveWebhookSecret: getOptionalStringEnv(
+      "FLUTTERWAVE_WEBHOOK_SECRET",
+    ),
+    flutterwaveCurrency: getStringEnv(
+      "FLUTTERWAVE_CURRENCY",
+      "NGN",
+    ).toUpperCase(),
+    flutterwavePlanSilverMonthly: getOptionalStringEnv(
+      "FLUTTERWAVE_PLAN_SILVER_MONTHLY",
+    ),
+    flutterwavePlanSilverAnnual: getOptionalStringEnv(
+      "FLUTTERWAVE_PLAN_SILVER_ANNUAL",
+    ),
     polarAccessToken: getOptionalStringEnv("POLAR_ACCESS_TOKEN"),
     polarWebhookSecret: getOptionalStringEnv("POLAR_WEBHOOK_SECRET"),
     polarOrganizationId: getOptionalStringEnv("POLAR_ORGANIZATION_ID"),
@@ -253,6 +288,7 @@ function parseEnv(): AppEnv {
     googleClientId: getOptionalStringEnv("GOOGLE_CLIENT_ID"),
     googleClientSecret: getOptionalStringEnv("GOOGLE_CLIENT_SECRET"),
     googleRedirectUri: getOptionalStringEnv("GOOGLE_REDIRECT_URI"),
+    mobileOAuthCallbackUrl: getOptionalStringEnv("MOBILE_OAUTH_CALLBACK_URL"),
   };
 }
 

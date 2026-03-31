@@ -29,6 +29,15 @@ import {
 } from "../monetization/chapter-access";
 import { MonetizationService } from "../monetization/monetization.service";
 import {
+  labelFromGenreOrTagSlug,
+  sortGenresForReaderDisplay,
+} from "../catalog/story-genres";
+import {
+  buildDashboardPromoCarousel,
+  parsePromoCarouselFromEnv,
+} from "./dashboard-promo-carousel";
+import { parseFloatingPromosFromEnv } from "./reader-floating-promo";
+import {
   defaultBookPlatformPolicy,
   getStoryVisibilityState,
   isStoryLive,
@@ -381,13 +390,34 @@ export class ReaderService {
 
     const trendingStories = trendingPack.stories;
     const freshStories = freshPack.stories;
+    const envPromoSlides = parsePromoCarouselFromEnv();
+    const featuredMapped = featuredStory ? this.mapFeaturedStory(featuredStory) : null;
+    const promoCarousel = buildDashboardPromoCarousel(
+      envPromoSlides,
+      featuredMapped
+        ? {
+            bannerImage: featuredMapped.bannerImage,
+            shortSynopsis: featuredMapped.shortSynopsis,
+            slug: featuredMapped.slug,
+            title: featuredMapped.title,
+          }
+        : null,
+    );
+    const floatingPromos = parseFloatingPromosFromEnv();
 
-    if (!featuredStory && trendingStories.length === 0 && freshStories.length === 0) {
+    if (
+      !featuredStory &&
+      trendingStories.length === 0 &&
+      freshStories.length === 0 &&
+      promoCarousel.length === 0
+    ) {
       return {
         availableGenres: [],
         continueReading,
         featured: null,
         personalizationPending: true,
+        promoCarousel: [],
+        floatingPromos,
         rows: [],
       };
     }
@@ -395,8 +425,10 @@ export class ReaderService {
     return {
       availableGenres: [],
       continueReading,
-      featured: featuredStory ? this.mapFeaturedStory(featuredStory) : null,
+      featured: featuredMapped,
       personalizationPending: true,
+      promoCarousel,
+      floatingPromos,
       rows: [
         {
           id: "for-you",
@@ -497,7 +529,7 @@ export class ReaderService {
   }
 
   async getDashboardShelf(userId: string, shelfId: string, offset: number, limit: number) {
-    const allowedShelves = new Set(["for-you", "trending", "fresh"]);
+    const allowedShelves = new Set(["for-you", "trending", "fresh", "new-novels", "editors-picks"]);
 
     if (!allowedShelves.has(shelfId)) {
       throw new BadRequestException("Unknown dashboard shelf.");
@@ -505,6 +537,39 @@ export class ReaderService {
 
     const take = Math.min(Math.max(limit, 1), 50);
     const skip = Math.max(offset, 0);
+
+    if (shelfId === "editors-picks") {
+      const { stories: pageRecords, pageInfo } = await this.queryPublishedStories({
+        editorPick: true,
+        limit: take,
+        offset: skip,
+        orderMode: "editor_pick",
+      });
+
+      return {
+        shelfId,
+        title: "Editor\u2019s Picks",
+        stories: pageRecords.map((story) => this.mapStoryCard(story)),
+        pageInfo,
+      };
+    }
+
+    if (shelfId === "new-novels") {
+      const publishedSince = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+      const { stories: pageRecords, pageInfo } = await this.queryPublishedStories({
+        limit: take,
+        offset: skip,
+        orderMode: "new_listings",
+        publishedSince,
+      });
+
+      return {
+        shelfId,
+        title: "New novels",
+        stories: pageRecords.map((story) => this.mapStoryCard(story)),
+        pageInfo,
+      };
+    }
 
     if (shelfId === "trending") {
       const { stories: pageRecords, pageInfo } = await this.queryPublishedStories({
@@ -584,6 +649,59 @@ export class ReaderService {
         offset: skip,
       },
     };
+  }
+
+  /**
+   * In-progress titles for the reader library (one row per story, newest activity first).
+   */
+  async getLibraryReadingProgress(userId: string, limit: number, offset: number) {
+    const take = Math.min(Math.max(limit, 1), 60);
+    const skip = Math.max(offset, 0);
+
+    const entries = await this.prisma.readingProgress.findMany({
+      where: { userId },
+      include: {
+        chapter: true,
+        story: {
+          include: {
+            adminControl: true,
+            assets: true,
+            _count: {
+              select: { publishedChapters: true },
+            },
+          },
+        },
+      },
+      orderBy: { lastReadAt: "desc" },
+      skip,
+      take,
+    });
+
+    const items = entries
+      .filter((entry) => isStoryLive(entry.story))
+      .map((entry) => {
+        const firstGenreSlug = entry.story.genreSlugs[0] ?? "story";
+        return {
+          chapterNumber: entry.chapter.chapterNumber,
+          chapterSlug: entry.chapter.slug,
+          chapterTitle: entry.chapter.title,
+          coverImage:
+            entry.story.assets?.coverImageUrl ??
+            entry.story.assets?.cardImageUrl ??
+            entry.story.assets?.bannerImageUrl ??
+            "",
+          genreLabel: this.slugToLabel(firstGenreSlug),
+          kindLabel: "Novel",
+          lastReadAt: entry.lastReadAt.toISOString(),
+          lastReadAtLabel: this.formatRelativeDate(entry.lastReadAt),
+          progressPercent: entry.progressPercent,
+          storySlug: entry.story.slug,
+          storyTitle: entry.story.title,
+          totalChapters: entry.story._count.publishedChapters,
+        };
+      });
+
+    return { items };
   }
 
   async getFollowingFeed(userId: string) {
@@ -902,11 +1020,13 @@ export class ReaderService {
       }),
     ]);
 
+    const genreOptions = genres.map((genre) => ({
+      label: genre.name,
+      slug: genre.slug,
+    }));
+
     return {
-      genres: genres.map((genre) => ({
-        label: genre.name,
-        slug: genre.slug,
-      })),
+      genres: sortGenresForReaderDisplay(genreOptions),
       pageInfo: storyCatalog.pageInfo,
       stories: storyCatalog.stories.map((story) => this.mapStoryCard(story)),
     };
@@ -914,16 +1034,30 @@ export class ReaderService {
 
   async search(
     rawQuery?: string,
-    pagination: {
+    options: {
+      genre?: string;
       limit?: number | null;
+      minRating?: number | null;
       offset?: number | null;
+      sort?: "relevance" | "rating" | "reads" | "newest";
+      status?: string;
     } = {},
   ) {
     const query = this.normalizeOptionalQuery(rawQuery);
+    const sortToOrderMode: Record<string, "default" | "rating" | "reads" | "fresh"> = {
+      relevance: "default",
+      rating: "rating",
+      reads: "reads",
+      newest: "fresh",
+    };
     const { pageInfo, stories } = await this.queryPublishedStories({
-      limit: pagination.limit ?? null,
-      offset: pagination.offset ?? null,
+      genre: options.genre,
+      limit: options.limit ?? null,
+      minRating: options.minRating,
+      offset: options.offset ?? null,
+      orderMode: sortToOrderMode[options.sort ?? "relevance"] ?? "default",
       query,
+      statusFilter: options.status === "all" ? undefined : options.status,
     });
 
     const authorMap = new Map<
@@ -970,6 +1104,40 @@ export class ReaderService {
       pageInfo,
       stories: stories.map((story) => this.mapStoryCard(story)),
     };
+  }
+
+  async getTrendingSearches() {
+    const cacheKey = "reader:trending-searches";
+    const cached = await this.redisService.getJson<{ queries: Array<{ query: string; slug: string; coverImage: string }> }>(cacheKey);
+    if (cached) return cached;
+
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+
+    const topStories = await this.prisma.story.findMany({
+      where: {
+        ...this.buildPublishedStoryWhere({}),
+        latestChapterAt: { gte: sevenDaysAgo },
+      },
+      select: {
+        slug: true,
+        title: true,
+        totalReads: true,
+        assets: { select: { coverImageUrl: true, cardImageUrl: true } },
+      },
+      orderBy: [{ totalReads: "desc" }],
+      take: 10,
+    });
+
+    const result = {
+      queries: topStories.map((s) => ({
+        query: s.title,
+        slug: s.slug,
+        coverImage: s.assets?.coverImageUrl ?? s.assets?.cardImageUrl ?? "",
+      })),
+    };
+
+    await this.redisService.setJson(cacheKey, result, 3600);
+    return result;
   }
 
   async getStoryDetails(userId: string, storySlug: string) {
@@ -2895,11 +3063,15 @@ export class ReaderService {
   }
 
   private async queryPublishedStories(input: {
+    editorPick?: boolean;
     genre?: string;
     limit?: number | null;
+    minRating?: number | null;
     offset?: number | null;
-    orderMode?: "default" | "trending" | "fresh";
+    orderMode?: "default" | "trending" | "fresh" | "new_listings" | "rating" | "reads" | "editor_pick";
+    publishedSince?: Date;
     query?: string;
+    statusFilter?: string;
     tags?: string[];
   }) {
     const limit = input.limit ?? null;
@@ -2927,17 +3099,71 @@ export class ReaderService {
                 updatedAt: Prisma.SortOrder.desc,
               },
             ]
-          : [
-              {
-                featured: Prisma.SortOrder.desc,
-              },
-              {
-                totalReads: Prisma.SortOrder.desc,
-              },
-              {
-                updatedAt: Prisma.SortOrder.desc,
-              },
-            ];
+          : orderMode === "new_listings"
+            ? [
+                {
+                  liveAt: {
+                    sort: Prisma.SortOrder.desc,
+                    nulls: Prisma.NullsOrder.last,
+                  },
+                },
+                {
+                  publishedAt: {
+                    sort: Prisma.SortOrder.desc,
+                    nulls: Prisma.NullsOrder.last,
+                  },
+                },
+                {
+                  createdAt: Prisma.SortOrder.desc,
+                },
+              ]
+            : orderMode === "rating"
+              ? [
+                  {
+                    averageRating: Prisma.SortOrder.desc,
+                  },
+                  {
+                    reviewCount: Prisma.SortOrder.desc,
+                  },
+                  {
+                    updatedAt: Prisma.SortOrder.desc,
+                  },
+                ]
+              : orderMode === "reads"
+                ? [
+                    {
+                      totalReads: Prisma.SortOrder.desc,
+                    },
+                    {
+                      updatedAt: Prisma.SortOrder.desc,
+                    },
+                  ]
+                : orderMode === "editor_pick"
+                  ? [
+                      {
+                        editorPickedAt: {
+                          sort: Prisma.SortOrder.desc,
+                          nulls: Prisma.NullsOrder.last,
+                        },
+                      },
+                      {
+                        averageRating: Prisma.SortOrder.desc,
+                      },
+                      {
+                        updatedAt: Prisma.SortOrder.desc,
+                      },
+                    ]
+                  : [
+                    {
+                      featured: Prisma.SortOrder.desc,
+                    },
+                    {
+                      totalReads: Prisma.SortOrder.desc,
+                    },
+                    {
+                      updatedAt: Prisma.SortOrder.desc,
+                    },
+                  ];
     const stories: PublishedStoryCatalogRecord[] = await this.prisma.story.findMany({
       where: this.buildPublishedStoryWhere(input),
       select: publishedStoryCatalogSelect,
@@ -3761,8 +3987,12 @@ export class ReaderService {
   }
 
   private buildPublishedStoryWhere(input: {
+    editorPick?: boolean;
     genre?: string;
+    minRating?: number | null;
+    publishedSince?: Date;
     query?: string;
+    statusFilter?: string;
     tags?: string[];
   }): Prisma.StoryWhereInput {
     const normalizedGenre = this.normalizeOptionalQuery(input.genre);
@@ -3788,6 +4018,21 @@ export class ReaderService {
         ],
       },
     ];
+
+    if (input.publishedSince) {
+      const since = input.publishedSince;
+      andFilters.push({
+        OR: [
+          { liveAt: { gte: since } },
+          {
+            AND: [{ liveAt: null }, { publishedAt: { gte: since } }],
+          },
+          {
+            AND: [{ liveAt: null }, { publishedAt: null }, { createdAt: { gte: since } }],
+          },
+        ],
+      });
+    }
 
     if (normalizedGenreSlug) {
       andFilters.push({
@@ -3855,12 +4100,29 @@ export class ReaderService {
       });
     }
 
+    if (input.minRating != null && input.minRating > 0) {
+      andFilters.push({
+        averageRating: { gte: input.minRating },
+      });
+    }
+
+    if (input.editorPick) {
+      andFilters.push({ editorPick: true });
+    }
+
+    const statusFilterMap: Record<string, StoryStatus> = {
+      completed: StoryStatus.COMPLETED,
+      ongoing: StoryStatus.PUBLISHED,
+      hiatus: StoryStatus.HIATUS,
+    };
+    const mappedStatus = input.statusFilter ? statusFilterMap[input.statusFilter] : undefined;
+
     return {
       AND: andFilters,
       deletedAt: null,
-      status: {
-        in: [StoryStatus.PUBLISHED, StoryStatus.COMPLETED, StoryStatus.HIATUS],
-      },
+      status: mappedStatus
+        ? { equals: mappedStatus }
+        : { in: [StoryStatus.PUBLISHED, StoryStatus.COMPLETED, StoryStatus.HIATUS] },
     };
   }
 
@@ -4810,11 +5072,7 @@ export class ReaderService {
   }
 
   private slugToLabel(value: string) {
-    return value
-      .split(/[-_]/g)
-      .filter(Boolean)
-      .map((part) => part[0]?.toUpperCase() + part.slice(1))
-      .join(" ");
+    return labelFromGenreOrTagSlug(value);
   }
 
   private formatCompactNumber(value: number) {

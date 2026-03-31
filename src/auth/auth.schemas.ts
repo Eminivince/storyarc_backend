@@ -250,12 +250,21 @@ export function parseGoogleAuthStartQuery(
 ): GoogleAuthStartInput {
   const record = getObjectBody(query);
 
+  const clientRaw = getOptionalQueryString(record, "client", {
+    maxLength: 10,
+  });
+  const client = clientRaw === "mobile" ? "mobile" : "web";
+
   return {
     nextPath: normalizeNextPath(
       getOptionalQueryString(record, "next", {
         maxLength: 2048,
       }),
     ),
+    client,
+    mobileRedirectUri: getOptionalQueryString(record, "mobile_redirect", {
+      maxLength: 2048,
+    }),
   };
 }
 

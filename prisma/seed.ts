@@ -9,36 +9,15 @@ import {
   buildDefaultPlans,
   buildDefaultCoinPackages,
 } from "../src/monetization/monetization-catalog";
+import { STORY_GENRES } from "../src/catalog/story-genres";
 
 const prisma = new PrismaClient();
 
-const genres = [
-  {
-    description: "Epic worlds, magic systems, and ancient destinies.",
-    name: "Fantasy",
-    slug: "fantasy",
-  },
-  {
-    description: "Futuristic settings, advanced tech, and cosmic stakes.",
-    name: "Sci-Fi",
-    slug: "sci-fi",
-  },
-  {
-    description: "Suspense, shadows, and dangerous secrets.",
-    name: "Mystery",
-    slug: "mystery",
-  },
-  {
-    description: "Emotional relationships and character-driven tension.",
-    name: "Romance",
-    slug: "romance",
-  },
-  {
-    description: "Dark powers, cursed bloodlines, and eerie transformations.",
-    name: "Supernatural",
-    slug: "supernatural",
-  },
-];
+const genres = STORY_GENRES.map((g) => ({
+  description: g.description,
+  name: g.name,
+  slug: g.slug,
+}));
 
 const tags = [
   { name: "Slow Burn", slug: "slow-burn" },
@@ -150,7 +129,7 @@ const stories = [
     averageRating: 4.8,
     chapters: buildWolvexChapters(),
     featured: true,
-    genreSlugs: ["supernatural", "romance", "fantasy"],
+    genreSlugs: ["werewolf", "romance", "fantasy"],
     maturityRating: "18+",
     publishedAt: daysAgo(180),
     reviewCount: 1240,
@@ -225,7 +204,7 @@ const stories = [
       ],
     }),
     featured: false,
-    genreSlugs: ["supernatural", "mystery", "fantasy"],
+    genreSlugs: ["horror", "mystery", "fantasy"],
     maturityRating: "16+",
     publishedAt: daysAgo(150),
     reviewCount: 1110,

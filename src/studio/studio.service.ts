@@ -11,6 +11,7 @@ import {
   Prisma,
   StoryStatus,
 } from "@prisma/client";
+import { labelFromGenreOrTagSlug } from "../catalog/story-genres";
 import { PrismaService } from "../database/prisma.service";
 import { EngagementService } from "../engagement/engagement.service";
 import {
@@ -1468,11 +1469,7 @@ export class StudioService {
   }
 
   private slugToLabel(value: string) {
-    return value
-      .split("-")
-      .filter(Boolean)
-      .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
-      .join(" ");
+    return labelFromGenreOrTagSlug(value);
   }
 
   private createShortSynopsis(synopsis: string) {

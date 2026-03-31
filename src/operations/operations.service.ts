@@ -22,6 +22,7 @@ import {
   getDefaultCreatorRevenueSharePercent,
   isCreatorWithdrawalPeriodLabel,
 } from "../creator/creator-finance.constants";
+import { labelFromGenreOrTagSlug } from "../catalog/story-genres";
 import { PrismaService } from "../database/prisma.service";
 import { RedisService } from "../redis/redis.service";
 import {
@@ -4374,11 +4375,7 @@ export class OperationsService {
   }
 
   private slugToLabel(value: string) {
-    return value
-      .split("-")
-      .filter(Boolean)
-      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-      .join(" ");
+    return labelFromGenreOrTagSlug(value);
   }
 
   private buildInitials(value: string) {

@@ -630,6 +630,8 @@ model Story {
   maturityRating        String                  @default("16+")
   targetAudience        String                  @default("Young Adult")
   featured              Boolean                 @default(false)
+  editorPick            Boolean                 @default(false)
+  editorPickedAt        DateTime?
   deletedAt             DateTime?
   genreSlugs            String[]                @default([])
   tagSlugs              String[]                @default([])
@@ -669,6 +671,7 @@ model Story {
 
   @@index([authorId])
   @@index([featured, status])
+  @@index([editorPick, status])
   @@index([genreSlugs], type: Gin)
   @@index([tagSlugs], type: Gin)
   @@map("stories")

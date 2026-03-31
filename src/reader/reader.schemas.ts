@@ -402,6 +402,66 @@ export function parseStoryRankingLimitQuery(value: string | undefined) {
   return parsed;
 }
 
+export type StoryStatusFilter = "completed" | "ongoing" | "hiatus" | "all";
+
+export function parseStoryStatusFilterQuery(
+  value: string | undefined,
+): StoryStatusFilter {
+  if (!value) {
+    return "all";
+  }
+
+  const normalized = value.trim().toLowerCase();
+
+  if (
+    normalized === "completed" ||
+    normalized === "ongoing" ||
+    normalized === "hiatus" ||
+    normalized === "all"
+  ) {
+    return normalized;
+  }
+
+  return "all";
+}
+
+export function parseMinRatingQuery(value: string | undefined): number | null {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = Number(value);
+
+  if (!Number.isFinite(parsed) || parsed < 1 || parsed > 5) {
+    return null;
+  }
+
+  return parsed;
+}
+
+export type SearchSort = "relevance" | "rating" | "reads" | "newest";
+
+export function parseSearchSortQuery(
+  value: string | undefined,
+): SearchSort {
+  if (!value) {
+    return "relevance";
+  }
+
+  const normalized = value.trim().toLowerCase();
+
+  if (
+    normalized === "relevance" ||
+    normalized === "rating" ||
+    normalized === "reads" ||
+    normalized === "newest"
+  ) {
+    return normalized;
+  }
+
+  return "relevance";
+}
+
 export function parseUpsertReviewBody(body: unknown): UpsertReviewInput {
   const record = getObjectBody(body);
 

@@ -1,5 +1,5 @@
 import { Controller, Get, Param, Query } from "@nestjs/common";
-import { parseReadingListLimitQuery, parseStoryCatalogLimitQuery, parseStoryCatalogOffsetQuery, parseStoryRankingKindQuery, parseStoryRankingLimitQuery } from "./reader.schemas";
+import { parseMinRatingQuery, parseReadingListLimitQuery, parseSearchSortQuery, parseStoryCatalogLimitQuery, parseStoryCatalogOffsetQuery, parseStoryRankingKindQuery, parseStoryRankingLimitQuery, parseStoryStatusFilterQuery } from "./reader.schemas";
 import { ReaderService } from "./reader.service";
 import { StoryRankingsService } from "./story-rankings.service";
 
@@ -50,15 +50,28 @@ export class ReaderPublicController {
     });
   }
 
+  @Get("search/trending")
+  async getTrendingSearches() {
+    return this.readerService.getTrendingSearches();
+  }
+
   @Get("search")
   async search(
     @Query("q") query: string | undefined,
+    @Query("genre") genre: string | undefined,
+    @Query("status") status: string | undefined,
+    @Query("minRating") minRating: string | undefined,
+    @Query("sort") sort: string | undefined,
     @Query("limit") limit: string | undefined,
     @Query("offset") offset: string | undefined,
   ) {
     return this.readerService.search(query, {
+      genre: genre?.trim() || undefined,
       limit: parseStoryCatalogLimitQuery(limit),
+      minRating: parseMinRatingQuery(minRating),
       offset: parseStoryCatalogOffsetQuery(offset),
+      sort: parseSearchSortQuery(sort),
+      status: parseStoryStatusFilterQuery(status),
     });
   }
 
