@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Put, Req, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Param, Put, Req, UseGuards } from "@nestjs/common";
 import { AccessTokenGuard } from "../common/guards/access-token.guard";
 import { AuthenticatedRequest } from "../common/types/request-with-auth.type";
 import { parseUpdateCurrentUserProfileBody } from "./auth.schemas";
@@ -24,5 +24,11 @@ export class MeController {
       request.auth!.userId,
       parseUpdateCurrentUserProfileBody(body),
     );
+  }
+
+  @UseGuards(AccessTokenGuard)
+  @Get("users/:userId/profile")
+  async getPublicProfile(@Param("userId") userId: string) {
+    return this.authService.getPublicProfile(userId);
   }
 }

@@ -15,6 +15,8 @@ import { AccessTokenGuard } from "../common/guards/access-token.guard";
 import { throttleForgotPassword } from "../common/throttler/throttler.constants";
 import { AuthenticatedRequest } from "../common/types/request-with-auth.type";
 import {
+  parseChangeEmailBody,
+  parseChangePasswordBody,
   parseDeleteAccountBody,
   parseForgotPasswordBody,
   parseGoogleAuthCallbackQuery,
@@ -27,6 +29,7 @@ import {
   parseTotpChallengeBody,
   parseTotpDisableBody,
   parseTotpVerifySetupBody,
+  parseVerifyEmailChangeBody,
   parseVerifyResetCodeBody,
 } from "./auth.schemas";
 import { AuthService } from "./auth.service";
@@ -198,7 +201,46 @@ export class AuthController {
     return this.totpService.disable(request.auth!.userId, password, code);
   }
 
-  // --- Account Deletion ---
+  // --- Account Management ---
+
+  @UseGuards(AccessTokenGuard)
+  @Post("account/change-password")
+  async changePassword(
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    const { currentPassword, newPassword } = parseChangePasswordBody(body);
+    return this.authService.changePassword(
+      request.auth!.userId,
+      request.auth!.sessionId,
+      currentPassword,
+      newPassword,
+    );
+  }
+
+  @UseGuards(AccessTokenGuard)
+  @Post("account/change-email")
+  async requestEmailChange(
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    const { password, newEmail } = parseChangeEmailBody(body);
+    return this.authService.requestEmailChange(
+      request.auth!.userId,
+      password,
+      newEmail,
+    );
+  }
+
+  @UseGuards(AccessTokenGuard)
+  @Post("account/verify-email-change")
+  async verifyEmailChange(
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    const { code } = parseVerifyEmailChangeBody(body);
+    return this.authService.verifyEmailChange(request.auth!.userId, code);
+  }
 
   @UseGuards(AccessTokenGuard)
   @Post("account/delete")

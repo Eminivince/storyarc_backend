@@ -72,6 +72,11 @@ export class EngagementController {
     return this.engagementService.getOverview(request.auth!.userId);
   }
 
+  @Get("reading-stats")
+  async getReadingStats(@Req() request: AuthenticatedRequest) {
+    return this.engagementService.getReadingStats(request.auth!.userId);
+  }
+
   @Get("notifications")
   async getNotifications(@Req() request: AuthenticatedRequest) {
     return this.engagementService.getNotifications(request.auth!.userId);

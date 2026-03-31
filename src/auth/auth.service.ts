@@ -572,6 +572,141 @@ export class AuthService {
     return { message: "Your account has been deleted." };
   }
 
+  async changePassword(
+    userId: string,
+    sessionId: string,
+    currentPassword: string,
+    newPassword: string,
+  ) {
+    const user = await this.prisma.user.findUniqueOrThrow({
+      where: { id: userId },
+      include: { credential: true },
+    });
+
+    if (!user.credential) {
+      throw new BadRequestException(
+        "No password credential found. Cannot change password.",
+      );
+    }
+
+    const passwordMatches = await compare(
+      currentPassword,
+      user.credential.passwordHash,
+    );
+
+    if (!passwordMatches) {
+      throw new UnauthorizedException("Current password is incorrect.");
+    }
+
+    const newHash = await hash(newPassword, HASH_ROUNDS);
+
+    await this.prisma.credential.update({
+      where: { userId },
+      data: { passwordHash: newHash },
+    });
+
+    // Revoke all sessions except current one
+    await this.prisma.session.updateMany({
+      where: {
+        userId,
+        revokedAt: null,
+        NOT: { id: sessionId },
+      },
+      data: { revokedAt: new Date() },
+    });
+
+    return { message: "Password changed successfully." };
+  }
+
+  async requestEmailChange(userId: string, password: string, newEmail: string) {
+    const user = await this.prisma.user.findUniqueOrThrow({
+      where: { id: userId },
+      include: { credential: true },
+    });
+
+    if (!user.credential) {
+      throw new BadRequestException(
+        "No password credential found. Cannot verify identity.",
+      );
+    }
+
+    const passwordMatches = await compare(password, user.credential.passwordHash);
+
+    if (!passwordMatches) {
+      throw new UnauthorizedException("Invalid password.");
+    }
+
+    // Check if new email is already in use
+    const existing = await this.prisma.user.findFirst({
+      where: { email: newEmail.toLowerCase(), status: { not: "DELETED" } },
+    });
+
+    if (existing) {
+      throw new ConflictException("This email address is already in use.");
+    }
+
+    const code = String(randomInt(100000, 999999));
+    const codeHash = createHash("sha256").update(code).digest("hex");
+
+    await this.redis.setJson(
+      `email-change:${userId}`,
+      {
+        newEmail: newEmail.toLowerCase(),
+        codeHash,
+        expiresAtIso: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+      },
+      15 * 60,
+    );
+
+    await this.resendEmailService.sendEmailChangeVerification(newEmail, code);
+
+    return { message: "Verification code sent to your new email address." };
+  }
+
+  async verifyEmailChange(userId: string, code: string) {
+    const raw = await this.redis.getJson<{
+      newEmail: string;
+      codeHash: string;
+      expiresAtIso: string;
+    }>(`email-change:${userId}`);
+
+    if (!raw) {
+      throw new BadRequestException(
+        "No pending email change found. Please start again.",
+      );
+    }
+
+    const pending = raw;
+
+    if (new Date(pending.expiresAtIso) < new Date()) {
+      await this.redis.delete(`email-change:${userId}`);
+      throw new BadRequestException("Verification code has expired. Please start again.");
+    }
+
+    const codeHash = createHash("sha256").update(code).digest("hex");
+
+    const expected = Buffer.from(pending.codeHash, "hex");
+    const received = Buffer.from(codeHash, "hex");
+
+    if (expected.length !== received.length || !timingSafeEqual(expected, received)) {
+      throw new BadRequestException("Invalid verification code.");
+    }
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { email: pending.newEmail },
+    });
+
+    await this.redis.delete(`email-change:${userId}`);
+
+    const updatedUser = await this.getCurrentUser(userId);
+
+    return {
+      message: "Email address updated successfully.",
+      user: updatedUser.user,
+    };
+  }
+
   async logout(userId: string, sessionId: string) {
     await this.prisma.session.updateMany({
       where: {
@@ -872,6 +1007,94 @@ export class AuthService {
         profile: user.profile,
         totpCredential: user.totpCredential,
       }),
+    };
+  }
+
+  async getPublicProfile(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId, status: "ACTIVE" },
+      include: {
+        profile: true,
+      },
+    });
+
+    if (!user) {
+      throw new NotFoundException("User not found.");
+    }
+
+    const isPrivateLibrary = user.profile?.privateLibrary ?? true;
+
+    const [readingLists, badges, reviews, readingProgress] = await Promise.all([
+      isPrivateLibrary
+        ? Promise.resolve([])
+        : this.prisma.readingList.findMany({
+            where: { userId, visibility: "PUBLIC" },
+            select: {
+              id: true,
+              name: true,
+              description: true,
+              _count: { select: { items: true } },
+            },
+            take: 10,
+            orderBy: { createdAt: "desc" },
+          }),
+      this.prisma.userBadge.findMany({
+        where: { userId },
+        include: { badgeDefinition: true },
+        take: 20,
+        orderBy: { earnedAt: "desc" },
+      }),
+      this.prisma.review.findMany({
+        where: { userId },
+        include: {
+          story: {
+            select: { title: true, slug: true },
+          },
+        },
+        take: 10,
+        orderBy: { createdAt: "desc" },
+      }),
+      this.prisma.readingProgress.count({ where: { userId } }),
+    ]);
+
+    return {
+      profile: {
+        userId: user.id,
+        displayName: user.profile?.displayName ?? "TaleStead Reader",
+        avatarUrl: user.profile?.avatarUrl ?? null,
+        bio: user.profile?.bio ?? null,
+        tagline: user.profile?.tagline ?? null,
+        location: user.profile?.location ?? null,
+        website: user.profile?.website ?? null,
+        twitter: user.profile?.twitter ?? null,
+        joinedAt: user.createdAt.toISOString(),
+      },
+      stats: {
+        storiesRead: readingProgress,
+        badges: badges.length,
+        reviews: reviews.length,
+      },
+      badges: badges.map((ub) => ({
+        id: ub.badgeDefinition.id,
+        title: ub.badgeDefinition.title,
+        description: ub.badgeDefinition.description,
+        iconUrl: ub.badgeDefinition.iconUrl,
+        earnedAt: ub.earnedAt.toISOString(),
+      })),
+      reviews: reviews.map((r) => ({
+        id: r.id,
+        storyTitle: r.story.title,
+        storySlug: r.story.slug,
+        rating: r.rating,
+        body: r.body,
+        createdAt: r.createdAt.toISOString(),
+      })),
+      readingLists: readingLists.map((rl) => ({
+        id: rl.id,
+        name: rl.name,
+        description: rl.description,
+        storyCount: rl._count.items,
+      })),
     };
   }
 

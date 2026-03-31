@@ -1,5 +1,7 @@
 import { BadRequestException } from "@nestjs/common";
 import {
+  ChangeEmailInput,
+  ChangePasswordInput,
   DeleteAccountInput,
   ForgotPasswordInput,
   GoogleAuthCallbackInput,
@@ -13,6 +15,7 @@ import {
   TotpDisableInput,
   TotpVerifySetupInput,
   UpdateCurrentUserProfileInput,
+  VerifyEmailChangeInput,
   VerifyResetCodeInput,
 } from "./auth.types";
 import {
@@ -389,6 +392,56 @@ export function parseRegisterFcmTokenBody(body: unknown): RegisterFcmTokenInput 
     token: getTrimmedString(record, "token", { minLength: 10, maxLength: 4096 }),
     device: getOptionalTrimmedString(record, "device", { maxLength: 255 }) ?? undefined,
   };
+}
+
+export function parseChangePasswordBody(body: unknown): ChangePasswordInput {
+  const record = getObjectBody(body);
+
+  return {
+    currentPassword: getRawString(record, "currentPassword", {
+      minLength: 1,
+      maxLength: PASSWORD_MAX_LENGTH,
+    }),
+    newPassword: validateStrongPassword(
+      getRawString(record, "newPassword", {
+        minLength: 8,
+        maxLength: PASSWORD_MAX_LENGTH,
+      }),
+      "newPassword",
+    ),
+  };
+}
+
+export function parseChangeEmailBody(body: unknown): ChangeEmailInput {
+  const record = getObjectBody(body);
+
+  const newEmail = getTrimmedString(record, "newEmail", {
+    minLength: 5,
+    maxLength: 320,
+  }).toLowerCase();
+
+  if (!EMAIL_PATTERN.test(newEmail)) {
+    throw new BadRequestException("newEmail must be a valid email address.");
+  }
+
+  return {
+    password: getExistingPassword(record),
+    newEmail,
+  };
+}
+
+export function parseVerifyEmailChangeBody(body: unknown): VerifyEmailChangeInput {
+  const record = getObjectBody(body);
+  const code = getTrimmedString(record, "code", {
+    minLength: 6,
+    maxLength: 6,
+  });
+
+  if (!/^\d{6}$/.test(code)) {
+    throw new BadRequestException("code must be a 6-digit OTP.");
+  }
+
+  return { code };
 }
 
 export function parseUpdateCurrentUserProfileBody(

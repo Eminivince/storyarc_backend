@@ -158,3 +158,17 @@ export type RegisterFcmTokenInput = {
   token: string;
   device?: string;
 };
+
+export type ChangePasswordInput = {
+  currentPassword: string;
+  newPassword: string;
+};
+
+export type ChangeEmailInput = {
+  password: string;
+  newEmail: string;
+};
+
+export type VerifyEmailChangeInput = {
+  code: string;
+};

@@ -135,6 +135,35 @@ export class ResendEmailService {
     }
   }
 
+  async sendEmailChangeVerification(newEmail: string, code: string) {
+    const result = await this.resend.emails.send({
+      from: env.resendFromEmail,
+      to: newEmail,
+      subject: "Verify your new TaleStead email address",
+      text: `Your TaleStead email verification code is ${code}. It expires in 15 minutes.`,
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 520px; margin: 0 auto; padding: 24px; color: #111827;">
+          <p style="font-size: 16px; margin-bottom: 16px;">
+            Use the code below to verify your new email address on TaleStead.
+          </p>
+          <div style="font-size: 32px; font-weight: 700; letter-spacing: 8px; margin: 24px 0; color: #d97706;">
+            ${code}
+          </div>
+          <p style="font-size: 14px; color: #4b5563;">
+            This code expires in 15 minutes. If you did not request this change, you can ignore this email.
+          </p>
+        </div>
+      `,
+    });
+
+    if (result.error) {
+      this.logger.error(`Resend error while sending email change code: ${result.error.message}`);
+      throw new InternalServerErrorException(
+        "Could not send the verification code.",
+      );
+    }
+  }
+
   async sendNotificationEmail(params: {
     email: string;
     preview: string;

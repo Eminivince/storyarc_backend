@@ -303,6 +303,74 @@ export class EngagementService {
     }
   }
 
+  async getReadingStats(userId: string) {
+    const [readingProgress, readingTimeLedger, bookmarks, reviews] =
+      await Promise.all([
+        this.prisma.readingProgress.findMany({
+          where: { userId },
+          include: {
+            story: { select: { genreSlugs: true } },
+            chapter: { select: { chapterNumber: true } },
+          },
+        }),
+        this.prisma.rewardLedgerEntry.findMany({
+          where: { userId, reason: "READING_TIME" },
+          select: { note: true, createdAt: true },
+        }),
+        this.prisma.bookmark.count({ where: { userId } }),
+        this.prisma.review.count({ where: { userId } }),
+      ]);
+
+    const storiesStarted = readingProgress.length;
+    const storiesCompleted = readingProgress.filter(
+      (rp) => rp.progressPercent >= 100,
+    ).length;
+
+    // Sum reading time from ledger notes (format: "Reading time: X min (...)")
+    let totalReadingMinutes = 0;
+    for (const entry of readingTimeLedger) {
+      const match = entry.note?.match(/Reading time:\s*(\d+)\s*min/);
+      if (match) {
+        totalReadingMinutes += parseInt(match[1]!, 10);
+      }
+    }
+
+    // Chapters read = max chapter number per story
+    let totalChaptersRead = 0;
+    for (const rp of readingProgress) {
+      totalChaptersRead += rp.chapter.chapterNumber;
+    }
+
+    // Genre breakdown
+    const genreCounts: Record<string, number> = {};
+    for (const rp of readingProgress) {
+      const genre = rp.story.genreSlugs[0] ?? "other";
+      genreCounts[genre] = (genreCounts[genre] ?? 0) + 1;
+    }
+
+    const topGenres = Object.entries(genreCounts)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 5)
+      .map(([genre, count]) => ({
+        genre: genre
+          .split("-")
+          .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+          .join(" "),
+        count,
+      }));
+
+    return {
+      storiesStarted,
+      storiesCompleted,
+      totalChaptersRead,
+      totalReadingMinutes,
+      totalReadingHours: Math.round(totalReadingMinutes / 6) / 10,
+      bookmarks,
+      reviews,
+      topGenres,
+    };
+  }
+
   async getOverview(userId: string) {
     const user = await this.getActiveUser(userId, {
       includeProfile: true,

@@ -82,6 +82,24 @@ export class ReaderController {
     );
   }
 
+  @Get("reading-history")
+  async getReadingHistory(
+    @Query("limit") limitRaw: string | undefined,
+    @Query("offset") offsetRaw: string | undefined,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    const parsedLimit = Number.parseInt(limitRaw ?? "20", 10);
+    const limit = Number.isFinite(parsedLimit) ? parsedLimit : 20;
+    const parsedOffset = Number.parseInt(offsetRaw ?? "0", 10);
+    const offset = Number.isFinite(parsedOffset) ? parsedOffset : 0;
+
+    return this.readerService.getLibraryReadingProgress(
+      request.auth!.userId,
+      limit,
+      offset,
+    );
+  }
+
   @Get("following")
   async getFollowingFeed(@Req() request: AuthenticatedRequest) {
     return this.readerService.getFollowingFeed(request.auth!.userId);
