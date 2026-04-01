@@ -1746,12 +1746,26 @@ model AdminAuditLog {
   detail      String
   tone        String   @default("primary")
   icon        String   @default("bolt")
+  ipAddress   String?
+  userAgent   String?
   createdAt   DateTime @default(now())
   adminUser   User?    @relation("AdminActor", fields: [adminUserId], references: [id])
 
   @@index([createdAt])
   @@index([adminUserId, createdAt])
   @@map("admin_audit_logs")
+}
+
+model AdminRole {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  label       String
+  permissions String[]
+  isSystem    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("admin_roles")
 }
 
 model PaystackWebhookEvent {

@@ -7,6 +7,5 @@ import { OperationsService } from "./operations.service";
   imports: [AuthModule],
   controllers: [OperationsController],
   providers: [OperationsService],
-  exports: [OperationsService],
 })
 export class OperationsModule {}

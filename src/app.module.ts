@@ -12,6 +12,7 @@ import { EngagementModule } from "./engagement/engagement.module";
 import { HealthModule } from "./health/health.module";
 import { MonetizationModule } from "./monetization/monetization.module";
 import { OnboardingModule } from "./onboarding/onboarding.module";
+import { AdminModule } from "./admin/admin.module";
 import { OperationsModule } from "./operations/operations.module";
 import { ReaderModule } from "./reader/reader.module";
 import { RedisModule } from "./redis/redis.module";
@@ -38,6 +39,7 @@ import { WebsocketModule } from "./websocket/websocket.module";
     CreatorModule,
     EngagementModule,
     OnboardingModule,
+    AdminModule,
     OperationsModule,
     MonetizationModule,
     ReaderModule,
