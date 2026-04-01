@@ -321,7 +321,8 @@ enum AuthIdentityProvider {
 
 model User {
   id                          String                          @id @default(cuid())
-  email                       String                          @unique
+  email                       String?                         @unique
+  isGuest                     Boolean                         @default(false)
   role                        UserRole                        @default(READER)
   status                      UserStatus                      @default(ACTIVE)
   emailVerifiedAt             DateTime?
@@ -407,6 +408,7 @@ model User {
   referralPayouts             ReferralPayout[]
   referralEarningBalanceCents Int                             @default(0)
 
+  @@index([isGuest, createdAt])
   @@map("users")
 }
 

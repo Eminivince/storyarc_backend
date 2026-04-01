@@ -4,6 +4,7 @@ export const SESSION_CACHE_PREFIX = "auth:session:";
 
 export type CachedSessionLookup = {
   accessTokenExpiresAt: string;
+  isGuest: boolean;
   revokedAt: string | null;
   userId: string;
   userStatus: UserStatus;

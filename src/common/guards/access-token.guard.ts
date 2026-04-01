@@ -84,6 +84,7 @@ export class AccessTokenGuard implements CanActivate {
       include: {
         user: {
           select: {
+            isGuest: true,
             status: true,
           },
         },
@@ -107,6 +108,7 @@ export class AccessTokenGuard implements CanActivate {
         cacheKey,
         {
           accessTokenExpiresAt: session.accessTokenExpiresAt.toISOString(),
+          isGuest: session.user.isGuest,
           revokedAt: null,
           userId: session.userId,
           userStatus: session.user.status,

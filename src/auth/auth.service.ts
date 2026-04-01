@@ -50,7 +50,8 @@ const REFRESH_TOKEN_HASH_PREFIX = "sha256:";
 type AuthUserSnapshot = {
   id: string;
   birthYear?: number | null;
-  email: string;
+  email: string | null;
+  isGuest: boolean;
   role: AppUserRole;
   status: UserStatus;
   profile: UserProfileSnapshot | null;
@@ -349,6 +350,7 @@ export class AuthService {
       {
         id: user.id,
         email: user.email,
+        isGuest: false,
         role: user.role,
         status: user.status,
         creatorApplication: null,
@@ -472,6 +474,7 @@ export class AuthService {
         birthYear: user.birthYear,
         id: user.id,
         email: user.email,
+        isGuest: user.isGuest,
         role: user.role,
         status: user.status,
         creatorApplication: user.creatorApplication,
@@ -507,6 +510,7 @@ export class AuthService {
         birthYear: user.birthYear,
         id: user.id,
         email: user.email,
+        isGuest: user.isGuest,
         role: user.role,
         status: user.status,
         creatorApplication: user.creatorApplication,
@@ -1158,6 +1162,7 @@ export class AuthService {
         creatorApplication: user.creatorApplication,
         id: user.id,
         email: user.email,
+        isGuest: user.isGuest,
         role: user.role,
         status: user.status,
         profile: user.profile,
@@ -1612,6 +1617,7 @@ export class AuthService {
           id: createdUser.id,
           creatorApplication: createdUser.creatorApplication,
           email: createdUser.email,
+          isGuest: createdUser.isGuest,
           role: createdUser.role,
           status: createdUser.status,
           profile: createdUser.profile,
@@ -1688,6 +1694,7 @@ export class AuthService {
         id: syncedUser.id,
         creatorApplication: syncedUser.creatorApplication,
         email: syncedUser.email,
+        isGuest: syncedUser.isGuest,
         role: syncedUser.role,
         status: syncedUser.status,
         profile: syncedUser.profile,
@@ -1934,6 +1941,7 @@ export class AuthService {
       creatorApplication: this.mapCreatorApplication(user.creatorApplication),
       id: user.id,
       email: user.email,
+      isGuest: user.isGuest,
       role: user.role,
       displayName: user.profile?.displayName ?? "TaleStead User",
       onboarding: this.mapOnboarding(user.profile),
