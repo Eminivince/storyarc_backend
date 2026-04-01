@@ -24,3 +24,25 @@ export const throttleWithdrawal = {
 export const throttleForgotPassword = {
   default: { limit: 3, ttl: THROTTLE_DEFAULT_MS },
 } as const;
+
+// ── Admin-specific rate limits ──────────────────────────────────────
+
+export const throttleAdminRead = {
+  default: { limit: 60, ttl: THROTTLE_DEFAULT_MS },
+} as const;
+
+export const throttleAdminWrite = {
+  default: { limit: 30, ttl: THROTTLE_DEFAULT_MS },
+} as const;
+
+export const throttleAdminDestructive = {
+  default: { limit: 10, ttl: THROTTLE_DEFAULT_MS },
+} as const;
+
+export const throttleAdminFinancial = {
+  default: { limit: 5, ttl: THROTTLE_DEFAULT_MS },
+} as const;
+
+export const throttleAdminMaintenance = {
+  default: { limit: 2, ttl: 300_000 },
+} as const;

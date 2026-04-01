@@ -1,5 +1,7 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, Req, UseGuards } from "@nestjs/common";
+import { Throttle } from "@nestjs/throttler";
 import { AccessTokenGuard } from "../../common/guards/access-token.guard";
+import { throttleAdminRead, throttleAdminWrite } from "../../common/throttler/throttler.constants";
 import { AuthenticatedRequest } from "../../common/types/request-with-auth.type";
 import { parseAdminBookConfigBody, parseAdminBookPolicyBody, parseAdminBookVisibilityBody, parseAdminListLimitQuery, parseAdminListOffsetQuery } from "../../operations/operations.schemas";
 import { AdminGuard } from "../guards/admin.guard";
@@ -9,9 +11,11 @@ import { AdminBooksService } from "./admin-books.service";
 
 @Controller("admin")
 @UseGuards(AccessTokenGuard, AdminGuard, PermissionGuard)
+@Throttle(throttleAdminWrite)
 export class AdminBooksController {
   constructor(private readonly service: AdminBooksService) {}
 
+  @Throttle(throttleAdminRead)
   @RequirePermission("content:books:read")
   @Get("books")
   async getAdminBooks(
@@ -25,6 +29,7 @@ export class AdminBooksController {
     });
   }
 
+  @Throttle(throttleAdminRead)
   @RequirePermission("content:books:read")
   @Get("books/:bookSlug")
   async getAdminBook(@Param("bookSlug") bookSlug: string, @Req() request: AuthenticatedRequest) {
@@ -57,6 +62,7 @@ export class AdminBooksController {
     return this.service.updateAdminBookConfig(request.auth!.userId, bookSlug, parseAdminBookConfigBody(body));
   }
 
+  @Throttle(throttleAdminRead)
   @RequirePermission("content:featured:read")
   @Get("featured/weekly")
   async getWeeklyFeatured(@Req() request: AuthenticatedRequest) {

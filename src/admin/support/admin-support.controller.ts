@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Req, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Param, Post, Query, Req, UseGuards } from "@nestjs/common";
 import { Throttle } from "@nestjs/throttler";
 import { AccessTokenGuard } from "../../common/guards/access-token.guard";
 import {
@@ -20,8 +20,25 @@ export class AdminSupportController {
 
   @RequirePermission("admin:audit-log")
   @Get("activity")
-  async getAdminActivity(@Req() request: AuthenticatedRequest) {
-    return this.service.getAdminActivity(request.auth!.userId);
+  async getAdminActivity(
+    @Query("adminUserId") adminUserIdFilter: string | undefined,
+    @Query("action") action: string | undefined,
+    @Query("targetType") targetType: string | undefined,
+    @Query("from") from: string | undefined,
+    @Query("to") to: string | undefined,
+    @Query("cursor") cursor: string | undefined,
+    @Query("limit") limit: string | undefined,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.service.getAdminActivity(request.auth!.userId, {
+      adminUserId: adminUserIdFilter,
+      action,
+      targetType,
+      from,
+      to,
+      cursor,
+      limit: limit ? parseInt(limit, 10) : undefined,
+    });
   }
 
   @RequirePermission("support:tickets:read")

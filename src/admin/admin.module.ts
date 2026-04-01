@@ -3,6 +3,8 @@ import { AuthModule } from "../auth/auth.module";
 import { AdminAuditService } from "./admin-audit.service";
 import { AdminManagementController } from "./admin-management/admin-management.controller";
 import { AdminManagementService } from "./admin-management/admin-management.service";
+import { PendingActionsController } from "./pending-actions/pending-actions.controller";
+import { PendingActionsService } from "./pending-actions/pending-actions.service";
 import { AdminRoleSeedService } from "./admin-role-seed.service";
 import { AdminBooksController } from "./books/admin-books.controller";
 import { AdminBooksService } from "./books/admin-books.service";
@@ -33,6 +35,7 @@ import { PermissionGuard } from "./guards/permission.guard";
     AdminFinanceController,
     AdminHelpCenterController,
     AdminManagementController,
+    PendingActionsController,
     AdminModerationController,
     AdminSettingsController,
     AdminSupportController,
@@ -47,6 +50,7 @@ import { PermissionGuard } from "./guards/permission.guard";
     AdminFinanceService,
     AdminHelpCenterService,
     AdminManagementService,
+    PendingActionsService,
     AdminModerationService,
     AdminSettingsService,
     AdminSupportService,

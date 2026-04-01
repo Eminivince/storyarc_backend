@@ -409,6 +409,8 @@ model User {
   referralEarningBalanceCents Int                             @default(0)
   adminRoleId                 String?
   adminRole                   AdminRole?                      @relation("UserAdminRole", fields: [adminRoleId], references: [id])
+  requestedAdminActions       PendingAdminAction[]            @relation("PendingActionRequester")
+  reviewedAdminActions        PendingAdminAction[]            @relation("PendingActionReviewer")
 
   @@index([isGuest, createdAt])
   @@index([adminRoleId])
@@ -1770,6 +1772,27 @@ model AdminRole {
   users       User[]   @relation("UserAdminRole")
 
   @@map("admin_roles")
+}
+
+model PendingAdminAction {
+  id              String   @id @default(cuid())
+  action          String
+  targetType      String
+  targetId        String
+  payload         Json
+  requestedBy     String
+  status          String   @default("PENDING")
+  reviewedBy      String?
+  reviewNote      String?
+  reviewedAt      DateTime?
+  expiresAt       DateTime
+  createdAt       DateTime @default(now())
+  requestedByUser User     @relation("PendingActionRequester", fields: [requestedBy], references: [id])
+  reviewedByUser  User?    @relation("PendingActionReviewer", fields: [reviewedBy], references: [id])
+
+  @@index([status, createdAt])
+  @@index([requestedBy])
+  @@map("pending_admin_actions")
 }
 
 model PaystackWebhookEvent {

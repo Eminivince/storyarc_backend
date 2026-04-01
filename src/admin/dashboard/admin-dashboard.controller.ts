@@ -1,5 +1,7 @@
 import { Controller, Get, Req, UseGuards } from "@nestjs/common";
+import { Throttle } from "@nestjs/throttler";
 import { AccessTokenGuard } from "../../common/guards/access-token.guard";
+import { throttleAdminRead } from "../../common/throttler/throttler.constants";
 import { AdminGuard } from "../guards/admin.guard";
 import { PermissionGuard } from "../guards/permission.guard";
 import { RequirePermission } from "../decorators/require-permission.decorator";
@@ -11,6 +13,7 @@ import { AdminDashboardService } from "./admin-dashboard.service";
 export class AdminDashboardController {
   constructor(private readonly service: AdminDashboardService) {}
 
+  @Throttle(throttleAdminRead)
   @Get("dashboard")
   async getAdminOverview(@Req() request: AuthenticatedRequest) {
     return this.service.getAdminOverview(request.auth!.userId);
