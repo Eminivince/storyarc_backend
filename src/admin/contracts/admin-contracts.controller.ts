@@ -8,7 +8,12 @@ import {
   Req,
   UseGuards,
 } from "@nestjs/common";
+import { Throttle } from "@nestjs/throttler";
 import { AccessTokenGuard } from "../../common/guards/access-token.guard";
+import {
+  throttleAdminRead,
+  throttleAdminWrite,
+} from "../../common/throttler/throttler.constants";
 import { AuthenticatedRequest } from "../../common/types/request-with-auth.type";
 import {
   parseAdminContractBody,
@@ -20,9 +25,11 @@ import { AdminContractsService } from "./admin-contracts.service";
 
 @Controller("admin")
 @UseGuards(AccessTokenGuard, AdminGuard, PermissionGuard)
+@Throttle(throttleAdminWrite)
 export class AdminContractsController {
   constructor(private readonly service: AdminContractsService) {}
 
+  @Throttle(throttleAdminRead)
   @Get("contracts/lookups")
   async getAdminContractLookups(@Req() request: AuthenticatedRequest) {
     return this.service.getAdminContractLookups(request.auth!.userId, {
@@ -31,6 +38,7 @@ export class AdminContractsController {
     });
   }
 
+  @Throttle(throttleAdminRead)
   @Get("contracts/templates")
   async getAdminContractTemplates(@Req() request: AuthenticatedRequest) {
     return this.service.listAdminContractTemplates(request.auth!.userId, {
@@ -39,6 +47,7 @@ export class AdminContractsController {
     });
   }
 
+  @Throttle(throttleAdminRead)
   @Get("contracts/templates/:templateId")
   async getAdminContractTemplate(
     @Param("templateId") templateId: string,
@@ -86,6 +95,7 @@ export class AdminContractsController {
     );
   }
 
+  @Throttle(throttleAdminRead)
   @Get("contracts")
   async getAdminContracts(@Req() request: AuthenticatedRequest) {
     return this.service.listAdminContracts(request.auth!.userId, {
@@ -94,6 +104,7 @@ export class AdminContractsController {
     });
   }
 
+  @Throttle(throttleAdminRead)
   @Get("contracts/:contractId")
   async getAdminContract(
     @Param("contractId") contractId: string,

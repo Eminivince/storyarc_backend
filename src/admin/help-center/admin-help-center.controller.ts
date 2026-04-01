@@ -1,5 +1,10 @@
 import { Body, Controller, Delete, Get, Param, Post, Req, UseGuards } from "@nestjs/common";
+import { Throttle } from "@nestjs/throttler";
 import { AccessTokenGuard } from "../../common/guards/access-token.guard";
+import {
+  throttleAdminRead,
+  throttleAdminWrite,
+} from "../../common/throttler/throttler.constants";
 import { AuthenticatedRequest } from "../../common/types/request-with-auth.type";
 import { parseAdminHelpCenterArticleBody, parseAdminHelpCenterCategoryBody } from "../../operations/operations.schemas";
 import { AdminGuard } from "../guards/admin.guard";
@@ -9,9 +14,11 @@ import { AdminHelpCenterService } from "./admin-help-center.service";
 
 @Controller("admin")
 @UseGuards(AccessTokenGuard, AdminGuard, PermissionGuard)
+@Throttle(throttleAdminWrite)
 export class AdminHelpCenterController {
   constructor(private readonly service: AdminHelpCenterService) {}
 
+  @Throttle(throttleAdminRead)
   @RequirePermission("help-center:read")
   @Get("help-center")
   async getAdminHelpCenter(@Req() request: AuthenticatedRequest) {

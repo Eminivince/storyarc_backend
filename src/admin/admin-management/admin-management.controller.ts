@@ -1,5 +1,10 @@
 import { Body, Controller, Delete, Get, Param, Post, Req, UseGuards } from "@nestjs/common";
+import { Throttle } from "@nestjs/throttler";
 import { AccessTokenGuard } from "../../common/guards/access-token.guard";
+import {
+  throttleAdminDestructive,
+  throttleAdminRead,
+} from "../../common/throttler/throttler.constants";
 import { AuthenticatedRequest } from "../../common/types/request-with-auth.type";
 import { AdminGuard } from "../guards/admin.guard";
 import { PermissionGuard } from "../guards/permission.guard";
@@ -8,15 +13,18 @@ import { AdminManagementService } from "./admin-management.service";
 
 @Controller("admin/admins")
 @UseGuards(AccessTokenGuard, AdminGuard, PermissionGuard)
+@Throttle(throttleAdminDestructive)
 export class AdminManagementController {
   constructor(private readonly service: AdminManagementService) {}
 
+  @Throttle(throttleAdminRead)
   @RequirePermission("admin:manage")
   @Get("roles")
   async listAdminRoles() {
     return this.service.listAdminRoles();
   }
 
+  @Throttle(throttleAdminRead)
   @RequirePermission("admin:manage")
   @Get()
   async listAdminUsers() {

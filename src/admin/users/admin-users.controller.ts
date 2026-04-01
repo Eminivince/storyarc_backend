@@ -10,7 +10,13 @@ import {
   Req,
   UseGuards,
 } from "@nestjs/common";
+import { Throttle } from "@nestjs/throttler";
 import { AccessTokenGuard } from "../../common/guards/access-token.guard";
+import {
+  throttleAdminDestructive,
+  throttleAdminRead,
+  throttleAdminWrite,
+} from "../../common/throttler/throttler.constants";
 import { AuthenticatedRequest } from "../../common/types/request-with-auth.type";
 import {
   parseAdminListLimitQuery,
@@ -25,9 +31,11 @@ import { AdminUsersService } from "./admin-users.service";
 
 @Controller("admin")
 @UseGuards(AccessTokenGuard, AdminGuard, PermissionGuard)
+@Throttle(throttleAdminWrite)
 export class AdminUsersController {
   constructor(private readonly service: AdminUsersService) {}
 
+  @Throttle(throttleAdminRead)
   @Get("users")
   @RequirePermission("users.list")
   async getAdminUsers(
@@ -41,6 +49,7 @@ export class AdminUsersController {
     });
   }
 
+  @Throttle(throttleAdminRead)
   @Get("users/:userId")
   @RequirePermission("users.read")
   async getAdminUser(
@@ -68,6 +77,7 @@ export class AdminUsersController {
     );
   }
 
+  @Throttle(throttleAdminDestructive)
   @Patch("users/:userId/status")
   @RequirePermission("users.update")
   async updateAdminUserStatus(

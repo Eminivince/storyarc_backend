@@ -8,7 +8,12 @@ import {
   Req,
   UseGuards,
 } from "@nestjs/common";
+import { Throttle } from "@nestjs/throttler";
 import { AccessTokenGuard } from "../../common/guards/access-token.guard";
+import {
+  throttleAdminRead,
+  throttleAdminWrite,
+} from "../../common/throttler/throttler.constants";
 import { AuthenticatedRequest } from "../../common/types/request-with-auth.type";
 import {
   parseAdminCommentModerationBody,
@@ -24,9 +29,11 @@ import { AdminModerationService } from "./admin-moderation.service";
 
 @Controller("admin")
 @UseGuards(AccessTokenGuard, AdminGuard, PermissionGuard)
+@Throttle(throttleAdminWrite)
 export class AdminModerationController {
   constructor(private readonly service: AdminModerationService) {}
 
+  @Throttle(throttleAdminRead)
   @Get("reports")
   @RequirePermission("moderation.reports.list")
   async getAdminReports(
@@ -58,6 +65,7 @@ export class AdminModerationController {
     );
   }
 
+  @Throttle(throttleAdminRead)
   @Get("comments")
   @RequirePermission("moderation.comments.list")
   async getAdminComments(
@@ -89,6 +97,7 @@ export class AdminModerationController {
     );
   }
 
+  @Throttle(throttleAdminRead)
   @Get("reviews")
   @RequirePermission("moderation.reviews.list")
   async getAdminReviews(

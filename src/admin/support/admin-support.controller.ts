@@ -1,5 +1,10 @@
 import { Body, Controller, Get, Param, Post, Req, UseGuards } from "@nestjs/common";
+import { Throttle } from "@nestjs/throttler";
 import { AccessTokenGuard } from "../../common/guards/access-token.guard";
+import {
+  throttleAdminRead,
+  throttleAdminWrite,
+} from "../../common/throttler/throttler.constants";
 import { AuthenticatedRequest } from "../../common/types/request-with-auth.type";
 import { parseSupportMessageBody } from "../../operations/operations.schemas";
 import { AdminGuard } from "../guards/admin.guard";
@@ -9,6 +14,7 @@ import { AdminSupportService } from "./admin-support.service";
 
 @Controller("admin")
 @UseGuards(AccessTokenGuard, AdminGuard, PermissionGuard)
+@Throttle(throttleAdminRead)
 export class AdminSupportController {
   constructor(private readonly service: AdminSupportService) {}
 
@@ -24,6 +30,7 @@ export class AdminSupportController {
     return this.service.getAdminMessages(request.auth!.userId);
   }
 
+  @Throttle(throttleAdminWrite)
   @RequirePermission("support:tickets:reply")
   @Post("messages/:ticketId/reply")
   async replyToSupportTicket(

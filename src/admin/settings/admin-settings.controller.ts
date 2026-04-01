@@ -1,5 +1,11 @@
 import { Body, Controller, Get, Param, Post, Put, Req, UseGuards } from "@nestjs/common";
+import { Throttle } from "@nestjs/throttler";
 import { AccessTokenGuard } from "../../common/guards/access-token.guard";
+import {
+  throttleAdminMaintenance,
+  throttleAdminRead,
+  throttleAdminWrite,
+} from "../../common/throttler/throttler.constants";
 import { AuthenticatedRequest } from "../../common/types/request-with-auth.type";
 import { parseAdminSettingValueBody } from "../../operations/operations.schemas";
 import { AdminGuard } from "../guards/admin.guard";
@@ -9,9 +15,11 @@ import { AdminSettingsService } from "./admin-settings.service";
 
 @Controller("admin")
 @UseGuards(AccessTokenGuard, AdminGuard, PermissionGuard)
+@Throttle(throttleAdminWrite)
 export class AdminSettingsController {
   constructor(private readonly service: AdminSettingsService) {}
 
+  @Throttle(throttleAdminRead)
   @RequirePermission("settings:read")
   @Get("settings")
   async getAdminSettings(@Req() request: AuthenticatedRequest) {
@@ -34,6 +42,7 @@ export class AdminSettingsController {
     return this.service.updateAdminSettingValue(request.auth!.userId, settingKey, parseAdminSettingValueBody(body));
   }
 
+  @Throttle(throttleAdminMaintenance)
   @RequirePermission("maintenance:execute")
   @Post("maintenance/:actionId")
   async runMaintenanceAction(@Param("actionId") actionId: string, @Req() request: AuthenticatedRequest) {

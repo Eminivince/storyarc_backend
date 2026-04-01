@@ -1,5 +1,10 @@
 import { Body, Controller, Get, Param, Patch, Post, Req, UseGuards } from "@nestjs/common";
+import { Throttle } from "@nestjs/throttler";
 import { AccessTokenGuard } from "../../common/guards/access-token.guard";
+import {
+  throttleAdminFinancial,
+  throttleAdminRead,
+} from "../../common/throttler/throttler.constants";
 import { AuthenticatedRequest } from "../../common/types/request-with-auth.type";
 import { AdminGuard } from "../guards/admin.guard";
 import { PermissionGuard } from "../guards/permission.guard";
@@ -8,9 +13,11 @@ import { AdminFinanceService } from "./admin-finance.service";
 
 @Controller("admin")
 @UseGuards(AccessTokenGuard, AdminGuard, PermissionGuard)
+@Throttle(throttleAdminFinancial)
 export class AdminFinanceController {
   constructor(private readonly service: AdminFinanceService) {}
 
+  @Throttle(throttleAdminRead)
   @RequirePermission("finance:dashboard")
   @Get("monetization")
   async getAdminMonetization(@Req() request: AuthenticatedRequest) {
@@ -42,6 +49,7 @@ export class AdminFinanceController {
     return this.service.updatePayoutStatus(request.auth!.userId, payoutId, action, notes);
   }
 
+  @Throttle(throttleAdminRead)
   @RequirePermission("finance:refunds")
   @Get("refunds")
   async listAdminRefunds(@Req() request: AuthenticatedRequest) {
@@ -61,6 +69,7 @@ export class AdminFinanceController {
     return this.service.resolveAdminRefund(request.auth!.userId, refundId, action, notes);
   }
 
+  @Throttle(throttleAdminRead)
   @RequirePermission("finance:tax-forms")
   @Get("tax-forms")
   async listAdminTaxForms(@Req() request: AuthenticatedRequest) {
