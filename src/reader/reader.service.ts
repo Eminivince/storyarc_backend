@@ -529,7 +529,10 @@ export class ReaderService {
   }
 
   async getDashboardShelf(userId: string, shelfId: string, offset: number, limit: number) {
-    const allowedShelves = new Set(["for-you", "trending", "fresh", "new-novels", "editors-picks"]);
+    const allowedShelves = new Set([
+      "for-you", "trending", "fresh", "new-novels", "editors-picks",
+      "completed-novels", "readers-pick",
+    ]);
 
     if (!allowedShelves.has(shelfId)) {
       throw new BadRequestException("Unknown dashboard shelf.");
@@ -596,6 +599,40 @@ export class ReaderService {
       return {
         shelfId,
         title: "Fresh chapters",
+        stories: pageRecords.map((story) => this.mapStoryCard(story)),
+        pageInfo,
+      };
+    }
+
+    if (shelfId === "completed-novels") {
+      const { stories: pageRecords, pageInfo } = await this.queryPublishedStories({
+        limit: take,
+        offset: skip,
+        orderMode: "rating",
+        statusFilter: "completed",
+      });
+
+      return {
+        shelfId,
+        title: "Completed novels",
+        stories: pageRecords.map((story) => this.mapStoryCard(story)),
+        pageInfo,
+      };
+    }
+
+    if (shelfId === "readers-pick") {
+      // Top rated stories — weekly readers pick (min 3.5 stars)
+      const { stories: pageRecords, pageInfo } = await this.queryPublishedStories({
+        limit: take,
+        offset: skip,
+        orderMode: "rating",
+        minRating: 3.5,
+        publishedSince: undefined,
+      });
+
+      return {
+        shelfId,
+        title: "Readers\u2019 pick",
         stories: pageRecords.map((story) => this.mapStoryCard(story)),
         pageInfo,
       };
