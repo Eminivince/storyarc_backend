@@ -29,7 +29,7 @@ export class TotpService {
 
     const totp = new OTPAuth.TOTP({
       issuer: "TaleStead",
-      label: user.email,
+      label: user.email ?? undefined,
       algorithm: "SHA1",
       digits: 6,
       period: 30,

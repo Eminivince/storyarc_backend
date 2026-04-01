@@ -105,6 +105,24 @@ export class StudioController {
     );
   }
 
+  @Post("stories/:storySlug/completion")
+  async setStoryCompletionStatus(
+    @Param("storySlug") storySlug: string,
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    assertStudioAccess(request);
+
+    const record = body as Record<string, unknown>;
+    const completed = record?.completed === true;
+
+    return this.studioService.setStoryCompletionStatus(
+      request.auth!.userId,
+      storySlug,
+      completed,
+    );
+  }
+
   @Put("stories/:storySlug/chapters/draft")
   async saveChapterDraft(
     @Param("storySlug") storySlug: string,

@@ -7,6 +7,23 @@ import {
   Logger,
 } from "@nestjs/common";
 
+function isLikelyClientStreamAbort(exception: unknown): boolean {
+  if (!exception || typeof exception !== "object") {
+    return false;
+  }
+
+  const err = exception as NodeJS.ErrnoException & { message?: string };
+
+  return (
+    err.code === "ERR_STREAM_PREMATURE_CLOSE" ||
+    err.code === "ERR_STREAM_PREMATURE_CLIENT_CLOSE" ||
+    err.code === "ECONNRESET" ||
+    err.code === "EPIPE" ||
+    err.code === "ECANCELED" ||
+    err.message === "Premature close"
+  );
+}
+
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
   private readonly logger = new Logger(HttpExceptionFilter.name);
@@ -15,6 +32,34 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const http = host.switchToHttp();
     const response = http.getResponse<any>();
     const request = http.getRequest<any>();
+    const path = request?.url ?? "unknown";
+    const method = request?.method ?? "UNKNOWN";
+
+    const responseAlreadyCommitted =
+      Boolean(response?.sent) || Boolean(response?.raw?.headersSent);
+
+    if (responseAlreadyCommitted) {
+      if (isLikelyClientStreamAbort(exception)) {
+        this.logger.warn(
+          `${method} ${path}: client closed connection while response was sending`,
+          exception as Error,
+        );
+      } else {
+        this.logger.warn(
+          `${method} ${path}: error after headers sent (not sending another body)`,
+          exception as Error,
+        );
+      }
+      return;
+    }
+
+    if (isLikelyClientStreamAbort(exception)) {
+      this.logger.warn(
+        `${method} ${path}: client disconnected before response completed`,
+        exception as Error,
+      );
+      return;
+    }
 
     let statusCode = HttpStatus.INTERNAL_SERVER_ERROR;
     let message = "Internal server error";
@@ -47,9 +92,6 @@ export class HttpExceptionFilter implements ExceptionFilter {
         }
       }
     }
-
-    const path = request?.url ?? "unknown";
-    const method = request?.method ?? "UNKNOWN";
 
     if (statusCode >= 500) {
       this.logger.error(`${method} ${path} -> ${statusCode}`, exception as Error);

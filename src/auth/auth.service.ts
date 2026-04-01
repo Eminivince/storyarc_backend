@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
   UnauthorizedException,
 } from "@nestjs/common";
@@ -35,6 +36,10 @@ import {
 } from "./auth.types";
 import { ResendEmailService } from "./resend-email.service";
 import { AuthThrottleService } from "./auth-throttle.service";
+import {
+  makeGuestDisplayNameBase,
+  makeGuestDisplayNameWithSuffix,
+} from "./guest-display-names";
 import {
   buildSessionCacheKey,
   CachedSessionLookup,
@@ -70,6 +75,8 @@ type GoogleUserInfo = {
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
@@ -415,9 +422,34 @@ export class AuthService {
     }
   }
 
+  /**
+   * Reserves a display name not already used on any profile (avoids duplicate auto-names).
+   * Under concurrent signups, relies on DB check + retries; final fallback uses long hex.
+   */
+  private async allocateUniqueGuestDisplayName(): Promise<string> {
+    const maxAttempts = 48;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const candidate =
+        attempt < 28
+          ? makeGuestDisplayNameBase()
+          : makeGuestDisplayNameWithSuffix(randomBytes(2).toString("hex"));
+
+      const nameTaken = await this.prisma.profile.findFirst({
+        where: { displayName: candidate },
+        select: { id: true },
+      });
+
+      if (!nameTaken) {
+        return candidate;
+      }
+    }
+
+    return makeGuestDisplayNameWithSuffix(randomBytes(4).toString("hex"));
+  }
+
   async createGuestAccount(requestMeta: RequestMeta) {
-    const guestTag = randomBytes(4).toString("hex");
-    const displayName = `Reader_${guestTag}`;
+    const displayName = await this.allocateUniqueGuestDisplayName();
 
     const user = await this.prisma.user.create({
       data: {
@@ -814,7 +846,7 @@ export class AuthService {
     const dataJson = JSON.stringify(exportData, null, 2);
 
     await this.resendEmailService.sendDataExportReady({
-      email: user.email,
+      email: user.email!,
       userName: user.profile?.displayName ?? "TaleStead User",
       dataJson,
     });
@@ -1064,6 +1096,7 @@ export class AuthService {
         id: session.user.id,
         creatorApplication: session.user.creatorApplication,
         email: session.user.email,
+        isGuest: session.user.isGuest,
         role: session.user.role,
         status: session.user.status,
         profile: session.user.profile,
@@ -1099,7 +1132,7 @@ export class AuthService {
     await this.prisma.passwordResetToken.create({
       data: {
         userId: user.id,
-        email: user.email,
+        email: user.email!,
         codeHash: this.hashResetCode(user.id, code),
         expiresAt,
         verifiedAt: null,
@@ -1108,7 +1141,7 @@ export class AuthService {
     });
 
     await this.resendEmailService.sendPasswordResetCode({
-      email: user.email,
+      email: user.email!,
       displayName: user.profile?.displayName ?? "TaleStead Reader",
       code,
       expiresInMinutes: env.passwordResetCodeTtlMinutes,
@@ -1495,6 +1528,7 @@ export class AuthService {
         creatorApplication: updatedUser.creatorApplication,
         email: updatedUser.email,
         id: updatedUser.id,
+        isGuest: updatedUser.isGuest,
         profile: updatedUser.profile,
         role: updatedUser.role,
         status: updatedUser.status,
@@ -1503,6 +1537,7 @@ export class AuthService {
         creatorApplication: updatedUser.creatorApplication,
         email: updatedUser.email,
         id: updatedUser.id,
+        isGuest: updatedUser.isGuest,
         profile: updatedUser.profile,
         role: updatedUser.role,
         status: updatedUser.status,
@@ -2031,6 +2066,7 @@ export class AuthService {
     });
     await this.cacheSessionLookup({
       accessTokenExpiresAt,
+      isGuest: user.isGuest,
       revokedAt: null,
       sessionId,
       userId: user.id,
@@ -2094,6 +2130,7 @@ export class AuthService {
 
   private async cacheSessionLookup(input: {
     accessTokenExpiresAt: Date;
+    isGuest: boolean;
     revokedAt: Date | null;
     sessionId: string;
     userId: string;
@@ -2109,6 +2146,7 @@ export class AuthService {
       buildSessionCacheKey(input.sessionId),
       {
         accessTokenExpiresAt: input.accessTokenExpiresAt.toISOString(),
+        isGuest: input.isGuest,
         revokedAt: input.revokedAt ? input.revokedAt.toISOString() : null,
         userId: input.userId,
         userStatus: input.userStatus,
@@ -2144,7 +2182,7 @@ export class AuthService {
       showActivity: user.profile?.showActivity ?? true,
       tagline: user.profile?.tagline ?? "",
       twitter: user.profile?.twitter ?? "",
-      username: this.getDerivedUsername(user.email),
+      username: user.email ? this.getDerivedUsername(user.email) : "",
       website: user.profile?.website ?? "",
     };
   }
