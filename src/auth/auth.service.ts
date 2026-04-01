@@ -90,7 +90,10 @@ export class AuthService {
 
     if (!this.isGoogleAuthConfigured()) {
       return {
-        url: this.buildGoogleCallbackErrorUrl(callbackBaseUrl, "google_not_configured"),
+        url: this.buildGoogleCallbackErrorUrl(
+          callbackBaseUrl,
+          "google_not_configured",
+        ),
       };
     }
 
@@ -127,11 +130,16 @@ export class AuthService {
 
     if (!this.isGoogleAuthConfigured()) {
       return {
-        url: this.buildGoogleCallbackErrorUrl(fallbackBase, "google_not_configured"),
+        url: this.buildGoogleCallbackErrorUrl(
+          fallbackBase,
+          "google_not_configured",
+        ),
       };
     }
 
-    const redisKey = input.state ? this.getGoogleAuthStateKey(input.state) : null;
+    const redisKey = input.state
+      ? this.getGoogleAuthStateKey(input.state)
+      : null;
     const pendingPeek = redisKey
       ? await this.redis.getJson<PendingGoogleAuthPayload>(redisKey)
       : null;
@@ -146,7 +154,9 @@ export class AuthService {
       return {
         url: this.buildGoogleCallbackErrorUrl(
           base,
-          input.error === "access_denied" ? "google_access_denied" : "google_auth_failed",
+          input.error === "access_denied"
+            ? "google_access_denied"
+            : "google_auth_failed",
         ),
       };
     }
@@ -164,15 +174,17 @@ export class AuthService {
     }
 
     const redisKeyResolved = this.getGoogleAuthStateKey(input.state);
-    const pendingGoogleAuth = await this.redis.getJson<PendingGoogleAuthPayload>(
-      redisKeyResolved,
-    );
+    const pendingGoogleAuth =
+      await this.redis.getJson<PendingGoogleAuthPayload>(redisKeyResolved);
 
     await this.redis.delete(redisKeyResolved);
 
     if (!pendingGoogleAuth) {
       return {
-        url: this.buildGoogleCallbackErrorUrl(fallbackBase, "google_state_invalid"),
+        url: this.buildGoogleCallbackErrorUrl(
+          fallbackBase,
+          "google_state_invalid",
+        ),
       };
     }
 
@@ -180,7 +192,9 @@ export class AuthService {
 
     try {
       const googleTokens = await this.exchangeGoogleCodeForTokens(input.code);
-      const googleProfile = await this.fetchGoogleUserInfo(googleTokens.accessToken);
+      const googleProfile = await this.fetchGoogleUserInfo(
+        googleTokens.accessToken,
+      );
       const authResponse = await this.completeGoogleAuth(
         googleProfile,
         requestMeta,
@@ -218,7 +232,10 @@ export class AuthService {
 
     const passwordHash = await hash(input.password, HASH_ROUNDS);
     const code = this.generateOtpCode();
-    const expiresAt = this.addMinutes(new Date(), env.registrationCodeTtlMinutes);
+    const expiresAt = this.addMinutes(
+      new Date(),
+      env.registrationCodeTtlMinutes,
+    );
 
     await this.redis.setJson(
       this.getPendingRegistrationKey(email),
@@ -243,7 +260,8 @@ export class AuthService {
     return {
       email,
       expiresInSeconds: env.registrationCodeTtlMinutes * 60,
-      message: "Verification code sent. Check your email to finish registration.",
+      message:
+        "Verification code sent. Check your email to finish registration.",
     };
   }
 
@@ -258,9 +276,10 @@ export class AuthService {
       throw new ConflictException("An account with this email already exists.");
     }
 
-    const pendingRegistration = await this.redis.getJson<PendingRegistrationPayload>(
-      this.getPendingRegistrationKey(email),
-    );
+    const pendingRegistration =
+      await this.redis.getJson<PendingRegistrationPayload>(
+        this.getPendingRegistrationKey(email),
+      );
 
     if (!pendingRegistration) {
       throw new BadRequestException(
@@ -269,7 +288,10 @@ export class AuthService {
     }
 
     const code = this.generateOtpCode();
-    const expiresAt = this.addMinutes(new Date(), env.registrationCodeTtlMinutes);
+    const expiresAt = this.addMinutes(
+      new Date(),
+      env.registrationCodeTtlMinutes,
+    );
 
     await this.redis.setJson(
       this.getPendingRegistrationKey(email),
@@ -295,7 +317,10 @@ export class AuthService {
     };
   }
 
-  async verifyRegisterCode(input: VerifyResetCodeInput, requestMeta: RequestMeta) {
+  async verifyRegisterCode(
+    input: VerifyResetCodeInput,
+    requestMeta: RequestMeta,
+  ) {
     const email = this.normalizeEmail(input.email);
     const existingUser = await this.prisma.user.findUnique({
       where: { email },
@@ -306,9 +331,10 @@ export class AuthService {
       throw new ConflictException("An account with this email already exists.");
     }
 
-    const pendingRegistration = await this.redis.getJson<PendingRegistrationPayload>(
-      this.getPendingRegistrationKey(email),
-    );
+    const pendingRegistration =
+      await this.redis.getJson<PendingRegistrationPayload>(
+        this.getPendingRegistrationKey(email),
+      );
 
     if (!pendingRegistration) {
       throw new UnauthorizedException("Invalid verification code.");
@@ -320,7 +346,8 @@ export class AuthService {
     }
 
     if (
-      pendingRegistration.codeHash !== this.hashRegistrationCode(email, input.code)
+      pendingRegistration.codeHash !==
+      this.hashRegistrationCode(email, input.code)
     ) {
       throw new UnauthorizedException("Invalid verification code.");
     }
@@ -467,7 +494,11 @@ export class AuthService {
       },
     });
 
-    this.logger.log({ event: "GUEST_ACCOUNT_CREATED", userId: user.id, displayName });
+    this.logger.log({
+      event: "GUEST_ACCOUNT_CREATED",
+      userId: user.id,
+      displayName,
+    });
 
     return this.createSessionResponse(
       {
@@ -483,7 +514,11 @@ export class AuthService {
     );
   }
 
-  async upgradeGuestAccount(userId: string, input: GuestUpgradeInput, requestMeta: RequestMeta) {
+  async upgradeGuestAccount(
+    userId: string,
+    input: GuestUpgradeInput,
+    requestMeta: RequestMeta,
+  ) {
     const email = this.normalizeEmail(input.email);
 
     const user = await this.prisma.user.findUnique({
@@ -536,7 +571,12 @@ export class AuthService {
         data: { userId, passwordHash },
       }),
       ...(Object.keys(profileUpdate).length > 0
-        ? [this.prisma.profile.update({ where: { userId }, data: profileUpdate })]
+        ? [
+            this.prisma.profile.update({
+              where: { userId },
+              data: profileUpdate,
+            }),
+          ]
         : []),
     ]);
 
@@ -600,7 +640,10 @@ export class AuthService {
       throw new UnauthorizedException("This account is currently unavailable.");
     }
 
-    const passwordMatches = await compare(input.password, user.credential.passwordHash);
+    const passwordMatches = await compare(
+      input.password,
+      user.credential.passwordHash,
+    );
 
     if (!passwordMatches) {
       await this.authThrottleService.recordLoginFailure(email, requestMeta);
@@ -680,10 +723,15 @@ export class AuthService {
     });
 
     if (!user.credential) {
-      throw new BadRequestException("No password credential found. Cannot verify identity.");
+      throw new BadRequestException(
+        "No password credential found. Cannot verify identity.",
+      );
     }
 
-    const passwordMatches = await compare(password, user.credential.passwordHash);
+    const passwordMatches = await compare(
+      password,
+      user.credential.passwordHash,
+    );
 
     if (!passwordMatches) {
       throw new UnauthorizedException("Invalid password.");
@@ -833,11 +881,17 @@ export class AuthService {
       reviews: user.reviews,
       purchases: user.purchases,
       bookmarks: user.bookmarks,
-      readingLists: user.readingLists.map((list: { name: string; description: string | null; items: unknown[] }) => ({
-        name: list.name,
-        description: list.description,
-        items: list.items,
-      })),
+      readingLists: user.readingLists.map(
+        (list: {
+          name: string;
+          description: string | null;
+          items: unknown[];
+        }) => ({
+          name: list.name,
+          description: list.description,
+          items: list.items,
+        }),
+      ),
       dailyCheckIns: user.dailyCheckIns,
       follows: user.follows,
       comments: user.comments,
@@ -941,7 +995,10 @@ export class AuthService {
       );
     }
 
-    const passwordMatches = await compare(password, user.credential.passwordHash);
+    const passwordMatches = await compare(
+      password,
+      user.credential.passwordHash,
+    );
 
     if (!passwordMatches) {
       throw new UnauthorizedException("Invalid password.");
@@ -991,7 +1048,9 @@ export class AuthService {
 
     if (new Date(pending.expiresAtIso) < new Date()) {
       await this.redis.delete(`email-change:${userId}`);
-      throw new BadRequestException("Verification code has expired. Please start again.");
+      throw new BadRequestException(
+        "Verification code has expired. Please start again.",
+      );
     }
 
     const codeHash = createHash("sha256").update(code).digest("hex");
@@ -999,7 +1058,10 @@ export class AuthService {
     const expected = Buffer.from(pending.codeHash, "hex");
     const received = Buffer.from(codeHash, "hex");
 
-    if (expected.length !== received.length || !timingSafeEqual(expected, received)) {
+    if (
+      expected.length !== received.length ||
+      !timingSafeEqual(expected, received)
+    ) {
       throw new BadRequestException("Invalid verification code.");
     }
 
@@ -1039,9 +1101,12 @@ export class AuthService {
     let payload: TokenPayload;
 
     try {
-      payload = await this.jwtService.verifyAsync<TokenPayload>(input.refreshToken, {
-        secret: env.jwtRefreshSecret,
-      });
+      payload = await this.jwtService.verifyAsync<TokenPayload>(
+        input.refreshToken,
+        {
+          secret: env.jwtRefreshSecret,
+        },
+      );
     } catch {
       throw new UnauthorizedException("Invalid or expired refresh token.");
     }
@@ -1217,10 +1282,13 @@ export class AuthService {
 
   async resetPassword(input: ResetPasswordInput) {
     const redisKey = this.getVerifiedResetKey(input.resetToken);
-    const verifiedReset = await this.redis.getJson<VerifiedResetPayload>(redisKey);
+    const verifiedReset =
+      await this.redis.getJson<VerifiedResetPayload>(redisKey);
 
     if (!verifiedReset) {
-      throw new UnauthorizedException("The password reset token is invalid or expired.");
+      throw new UnauthorizedException(
+        "The password reset token is invalid or expired.",
+      );
     }
 
     const resetTokenRecord = await this.prisma.passwordResetToken.findUnique({
@@ -1232,11 +1300,15 @@ export class AuthService {
     }
 
     if (resetTokenRecord.usedAt) {
-      throw new BadRequestException("This password reset request has already been used.");
+      throw new BadRequestException(
+        "This password reset request has already been used.",
+      );
     }
 
     if (!resetTokenRecord.verifiedAt) {
-      throw new BadRequestException("Reset code verification is still required.");
+      throw new BadRequestException(
+        "Reset code verification is still required.",
+      );
     }
 
     if (resetTokenRecord.expiresAt.getTime() <= Date.now()) {
@@ -1306,7 +1378,9 @@ export class AuthService {
     });
 
     if (!user || user.status !== "ACTIVE") {
-      throw new UnauthorizedException("The current user account is unavailable.");
+      throw new UnauthorizedException(
+        "The current user account is unavailable.",
+      );
     }
 
     return {
@@ -1433,13 +1507,15 @@ export class AuthService {
     });
 
     if (!user || user.status !== "ACTIVE") {
-      throw new UnauthorizedException("The current user account is unavailable.");
+      throw new UnauthorizedException(
+        "The current user account is unavailable.",
+      );
     }
 
     const wasProfileComplete = Boolean(
       user.profile?.displayName &&
-        user.profile?.bio &&
-        user.profile?.selectedGenres?.length,
+      user.profile?.bio &&
+      user.profile?.selectedGenres?.length,
     );
 
     const updatedUser = await this.prisma.user.update({
@@ -1494,8 +1570,8 @@ export class AuthService {
 
     const isProfileComplete = Boolean(
       updatedUser.profile?.displayName &&
-        updatedUser.profile?.bio &&
-        updatedUser.profile?.selectedGenres?.length,
+      updatedUser.profile?.bio &&
+      updatedUser.profile?.selectedGenres?.length,
     );
 
     if (!wasProfileComplete && isProfileComplete) {
@@ -1604,11 +1680,9 @@ export class AuthService {
       },
       method: "POST",
     });
-    const payload = (await response.json().catch(() => null)) as
-      | {
-          access_token?: string;
-        }
-      | null;
+    const payload = (await response.json().catch(() => null)) as {
+      access_token?: string;
+    } | null;
 
     if (!response.ok || typeof payload?.access_token !== "string") {
       throw new BadRequestException("Google token exchange failed.");
@@ -1626,7 +1700,9 @@ export class AuthService {
       },
       method: "GET",
     });
-    const payload = (await response.json().catch(() => null)) as GoogleUserInfo | null;
+    const payload = (await response
+      .json()
+      .catch(() => null)) as GoogleUserInfo | null;
 
     if (!response.ok || !payload) {
       throw new BadRequestException("Google profile lookup failed.");
@@ -1889,9 +1965,7 @@ export class AuthService {
 
   private isGoogleAuthConfigured() {
     return Boolean(
-      env.googleClientId &&
-        env.googleClientSecret &&
-        env.googleRedirectUri,
+      env.googleClientId && env.googleClientSecret && env.googleRedirectUri,
     );
   }
 
@@ -1915,7 +1989,9 @@ export class AuthService {
     return `${frontendBase}/auth/google/callback`;
   }
 
-  private resolveGoogleOauthCallbackBaseUrl(input: GoogleAuthStartInput): string {
+  private resolveGoogleOauthCallbackBaseUrl(
+    input: GoogleAuthStartInput,
+  ): string {
     if (input.client === "mobile") {
       const uri = input.mobileRedirectUri ?? env.mobileOAuthCallbackUrl;
 
@@ -1943,7 +2019,9 @@ export class AuthService {
     }
 
     if (/\s/.test(trimmed)) {
-      throw new BadRequestException("mobile_redirect must not contain whitespace.");
+      throw new BadRequestException(
+        "mobile_redirect must not contain whitespace.",
+      );
     }
 
     if (!trimmed.includes("auth/google/callback")) {
@@ -1960,7 +2038,10 @@ export class AuthService {
     }
   }
 
-  private buildGoogleCallbackErrorUrl(callbackBaseUrl: string, errorCode: string) {
+  private buildGoogleCallbackErrorUrl(
+    callbackBaseUrl: string,
+    errorCode: string,
+  ) {
     const params = new URLSearchParams({
       error: errorCode,
     });
@@ -1997,7 +2078,10 @@ export class AuthService {
     requestMeta: RequestMeta,
   ) {
     const now = new Date();
-    const accessTokenExpiresAt = this.addMinutes(now, env.accessTokenTtlMinutes);
+    const accessTokenExpiresAt = this.addMinutes(
+      now,
+      env.accessTokenTtlMinutes,
+    );
     const refreshTokenExpiresAt = this.addDays(now, env.refreshTokenTtlDays);
     const placeholderHash = this.hashRefreshToken(this.generateOpaqueToken());
 
@@ -2022,7 +2106,10 @@ export class AuthService {
     requestMeta: RequestMeta,
   ) {
     const now = new Date();
-    const accessTokenExpiresAt = this.addMinutes(now, env.accessTokenTtlMinutes);
+    const accessTokenExpiresAt = this.addMinutes(
+      now,
+      env.accessTokenTtlMinutes,
+    );
     const refreshTokenExpiresAt = this.addDays(now, env.refreshTokenTtlDays);
 
     const accessToken = await this.jwtService.signAsync(
@@ -2111,10 +2198,7 @@ export class AuthService {
       .digest("hex")}`;
   }
 
-  private async verifyRefreshToken(
-    refreshToken: string,
-    storedHash: string,
-  ) {
+  private async verifyRefreshToken(refreshToken: string, storedHash: string) {
     if (storedHash.startsWith(REFRESH_TOKEN_HASH_PREFIX)) {
       const expectedHash = Buffer.from(this.hashRefreshToken(refreshToken));
       const actualHash = Buffer.from(storedHash);
@@ -2353,7 +2437,10 @@ export class AuthService {
     };
   }
 
-  async generateUnsubscribeToken(userId: string, category: string): Promise<string> {
+  async generateUnsubscribeToken(
+    userId: string,
+    category: string,
+  ): Promise<string> {
     return this.jwtService.signAsync(
       { sub: userId, category, type: "unsubscribe" },
       { secret: env.jwtAccessSecret, expiresIn: "90d" },

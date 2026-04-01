@@ -1782,10 +1782,10 @@ export class MonetizationService implements OnModuleInit {
     }
 
     if (paymentProvider === PAYMENT_PROVIDER.PAYSTACK) {
-      this.assertValidPaystackPlanCode(
+    this.assertValidPaystackPlanCode(
         paystackPlanCode!,
-        this.getPaystackPlanEnvFieldName(plan.code, input.billing),
-      );
+      this.getPaystackPlanEnvFieldName(plan.code, input.billing),
+    );
     }
 
     return {
@@ -2128,7 +2128,7 @@ export class MonetizationService implements OnModuleInit {
         checkoutStatus = "pending";
       }
     } catch (error) {
-      this.logger.warn(
+          this.logger.warn(
         `Polar checkout verification failed for ${checkoutId}: ${error instanceof Error ? error.message : error}`,
       );
       checkoutStatus = "pending";
@@ -2247,7 +2247,7 @@ export class MonetizationService implements OnModuleInit {
           processedAt: new Date(),
         },
       });
-    } catch (error) {
+        } catch (error) {
       if (!this.isUniqueConstraintError(error)) {
         throw error;
       }
@@ -2312,7 +2312,7 @@ export class MonetizationService implements OnModuleInit {
           );
         }
       } catch {
-        this.logger.warn(
+          this.logger.warn(
           `Referral commission recording failed for purchase ${purchase.id}`,
         );
       }
@@ -2545,8 +2545,8 @@ export class MonetizationService implements OnModuleInit {
     const polarSubscriptionId = String(eventData.id ?? "").trim();
 
     if (!polarSubscriptionId) {
-      return;
-    }
+        return;
+      }
 
     const subscription = await this.prisma.subscription.findFirst({
       where: { polarSubscriptionId },
