@@ -20,6 +20,7 @@ import {
   GoogleAuthStartInput,
   LoginInput,
   OnboardingStep,
+  GuestUpgradeInput,
   PendingRegistrationPayload,
   PendingGoogleAuthPayload,
   RefreshInput,
@@ -412,6 +413,125 @@ export class AuthService {
     } catch {
       // Non-critical: don't block registration if referral processing fails
     }
+  }
+
+  async createGuestAccount(requestMeta: RequestMeta) {
+    const guestTag = randomBytes(4).toString("hex");
+    const displayName = `Reader_${guestTag}`;
+
+    const user = await this.prisma.user.create({
+      data: {
+        email: null,
+        isGuest: true,
+        role: "READER",
+        profile: {
+          create: {
+            displayName,
+          },
+        },
+      },
+      include: {
+        profile: true,
+      },
+    });
+
+    this.logger.log({ event: "GUEST_ACCOUNT_CREATED", userId: user.id, displayName });
+
+    return this.createSessionResponse(
+      {
+        id: user.id,
+        email: null,
+        isGuest: true,
+        role: user.role,
+        status: user.status,
+        creatorApplication: null,
+        profile: user.profile,
+      },
+      requestMeta,
+    );
+  }
+
+  async upgradeGuestAccount(userId: string, input: GuestUpgradeInput, requestMeta: RequestMeta) {
+    const email = this.normalizeEmail(input.email);
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      include: { profile: true },
+    });
+
+    if (!user || !user.isGuest) {
+      throw new BadRequestException("Account is not a guest account.");
+    }
+
+    const existingEmail = await this.prisma.user.findUnique({
+      where: { email },
+      select: { id: true },
+    });
+
+    if (existingEmail) {
+      throw new ConflictException("An account with this email already exists.");
+    }
+
+    const passwordHash = await hash(input.password, HASH_ROUNDS);
+
+    const profileUpdate = input.displayName
+      ? { displayName: input.displayName.trim() }
+      : {};
+
+    const [updatedUser] = await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: userId },
+        data: {
+          email,
+          isGuest: false,
+          emailVerifiedAt: new Date(),
+        },
+        include: {
+          profile: true,
+          creatorApplication: {
+            select: {
+              reviewNotes: true,
+              revenueShareContractApproved: true,
+              reviewedAt: true,
+              status: true,
+              submittedAt: true,
+            },
+          },
+          totpCredential: { select: { verified: true } },
+        },
+      }),
+      this.prisma.credential.create({
+        data: { userId, passwordHash },
+      }),
+      ...(Object.keys(profileUpdate).length > 0
+        ? [this.prisma.profile.update({ where: { userId }, data: profileUpdate })]
+        : []),
+    ]);
+
+    this.logger.log({ event: "GUEST_UPGRADED", userId, email });
+
+    // Invalidate old session cache entries
+    const sessions = await this.prisma.session.findMany({
+      where: { userId, revokedAt: null },
+      select: { id: true },
+    });
+    for (const s of sessions) {
+      await this.redis.delete(buildSessionCacheKey(s.id));
+    }
+
+    return this.createSessionResponse(
+      {
+        id: updatedUser.id,
+        email: updatedUser.email,
+        isGuest: false,
+        role: updatedUser.role,
+        status: updatedUser.status,
+        creatorApplication: updatedUser.creatorApplication,
+        profile: updatedUser.profile,
+        totpCredential: updatedUser.totpCredential,
+      },
+      requestMeta,
+    );
   }
 
   async login(input: LoginInput, requestMeta: RequestMeta) {

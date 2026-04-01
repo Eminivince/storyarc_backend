@@ -67,6 +67,12 @@ export type LoginInput = {
   password: string;
 };
 
+export type GuestUpgradeInput = {
+  email: string;
+  password: string;
+  displayName?: string;
+};
+
 export type GoogleAuthStartInput = {
   nextPath: string | null;
   client: "web" | "mobile";

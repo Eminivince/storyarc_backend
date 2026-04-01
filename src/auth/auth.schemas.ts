@@ -7,6 +7,7 @@ import {
   ForgotPasswordInput,
   GoogleAuthCallbackInput,
   GoogleAuthStartInput,
+  GuestUpgradeInput,
   LoginInput,
   RefreshInput,
   RegisterFcmTokenInput,
@@ -237,6 +238,16 @@ export function parseRegisterBody(body: unknown): RegisterInput {
       maxLength: 80,
     }),
     referralCode: getOptionalTrimmedString(record, "referralCode", { maxLength: 40 }) ?? undefined,
+  };
+}
+
+export function parseGuestUpgradeBody(body: unknown): GuestUpgradeInput {
+  const record = getObjectBody(body);
+
+  return {
+    email: getEmail(record),
+    password: getPassword(record),
+    displayName: getOptionalTrimmedString(record, "displayName", { maxLength: 80 }) ?? undefined,
   };
 }
 

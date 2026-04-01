@@ -22,6 +22,7 @@ import {
   parseForgotPasswordBody,
   parseGoogleAuthCallbackQuery,
   parseGoogleAuthStartQuery,
+  parseGuestUpgradeBody,
   parseLoginBody,
   parseRefreshBody,
   parseRegisterBody,
@@ -107,6 +108,24 @@ export class AuthController {
   ) {
     return this.authService.verifyRegisterCode(
       parseVerifyResetCodeBody(body),
+      getRequestMeta(request),
+    );
+  }
+
+  @Post("guest")
+  async createGuest(@Req() request: AuthenticatedRequest) {
+    return this.authService.createGuestAccount(getRequestMeta(request));
+  }
+
+  @UseGuards(AccessTokenGuard)
+  @Post("guest/upgrade")
+  async upgradeGuest(
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.authService.upgradeGuestAccount(
+      request.auth!.userId,
+      parseGuestUpgradeBody(body),
       getRequestMeta(request),
     );
   }
