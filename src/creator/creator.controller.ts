@@ -12,6 +12,7 @@ import {
 } from "@nestjs/common";
 import { Throttle } from "@nestjs/throttler";
 import { AccessTokenGuard } from "../common/guards/access-token.guard";
+import { RegisteredUserGuard } from "../common/guards/registered-user.guard";
 import { throttleWithdrawal } from "../common/throttler/throttler.constants";
 import { AuthenticatedRequest } from "../common/types/request-with-auth.type";
 import {
@@ -37,7 +38,7 @@ function assertCreatorRole(request: AuthenticatedRequest) {
 }
 
 @Controller("creator")
-@UseGuards(AccessTokenGuard)
+@UseGuards(AccessTokenGuard, RegisteredUserGuard)
 export class CreatorController {
   constructor(
     private readonly creatorService: CreatorService,

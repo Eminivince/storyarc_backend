@@ -14,6 +14,7 @@ import {
 } from "@nestjs/common";
 import { CreatorAnalyticsService } from "../analytics/creator-analytics.service";
 import { AccessTokenGuard } from "../common/guards/access-token.guard";
+import { RegisteredUserGuard } from "../common/guards/registered-user.guard";
 import { AuthenticatedRequest } from "../common/types/request-with-auth.type";
 import {
   parseStudioAnalyticsQuery,
@@ -34,7 +35,7 @@ function assertStudioAccess(request: AuthenticatedRequest) {
 }
 
 @Controller("studio")
-@UseGuards(AccessTokenGuard)
+@UseGuards(AccessTokenGuard, RegisteredUserGuard)
 export class StudioController {
   constructor(
     private readonly studioService: StudioService,

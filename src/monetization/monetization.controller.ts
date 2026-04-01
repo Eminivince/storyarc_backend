@@ -11,6 +11,7 @@ import {
 } from "@nestjs/common";
 import { SkipThrottle, Throttle } from "@nestjs/throttler";
 import { AccessTokenGuard } from "../common/guards/access-token.guard";
+import { RegisteredUserGuard } from "../common/guards/registered-user.guard";
 import { AuthenticatedRequest } from "../common/types/request-with-auth.type";
 import {
   throttlePayment,
@@ -29,7 +30,7 @@ import {
 import { MonetizationService } from "./monetization.service";
 
 @Controller("monetization")
-@UseGuards(AccessTokenGuard)
+@UseGuards(AccessTokenGuard, RegisteredUserGuard)
 export class MonetizationController {
   constructor(private readonly monetizationService: MonetizationService) {}
 
