@@ -140,6 +140,35 @@ export class OperationsController {
     );
   }
 
+  @Get("admin/featured/weekly")
+  async getWeeklyFeatured(@Req() request: AuthenticatedRequest) {
+    return this.operationsService.getWeeklyFeaturedStories(request.auth!.userId);
+  }
+
+  @Post("admin/featured/weekly")
+  async setWeeklyFeatured(
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    const record = body as Record<string, unknown>;
+    const slugs = Array.isArray(record?.slugs) ? (record.slugs as string[]) : [];
+    return this.operationsService.setWeeklyFeaturedStories(
+      request.auth!.userId,
+      slugs,
+    );
+  }
+
+  @Delete("admin/featured/weekly/:storySlug")
+  async removeWeeklyFeatured(
+    @Param("storySlug") storySlug: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.operationsService.removeWeeklyFeaturedStory(
+      request.auth!.userId,
+      storySlug,
+    );
+  }
+
   @Get("admin/contracts/lookups")
   async getAdminContractLookups(@Req() request: AuthenticatedRequest) {
     return this.operationsService.getAdminContractLookups(request.auth!.userId);

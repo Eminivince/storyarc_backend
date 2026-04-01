@@ -1285,6 +1285,65 @@ export class OperationsService {
     };
   }
 
+  async getWeeklyFeaturedStories(adminUserId: string) {
+    await this.requireAdmin(adminUserId);
+
+    const stories = await this.prisma.story.findMany({
+      where: { featured: true, isLive: true },
+      include: { assets: true, author: { include: { profile: true } } },
+      orderBy: { totalReads: "desc" },
+      take: 20,
+    });
+
+    return {
+      stories: stories.map((s) => ({
+        slug: s.slug,
+        title: s.title,
+        coverImage: s.assets?.coverImageUrl ?? null,
+        authorName: s.author?.profile?.displayName ?? "Unknown",
+        totalReads: s.totalReads,
+        averageRating: s.averageRating,
+        status: s.status,
+        featuredAt: s.updatedAt,
+      })),
+    };
+  }
+
+  async setWeeklyFeaturedStories(adminUserId: string, slugs: string[]) {
+    const admin = await this.requireAdmin(adminUserId);
+
+    // Clear existing featured
+    await this.prisma.story.updateMany({
+      where: { featured: true },
+      data: { featured: false },
+    });
+
+    // Set new featured
+    if (slugs.length > 0) {
+      await this.prisma.story.updateMany({
+        where: { slug: { in: slugs }, isLive: true },
+        data: { featured: true },
+      });
+    }
+
+    this.logger.log({ event: "WEEKLY_FEATURED_SET", adminUserId, slugCount: slugs.length });
+
+    return { message: `${slugs.length} stories set as weekly featured.` };
+  }
+
+  async removeWeeklyFeaturedStory(adminUserId: string, storySlug: string) {
+    await this.requireAdmin(adminUserId);
+
+    await this.prisma.story.updateMany({
+      where: { slug: storySlug },
+      data: { featured: false },
+    });
+
+    this.logger.log({ event: "WEEKLY_FEATURED_REMOVED", adminUserId, storySlug });
+
+    return { message: "Story removed from weekly featured." };
+  }
+
   async getAdminContractLookups(adminUserId: string) {
     await this.requireAdmin(adminUserId);
 
