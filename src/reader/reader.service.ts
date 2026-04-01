@@ -1191,7 +1191,7 @@ export class ReaderService {
       follows,
     ] =
       await Promise.all([
-        this.getPublishedStories(),
+        this.getRecommendationCandidatesForStory(story),
         this.getStoryReaderAccessContext(userId, story),
         this.prisma.bookmark.findMany({
           where: {
@@ -1234,19 +1234,19 @@ export class ReaderService {
             })
           : Promise.resolve(0),
         story.authorId
-          ? this.prisma.story
-              .findMany({
-                where: {
-                  authorId: story.authorId,
-                  status: {
-                    in: [StoryStatus.PUBLISHED, StoryStatus.COMPLETED, StoryStatus.HIATUS],
-                  },
+          ? this.prisma.story.count({
+              where: {
+                authorId: story.authorId,
+                status: {
+                  in: [StoryStatus.PUBLISHED, StoryStatus.COMPLETED, StoryStatus.HIATUS],
                 },
-                include: {
-                  adminControl: true,
-                },
-              })
-              .then((stories) => stories.filter((item) => isStoryLive(item)).length)
+                deletedAt: null,
+                OR: [
+                  { adminControl: { is: { visibilityState: AdminBookVisibilityState.LIVE } } },
+                  { adminControl: { is: null }, isLive: true },
+                ],
+              },
+            })
           : Promise.resolve(0),
         this.prisma.follow.findMany({
           where: {
@@ -3990,6 +3990,82 @@ export class ReaderService {
         );
       })
       .map((entry) => entry.story);
+  }
+
+  /**
+   * Fetches a targeted pool of recommendation candidates for a given story
+   * instead of loading the entire published catalog. Uses genre overlap
+   * (GIN-indexed) + top-rated fallback, capped at ~50 candidates.
+   */
+  private async getRecommendationCandidatesForStory(
+    story: { id: string; genreSlugs: string[]; authorId?: string | null },
+  ): Promise<PublishedStoryCatalogRecord[]> {
+    const cacheKey = `reader:rec-candidates:${story.id}`;
+    const cached =
+      await this.redisService.getJson<CachedPublishedStoryCatalogRecord[]>(cacheKey);
+
+    if (cached) {
+      return this.hydratePublishedStoryCatalog(cached);
+    }
+
+    const liveFilter: Prisma.StoryWhereInput = {
+      OR: [
+        { adminControl: { is: { visibilityState: AdminBookVisibilityState.LIVE } } },
+        { adminControl: { is: null }, isLive: true },
+      ],
+    };
+
+    const baseWhere: Prisma.StoryWhereInput = {
+      ...liveFilter,
+      id: { not: story.id },
+      deletedAt: null,
+      status: { in: [StoryStatus.PUBLISHED, StoryStatus.COMPLETED, StoryStatus.HIATUS] },
+    };
+
+    // Fetch genre-matched stories (uses GIN index on genreSlugs)
+    const genreMatchPromise =
+      story.genreSlugs.length > 0
+        ? this.prisma.story.findMany({
+            where: {
+              ...baseWhere,
+              genreSlugs: { hasSome: story.genreSlugs },
+            },
+            select: publishedStoryCatalogSelect,
+            orderBy: [{ totalReads: "desc" }, { averageRating: "desc" }],
+            take: 30,
+          })
+        : Promise.resolve([]);
+
+    // Fetch top-rated as fallback diversity
+    const topRatedPromise = this.prisma.story.findMany({
+      where: baseWhere,
+      select: publishedStoryCatalogSelect,
+      orderBy: [{ averageRating: "desc" }, { totalReads: "desc" }],
+      take: 20,
+    });
+
+    const [genreMatched, topRated] = await Promise.all([
+      genreMatchPromise,
+      topRatedPromise,
+    ]);
+
+    // Dedupe by id, genre-matched first (higher relevance)
+    const seen = new Set<string>();
+    const candidates: PublishedStoryCatalogRecord[] = [];
+    for (const s of [...genreMatched, ...topRated]) {
+      if (!seen.has(s.id)) {
+        seen.add(s.id);
+        candidates.push(s);
+      }
+    }
+
+    await this.redisService.setJson(
+      cacheKey,
+      this.serializePublishedStoryCatalog(candidates),
+      5 * 60,
+    );
+
+    return candidates;
   }
 
   private async getReadableStoryBySlug(storySlug: string) {
