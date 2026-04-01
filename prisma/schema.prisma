@@ -407,8 +407,11 @@ model User {
   referralEarnings            ReferralEarning[]
   referralPayouts             ReferralPayout[]
   referralEarningBalanceCents Int                             @default(0)
+  adminRoleId                 String?
+  adminRole                   AdminRole?                      @relation("UserAdminRole", fields: [adminRoleId], references: [id])
 
   @@index([isGuest, createdAt])
+  @@index([adminRoleId])
   @@map("users")
 }
 
@@ -1764,6 +1767,7 @@ model AdminRole {
   isSystem    Boolean  @default(false)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+  users       User[]   @relation("UserAdminRole")
 
   @@map("admin_roles")
 }

@@ -23,6 +23,12 @@ export class AdminSupportService {
     private readonly audit: AdminAuditService,
   ) {}
 
+  private async getAdminUser(userId: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException("User not found.");
+    return user;
+  }
+
   private async requireAdmin(userId: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -38,7 +44,6 @@ export class AdminSupportService {
   // ── Activity ─────────────────────────────────────────────────────
 
   async getAdminActivity(adminUserId: string, ctx?: AdminRequestContext) {
-    await this.requireAdmin(adminUserId);
 
     const logs = await this.prisma.adminAuditLog.findMany({
       include: {
@@ -83,7 +88,6 @@ export class AdminSupportService {
   // ── Messages ─────────────────────────────────────────────────────
 
   async getAdminMessages(adminUserId: string, ctx?: AdminRequestContext) {
-    await this.requireAdmin(adminUserId);
 
     const tickets = await this.prisma.supportTicket.findMany({
       include: {
@@ -114,7 +118,7 @@ export class AdminSupportService {
     body: string,
     ctx?: AdminRequestContext,
   ) {
-    const admin = await this.requireAdmin(adminUserId);
+    const admin = await this.getAdminUser(adminUserId);
     const ticket = await this.prisma.supportTicket.findUnique({
       where: { id: ticketId },
       include: {

@@ -1,6 +1,9 @@
 import { Module } from "@nestjs/common";
 import { AuthModule } from "../auth/auth.module";
 import { AdminAuditService } from "./admin-audit.service";
+import { AdminManagementController } from "./admin-management/admin-management.controller";
+import { AdminManagementService } from "./admin-management/admin-management.service";
+import { AdminRoleSeedService } from "./admin-role-seed.service";
 import { AdminBooksController } from "./books/admin-books.controller";
 import { AdminBooksService } from "./books/admin-books.service";
 import { AdminContractsController } from "./contracts/admin-contracts.controller";
@@ -29,6 +32,7 @@ import { PermissionGuard } from "./guards/permission.guard";
     AdminDashboardController,
     AdminFinanceController,
     AdminHelpCenterController,
+    AdminManagementController,
     AdminModerationController,
     AdminSettingsController,
     AdminSupportController,
@@ -36,11 +40,13 @@ import { PermissionGuard } from "./guards/permission.guard";
   ],
   providers: [
     AdminAuditService,
+    AdminRoleSeedService,
     AdminBooksService,
     AdminContractsService,
     AdminDashboardService,
     AdminFinanceService,
     AdminHelpCenterService,
+    AdminManagementService,
     AdminModerationService,
     AdminSettingsService,
     AdminSupportService,

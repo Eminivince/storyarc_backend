@@ -47,17 +47,7 @@ export class AdminDashboardService {
     private readonly audit: AdminAuditService,
   ) {}
 
-  private async requireAdmin(userId: string) {
-    const user = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (!user || user.status !== "ACTIVE")
-      throw new NotFoundException("User not found.");
-    if (user.role !== "ADMIN")
-      throw new ForbiddenException("Admin access is required.");
-    return user;
-  }
-
   async getAdminOverview(adminUserId: string) {
-    await this.requireAdmin(adminUserId);
     await this.ensureAdminDefaults();
     const todayRange = getDayRange();
     const yesterdayRange = getDayRange(

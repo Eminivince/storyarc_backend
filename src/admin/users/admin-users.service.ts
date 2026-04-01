@@ -39,6 +39,12 @@ export class AdminUsersService {
     private readonly redis: RedisService,
   ) {}
 
+  private async getAdminUser(userId: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException("User not found.");
+    return user;
+  }
+
   private async requireAdmin(userId: string) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user || user.status !== "ACTIVE")
@@ -52,7 +58,6 @@ export class AdminUsersService {
     adminUserId: string,
     pagination: AdminListPagination = {},
   ) {
-    await this.requireAdmin(adminUserId);
 
     const limit = resolveAdminListLimit(pagination.limit);
     const offset = pagination.offset ?? 0;
@@ -78,7 +83,6 @@ export class AdminUsersService {
   }
 
   async getAdminUserDetails(adminUserId: string, targetUserId: string) {
-    await this.requireAdmin(adminUserId);
 
     const user = await this.prisma.user.findUnique({
       where: {
@@ -110,7 +114,7 @@ export class AdminUsersService {
     },
     context?: AdminRequestContext,
   ) {
-    const admin = await this.requireAdmin(adminUserId);
+    const admin = await this.getAdminUser(adminUserId);
     const user = await this.prisma.user.findUnique({
       where: {
         id: targetUserId,
@@ -176,7 +180,7 @@ export class AdminUsersService {
     action: "SUSPEND" | "RESTORE" | "DELETE",
     context?: AdminRequestContext,
   ) {
-    const admin = await this.requireAdmin(adminUserId);
+    const admin = await this.getAdminUser(adminUserId);
     const user = await this.prisma.user.findUnique({
       where: {
         id: targetUserId,
@@ -268,7 +272,7 @@ export class AdminUsersService {
     targetUserId: string,
     context?: AdminRequestContext,
   ) {
-    const admin = await this.requireAdmin(adminUserId);
+    const admin = await this.getAdminUser(adminUserId);
     const user = await this.prisma.user.findUnique({
       where: {
         id: targetUserId,

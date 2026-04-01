@@ -36,6 +36,12 @@ export class AdminContractsService {
     private readonly audit: AdminAuditService,
   ) {}
 
+  private async getAdminUser(userId: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException("User not found.");
+    return user;
+  }
+
   private async requireAdmin(userId: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -54,7 +60,6 @@ export class AdminContractsService {
     adminUserId: string,
     ctx?: AdminRequestContext,
   ) {
-    await this.requireAdmin(adminUserId);
 
     const contractRevenueDefaults =
       await this.getCreatorRevenueShareDefaults();
@@ -126,7 +131,6 @@ export class AdminContractsService {
     adminUserId: string,
     ctx?: AdminRequestContext,
   ) {
-    await this.requireAdmin(adminUserId);
 
     const templates = await this.prisma.contractTemplate.findMany({
       include: contractTemplateCountInclude,
@@ -145,7 +149,6 @@ export class AdminContractsService {
     templateId: string,
     ctx?: AdminRequestContext,
   ) {
-    await this.requireAdmin(adminUserId);
     const template = await this.getContractTemplateOrThrow(templateId);
 
     return {
@@ -158,7 +161,7 @@ export class AdminContractsService {
     input: AdminContractTemplateInput,
     ctx?: AdminRequestContext,
   ) {
-    const admin = await this.requireAdmin(adminUserId);
+    const admin = await this.getAdminUser(adminUserId);
     const template = await this.prisma.contractTemplate.create({
       data: {
         advancePaymentCents: input.advancePaymentCents,
@@ -201,7 +204,7 @@ export class AdminContractsService {
     input: AdminContractTemplateInput,
     ctx?: AdminRequestContext,
   ) {
-    const admin = await this.requireAdmin(adminUserId);
+    const admin = await this.getAdminUser(adminUserId);
     await this.getContractTemplateOrThrow(templateId);
 
     const template = await this.prisma.contractTemplate.update({
@@ -246,7 +249,6 @@ export class AdminContractsService {
     adminUserId: string,
     ctx?: AdminRequestContext,
   ) {
-    await this.requireAdmin(adminUserId);
 
     const contracts = await this.prisma.contract.findMany({
       include: adminContractInclude,
@@ -265,7 +267,6 @@ export class AdminContractsService {
     contractId: string,
     ctx?: AdminRequestContext,
   ) {
-    await this.requireAdmin(adminUserId);
     const contract = await this.getContractOrThrow(contractId);
 
     return {
@@ -278,7 +279,7 @@ export class AdminContractsService {
     input: AdminContractInput,
     ctx?: AdminRequestContext,
   ) {
-    const admin = await this.requireAdmin(adminUserId);
+    const admin = await this.getAdminUser(adminUserId);
     await this.assertContractPartyEligibleForRevenueShare(
       input.userId,
       input.revenueSharePercent,
@@ -343,7 +344,7 @@ export class AdminContractsService {
     input: AdminContractInput,
     ctx?: AdminRequestContext,
   ) {
-    const admin = await this.requireAdmin(adminUserId);
+    const admin = await this.getAdminUser(adminUserId);
     const existingContract = await this.getContractOrThrow(contractId);
     await this.assertContractPartyEligibleForRevenueShare(
       input.userId,

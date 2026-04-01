@@ -32,6 +32,12 @@ export class AdminFinanceService {
     private readonly emailService: ResendEmailService,
   ) {}
 
+  private async getAdminUser(userId: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException("User not found.");
+    return user;
+  }
+
   private async requireAdmin(userId: string) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user || user.status !== "ACTIVE")
@@ -63,7 +69,6 @@ export class AdminFinanceService {
   // --- Monetization ---
 
   async getAdminMonetization(adminUserId: string) {
-    await this.requireAdmin(adminUserId);
     await this.ensureAdminDefaults();
 
     const [purchases, subscriptions, coinPackages, payouts] =
@@ -217,7 +222,7 @@ export class AdminFinanceService {
     notes?: string | null,
     context?: AdminRequestContext,
   ) {
-    const admin = await this.requireAdmin(adminUserId);
+    const admin = await this.getAdminUser(adminUserId);
     const payout = await this.prisma.creatorPayout.findUnique({
       where: {
         id: payoutId,
@@ -330,7 +335,6 @@ export class AdminFinanceService {
   // --- Refunds ---
 
   async listAdminRefunds(adminUserId: string) {
-    await this.requireAdmin(adminUserId);
 
     const refunds = await this.prisma.refundRequest.findMany({
       include: {
@@ -369,7 +373,7 @@ export class AdminFinanceService {
     notes: string | null,
     context?: AdminRequestContext,
   ) {
-    const admin = await this.requireAdmin(adminUserId);
+    const admin = await this.getAdminUser(adminUserId);
 
     const refund = await this.prisma.refundRequest.findUnique({
       where: { id: refundId },
@@ -464,7 +468,6 @@ export class AdminFinanceService {
   // --- Tax Forms ---
 
   async listAdminTaxForms(adminUserId: string) {
-    await this.requireAdmin(adminUserId);
 
     const taxForms = await this.prisma.taxForm.findMany({
       include: {
@@ -495,7 +498,7 @@ export class AdminFinanceService {
     notes: string | null,
     context?: AdminRequestContext,
   ) {
-    const admin = await this.requireAdmin(adminUserId);
+    const admin = await this.getAdminUser(adminUserId);
 
     const taxForm = await this.prisma.taxForm.findUnique({
       where: { id: taxFormId },

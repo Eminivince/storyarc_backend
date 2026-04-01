@@ -46,6 +46,12 @@ export class AdminBooksService {
     private readonly audit: AdminAuditService,
   ) {}
 
+  private async getAdminUser(userId: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException("User not found.");
+    return user;
+  }
+
   private async requireAdmin(userId: string) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user || user.status !== "ACTIVE")
@@ -69,7 +75,6 @@ export class AdminBooksService {
       pagination,
     });
 
-    await this.requireAdmin(adminUserId);
     await this.ensureAdminDefaults();
     const policy = await this.ensureBookPlatformDefaults();
     const { stories, hasMore, limit, offset } =
@@ -108,7 +113,6 @@ export class AdminBooksService {
   }
 
   async getAdminBookDetails(adminUserId: string, storySlug: string) {
-    await this.requireAdmin(adminUserId);
     await this.ensureAdminDefaults();
     const policy = await this.ensureBookPlatformDefaults();
     const story = await this.getAdminBookStoryOrThrow(storySlug);
@@ -132,7 +136,7 @@ export class AdminBooksService {
     },
     ctx?: AdminRequestContext,
   ) {
-    const admin = await this.requireAdmin(adminUserId);
+    const admin = await this.getAdminUser(adminUserId);
     const policy = await this.prisma.bookPlatformPolicy.upsert({
       where: {
         key: defaultBookPlatformPolicy.key,
@@ -184,7 +188,7 @@ export class AdminBooksService {
     },
     ctx?: AdminRequestContext,
   ) {
-    const admin = await this.requireAdmin(adminUserId);
+    const admin = await this.getAdminUser(adminUserId);
     const policy = await this.ensureBookPlatformDefaults();
     const story = await this.getAdminBookStoryOrThrow(storySlug);
     const nextControl = await this.prisma.storyAdminControl.upsert({
@@ -275,7 +279,7 @@ export class AdminBooksService {
     },
     ctx?: AdminRequestContext,
   ) {
-    const admin = await this.requireAdmin(adminUserId);
+    const admin = await this.getAdminUser(adminUserId);
     const policy = await this.ensureBookPlatformDefaults();
     const story = await this.getAdminBookStoryOrThrow(storySlug);
     const now = new Date();
@@ -400,7 +404,6 @@ export class AdminBooksService {
   }
 
   async getWeeklyFeaturedStories(adminUserId: string) {
-    await this.requireAdmin(adminUserId);
 
     const stories = await this.prisma.story.findMany({
       where: { featured: true, isLive: true },
@@ -428,7 +431,7 @@ export class AdminBooksService {
     slugs: string[],
     ctx?: AdminRequestContext,
   ) {
-    const admin = await this.requireAdmin(adminUserId);
+    const admin = await this.getAdminUser(adminUserId);
 
     await this.prisma.story.updateMany({
       where: { featured: true },
@@ -456,7 +459,6 @@ export class AdminBooksService {
     storySlug: string,
     ctx?: AdminRequestContext,
   ) {
-    await this.requireAdmin(adminUserId);
 
     await this.prisma.story.updateMany({
       where: { slug: storySlug },

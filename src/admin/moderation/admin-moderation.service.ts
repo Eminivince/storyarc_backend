@@ -29,6 +29,12 @@ export class AdminModerationService {
     private readonly audit: AdminAuditService,
   ) {}
 
+  private async getAdminUser(userId: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException("User not found.");
+    return user;
+  }
+
   private async requireAdmin(userId: string) {
     const user = await this.prisma.user.findUnique({ where: { id: userId } });
     if (!user || user.status !== "ACTIVE")
@@ -44,7 +50,6 @@ export class AdminModerationService {
     adminUserId: string,
     pagination: AdminListPagination = {},
   ) {
-    await this.requireAdmin(adminUserId);
 
     const limit = resolveAdminListLimit(pagination.limit);
     const offset = pagination.offset ?? 0;
@@ -84,7 +89,7 @@ export class AdminModerationService {
     },
     context?: AdminRequestContext,
   ) {
-    const admin = await this.requireAdmin(adminUserId);
+    const admin = await this.getAdminUser(adminUserId);
     const report = await this.prisma.contentReport.findUnique({
       where: {
         id: reportId,
@@ -154,7 +159,6 @@ export class AdminModerationService {
     adminUserId: string,
     pagination: AdminListPagination = {},
   ) {
-    await this.requireAdmin(adminUserId);
 
     const limit = resolveAdminListLimit(pagination.limit);
     const offset = pagination.offset ?? 0;
@@ -217,7 +221,7 @@ export class AdminModerationService {
     },
     context?: AdminRequestContext,
   ) {
-    const admin = await this.requireAdmin(adminUserId);
+    const admin = await this.getAdminUser(adminUserId);
     const existingComment = await this.prisma.comment.findUnique({
       where: {
         id: commentId,
@@ -308,7 +312,6 @@ export class AdminModerationService {
     adminUserId: string,
     pagination: AdminListPagination = {},
   ) {
-    await this.requireAdmin(adminUserId);
 
     const limit = resolveAdminListLimit(pagination.limit);
     const offset = pagination.offset ?? 0;
@@ -358,7 +361,7 @@ export class AdminModerationService {
     },
     context?: AdminRequestContext,
   ) {
-    const admin = await this.requireAdmin(adminUserId);
+    const admin = await this.getAdminUser(adminUserId);
     const existingReview = await this.prisma.review.findUnique({
       where: {
         id: reviewId,
