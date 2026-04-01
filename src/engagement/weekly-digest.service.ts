@@ -98,7 +98,7 @@ export class WeeklyDigestService implements OnModuleInit {
   }
 
   private async sendDigestToUser(
-    user: { id: string; email: string; profile: { displayName: string } | null },
+    user: { id: string; email: string | null; profile: { displayName: string } | null },
     since: Date,
     newStoriesCount: number,
   ) {
@@ -143,7 +143,7 @@ export class WeeklyDigestService implements OnModuleInit {
       const userName = user.profile?.displayName ?? "Reader";
 
       await this.emailService.sendWeeklyDigest({
-        email: user.email,
+        email: user.email!,
         userName,
         sections,
         unsubscribeUrl,

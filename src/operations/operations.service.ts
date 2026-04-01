@@ -1365,8 +1365,8 @@ export class OperationsService {
         termMonths: template.termMonths,
       })),
       users: users.map((user) => ({
-        displayName: user.profile?.displayName ?? user.email.split("@")[0],
-        email: user.email,
+        displayName: user.profile?.displayName ?? user.email!.split("@")[0],
+        email: user.email!,
         id: user.id,
         status: user.status,
       })),
@@ -1717,7 +1717,7 @@ export class OperationsService {
     }
 
     await this.authService.forgotPassword({
-      email: user.email,
+      email: user.email!,
     });
 
     await this.logAdminAction(admin.id, {

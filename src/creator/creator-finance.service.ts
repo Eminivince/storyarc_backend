@@ -133,8 +133,8 @@ export class CreatorFinanceService {
       },
       creator: {
         displayName:
-          creator.profile?.displayName ?? creator.email.split("@")[0] ?? "Creator",
-        email: creator.email,
+          creator.profile?.displayName ?? creator.email!.split("@")[0] ?? "Creator",
+        email: creator.email!,
         id: creator.id,
       },
       recentTransactions: this.buildRecentTransactions(

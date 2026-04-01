@@ -83,7 +83,7 @@ export class CreatorService {
       create: {
         userId,
         fullName: input.fullName || user.profile?.displayName || "TaleStead Creator",
-        email: input.email || user.email,
+        email: input.email || user.email!,
         primaryGenre: input.primaryGenre,
         experience: input.experience,
         portfolioUrl: input.portfolioUrl,
@@ -100,7 +100,7 @@ export class CreatorService {
       },
       update: {
         fullName: input.fullName || user.profile?.displayName || "TaleStead Creator",
-        email: input.email || user.email,
+        email: input.email || user.email!,
         primaryGenre: input.primaryGenre,
         experience: input.experience,
         portfolioUrl: input.portfolioUrl,
@@ -169,7 +169,7 @@ export class CreatorService {
       create: {
         userId,
         fullName: input.fullName || user.profile?.displayName || "TaleStead Creator",
-        email: input.email || user.email,
+        email: input.email || user.email!,
         primaryGenre: input.primaryGenre,
         experience: input.experience,
         portfolioUrl: input.portfolioUrl,
@@ -186,7 +186,7 @@ export class CreatorService {
       },
       update: {
         fullName: input.fullName || user.profile?.displayName || "TaleStead Creator",
-        email: input.email || user.email,
+        email: input.email || user.email!,
         primaryGenre: input.primaryGenre,
         experience: input.experience,
         portfolioUrl: input.portfolioUrl,
@@ -566,7 +566,7 @@ export class CreatorService {
       wantsContract: boolean;
       revenueShareContractApproved: boolean | null;
       user?: {
-        email: string;
+        email: string | null;
         id: string;
         profile: {
           displayName: string;
@@ -609,7 +609,7 @@ export class CreatorService {
                   id: application.user.id,
                   displayName:
                     application.user.profile?.displayName ?? application.fullName,
-                  email: application.user.email,
+                  email: application.user.email!,
                   role: application.user.role,
                 }
               : {

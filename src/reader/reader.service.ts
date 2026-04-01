@@ -4864,12 +4864,12 @@ export class ReaderService {
   }
 
   private getDisplayName(user: {
-    email: string;
+    email: string | null;
     profile?: {
       displayName?: string | null;
     } | null;
   }) {
-    return user.profile?.displayName?.trim() || user.email.split("@")[0] || "TaleStead Reader";
+    return user.profile?.displayName?.trim() || user.email?.split("@")[0] || "TaleStead Reader";
   }
 
   private dedupeStoryCards(stories: StoryCardSource[], limit: number | null = 6) {

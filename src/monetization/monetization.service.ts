@@ -580,7 +580,7 @@ export class MonetizationService implements OnModuleInit {
         product,
         purchase,
         userId,
-        userEmail: user.email,
+        userEmail: user.email!,
       });
     }
 
@@ -600,7 +600,7 @@ export class MonetizationService implements OnModuleInit {
         product,
         purchase,
         userId,
-        userEmail: user.email,
+        userEmail: user.email!,
       });
     }
 

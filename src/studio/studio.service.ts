@@ -256,6 +256,8 @@ export class StudioService {
     const slug = await this.createUniqueStorySlug(input.title);
     const shortSynopsis = this.createShortSynopsis(input.synopsis);
 
+    // Avoid a duplicate heavy graph load: `getStoryRecord` already fetches the full
+    // studio tree; only select ids needed to create the opening arc.
     const story = await this.prisma.story.create({
       data: {
         authorId: userId,
@@ -284,39 +286,16 @@ export class StudioService {
           },
         },
       },
-      include: {
-        adminControl: true,
-        assets: true,
-        chapters: {
-          include: {
-            publishedChapter: true,
-          },
-          orderBy: {
-            chapterNumber: "asc",
-          },
-        },
-        publishedChapters: {
-          orderBy: {
-            publishedAt: "desc",
-          },
-        },
+      select: {
+        id: true,
+        slug: true,
         volumes: {
-          include: {
-            arcs: {
-              include: {
-                chapters: {
-                  orderBy: {
-                    chapterNumber: "asc",
-                  },
-                },
-              },
-              orderBy: {
-                sortOrder: "asc",
-              },
-            },
-          },
           orderBy: {
             sortOrder: "asc",
+          },
+          take: 1,
+          select: {
+            id: true,
           },
         },
       },
@@ -413,6 +392,35 @@ export class StudioService {
 
     return {
       story: this.mapStudioStory(updatedStory),
+    };
+  }
+
+  async setStoryCompletionStatus(
+    userId: string,
+    storySlug: string,
+    completed: boolean,
+  ) {
+    const story = await this.prisma.story.findFirst({
+      where: {
+        authorId: userId,
+        slug: storySlug,
+      },
+    });
+
+    if (!story) {
+      throw new NotFoundException("Story not found.");
+    }
+
+    const nextStatus = completed ? StoryStatus.COMPLETED : StoryStatus.PUBLISHED;
+
+    const updatedStory = await this.prisma.story.update({
+      where: { id: story.id },
+      data: { status: nextStatus },
+    });
+
+    return {
+      completed: updatedStory.status === StoryStatus.COMPLETED,
+      status: updatedStory.status,
     };
   }
 

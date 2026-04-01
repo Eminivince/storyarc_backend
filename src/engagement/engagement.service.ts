@@ -988,7 +988,7 @@ export class EngagementService {
           viewerEntry.rank <= 3 ? "You're on the podium" : "Keep climbing the leaderboard",
         name:
           user.profile?.displayName ||
-          user.email.split("@")[0] ||
+          user.email?.split("@")[0] ||
           "TaleStead Reader",
         points: this.formatCompactNumber(viewerEntry.points),
         rank: viewerEntry.rank,
@@ -1734,14 +1734,14 @@ export class EngagementService {
           if (user.notificationPreference?.emailNewChapters ?? true) {
             await this.resendEmailService
               .sendNotificationEmail({
-                email: user.email,
+                email: user.email!,
                 preview: `${body} Tap below to start reading.`,
                 subject: title,
                 title,
                 userName:
                   user.profile?.displayName?.trim()
                     ? user.profile.displayName
-                    : user.email.split("@")[0] || "TaleStead Reader",
+                    : user.email?.split("@")[0] || "TaleStead Reader",
               })
               .catch((error: unknown) => {
                 const message =
@@ -1865,13 +1865,13 @@ export class EngagementService {
 
           await this.resendEmailService
             .sendNotificationEmail({
-              email: recipient.email,
+              email: recipient.email!,
               preview: `${notificationBody} Open the chapter to join the discussion.`,
               subject: emailTitle,
               title: emailTitle,
               userName: recipient.profile?.displayName?.trim()
                 ? recipient.profile.displayName
-                : recipient.email.split("@")[0] || "TaleStead Reader",
+                : recipient.email?.split("@")[0] || "TaleStead Reader",
             })
             .catch((error: unknown) => {
               const message =
@@ -2673,12 +2673,12 @@ export class EngagementService {
       if (user.notificationPreference?.emailMarketing) {
         await this.resendEmailService
           .sendNotificationEmail({
-            email: user.email,
+            email: user.email!,
             preview: payload.body,
             subject: payload.title,
             title: payload.title,
             userName:
-              user.profile?.displayName || user.email.split("@")[0] || "TaleStead Reader",
+              user.profile?.displayName || user.email?.split("@")[0] || "TaleStead Reader",
           })
           .then(async () => {
             await this.prisma.appNotification.update({
@@ -2741,12 +2741,12 @@ export class EngagementService {
     }
 
     await this.resendEmailService.sendNotificationEmail({
-      email: user.email,
+      email: user.email!,
       preview: payload.body,
       subject: payload.title,
       title: payload.title,
       userName:
-        user.profile?.displayName || user.email.split("@")[0] || "TaleStead Reader",
+        user.profile?.displayName || user.email?.split("@")[0] || "TaleStead Reader",
     });
   }
 
@@ -2894,13 +2894,13 @@ export class EngagementService {
       discord: user.profile?.discord ?? "",
       displayLanguage: user.profile?.displayLanguage ?? "English (US)",
       displayName: user.profile?.displayName ?? "TaleStead Reader",
-      email: user.email,
+      email: user.email ?? "",
       location: user.profile?.location ?? "",
       privateLibrary: user.profile?.privateLibrary ?? true,
       showActivity: user.profile?.showActivity ?? true,
       tagline: user.profile?.tagline ?? "",
       twitter: user.profile?.twitter ?? "",
-      username: user.email.split("@")[0] ?? "",
+      username: user.email?.split("@")[0] ?? "",
       website: user.profile?.website ?? "",
     };
   }
@@ -3095,7 +3095,7 @@ export class EngagementService {
   ) {
     const name =
       entry.user.profile?.displayName ||
-      entry.user.email.split("@")[0] ||
+      entry.user.email?.split("@")[0] ||
       "TaleStead Reader";
 
     return {
@@ -3121,7 +3121,7 @@ export class EngagementService {
   ) {
     const name =
       entry.user.profile?.displayName ||
-      entry.user.email.split("@")[0] ||
+      entry.user.email?.split("@")[0] ||
       "TaleStead Reader";
 
     return {
@@ -3152,7 +3152,7 @@ export class EngagementService {
   ) {
     const authorName =
       post.creator.profile?.displayName ||
-      post.creator.email.split("@")[0] ||
+      post.creator.email?.split("@")[0] ||
       "TaleStead Creator";
     const totalVotes = post.pollOptions.reduce(
       (sum, option) => sum + option.votes.length,
@@ -3357,7 +3357,7 @@ export class EngagementService {
   ) {
     const base =
       user.profile?.displayName ||
-      user.email.split("@")[0] ||
+      user.email?.split("@")[0] ||
       "talestead";
 
     return `${base}`

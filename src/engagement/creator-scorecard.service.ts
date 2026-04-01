@@ -103,7 +103,7 @@ export class CreatorScorecardService implements OnModuleInit {
   }
 
   private async generateAndSendForCreator(
-    creator: { id: string; email: string; profile: { displayName: string } | null },
+    creator: { id: string; email: string | null; profile: { displayName: string } | null },
     weekStart: Date,
     weekEnd: Date,
   ) {
@@ -246,7 +246,7 @@ export class CreatorScorecardService implements OnModuleInit {
   }
 
   private async sendScorecardEmail(
-    creator: { id: string; email: string; profile: { displayName: string } | null },
+    creator: { id: string; email: string | null; profile: { displayName: string } | null },
     scorecard: {
       totalViews: number;
       totalReaders: number;
@@ -283,7 +283,7 @@ export class CreatorScorecardService implements OnModuleInit {
     const unsubscribeUrl = `${env.frontendAppUrl}/unsubscribe?token=${token}`;
 
     await this.emailService.sendNotificationEmail({
-      email: creator.email,
+      email: creator.email!,
       preview: `Here's your weekly performance scorecard: ${lines.join(" | ")}`,
       subject: "Your Weekly Creator Scorecard",
       title: "Weekly Performance Scorecard",
