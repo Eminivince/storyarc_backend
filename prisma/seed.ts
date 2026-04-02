@@ -1,9 +1,27 @@
+/**
+ * General platform seed for TaleStead.
+ *
+ * What it does:
+ * - Bootstraps shared catalog/platform data such as genres, tags, monetization plans,
+ *   coin packages, sample stories, chapters, admin roles/settings, help center content,
+ *   badges, missions, point shop items, reading challenges, and community posts/polls.
+ * - Uses Prisma upserts for most records so it can be run repeatedly to refresh baseline data.
+ *
+ * How to use:
+ * - From `backend/`, run `npm run prisma:seed`
+ * - The package script loads `backend/.env` via `node --env-file=.env`
+ * - Use this when you want the app's default/shared seed data in the database
+ */
+import { hash } from "bcryptjs";
 import {
   AdminBookReleaseMode,
   AdminBookVisibilityState,
   ChapterStatus,
+  CreatorApplicationStatus,
   PrismaClient,
   StoryStatus,
+  UserRole,
+  UserStatus,
 } from "@prisma/client";
 import {
   buildDefaultPlans,
@@ -54,6 +72,8 @@ function daysAgo(days: number) {
 function buildParagraphs(lines: string[]) {
   return lines;
 }
+
+
 
 function buildWolvexChapters() {
   const titles = [
@@ -120,6 +140,61 @@ function buildStoryChapters(input: {
   }));
 }
 
+/** Upsert a seed author User + Profile + Credential so stories have a valid authorId. */
+async function ensureSeedAuthor(authorName: string, email: string, passwordHash: string): Promise<string> {
+  const user = await prisma.user.upsert({
+    where: { email },
+    update: { role: UserRole.CREATOR, status: UserStatus.ACTIVE },
+    create: {
+      email,
+      role: UserRole.CREATOR,
+      status: UserStatus.ACTIVE,
+      emailVerifiedAt: new Date(),
+      tosAcceptedAt: new Date(),
+      tosVersion: "1.0",
+    },
+  });
+
+  await prisma.profile.upsert({
+    where: { userId: user.id },
+    update: { displayName: authorName },
+    create: {
+      userId: user.id,
+      displayName: authorName,
+      bio: `${authorName} is a featured author on TaleStead.`,
+      tagline: "Featured TaleStead author",
+      avatarUrl: `https://picsum.photos/seed/${email}/200/200`,
+      onboardingCompletedAt: new Date(),
+      termsAcceptedVersion: "1.0",
+      termsAcceptedAt: new Date(),
+    },
+  });
+
+  await prisma.credential.upsert({
+    where: { userId: user.id },
+    update: {},
+    create: { userId: user.id, passwordHash },
+  });
+
+  await prisma.creatorApplication.upsert({
+    where: { userId: user.id },
+    update: { status: CreatorApplicationStatus.APPROVED },
+    create: {
+      userId: user.id,
+      fullName: authorName,
+      email,
+      primaryGenre: "fantasy",
+      experience: "Featured author on TaleStead.",
+      motivation: "Creating compelling serial fiction.",
+      status: CreatorApplicationStatus.APPROVED,
+      submittedAt: new Date(),
+      reviewedAt: new Date(),
+    },
+  });
+
+  return user.id;
+}
+
 const stories = [
   {
     assets: {
@@ -128,6 +203,7 @@ const stories = [
       cardImageUrl: "https://picsum.photos/seed/wolvex-card/400/300",
       coverImageUrl: "https://picsum.photos/seed/wolvex-cover/400/600",
     },
+    authorEmail: "vesper.thorne@talestead.local",
     authorName: "Vesper Thorne",
     averageRating: 4.8,
     chapters: buildWolvexChapters(),
@@ -153,6 +229,7 @@ const stories = [
       cardImageUrl: "https://picsum.photos/seed/gilded-mage-card/400/300",
       coverImageUrl: "https://picsum.photos/seed/gilded-mage-cover/400/600",
     },
+    authorEmail: "evelyn.vance@talestead.local",
     authorName: "Evelyn Vance",
     averageRating: 4.9,
     chapters: buildStoryChapters({
@@ -188,6 +265,7 @@ const stories = [
       cardImageUrl: "https://picsum.photos/seed/whisper-shadow-card/400/300",
       coverImageUrl: "https://picsum.photos/seed/whisper-shadow-cover/400/600",
     },
+    authorEmail: "kaelen.storm@talestead.local",
     authorName: "Kaelen Storm",
     averageRating: 4.9,
     chapters: buildStoryChapters({
@@ -222,6 +300,7 @@ const stories = [
       cardImageUrl: "https://picsum.photos/seed/starlight-arch-card/400/300",
       coverImageUrl: "https://picsum.photos/seed/starlight-arch-cover/400/600",
     },
+    authorEmail: "iris.vale@talestead.local",
     authorName: "Iris Vale",
     averageRating: 4.7,
     chapters: buildStoryChapters({
@@ -301,7 +380,18 @@ async function seedCatalog() {
     });
   }
 
+  // Create seed author accounts so stories have valid authorId links
+  const passwordHash = await hash("TaleSteadSeed123!", 3);
+  const authorIdMap = new Map<string, string>();
   for (const story of stories) {
+    if (!authorIdMap.has(story.authorEmail)) {
+      const id = await ensureSeedAuthor(story.authorName, story.authorEmail, passwordHash);
+      authorIdMap.set(story.authorEmail, id);
+    }
+  }
+
+  for (const story of stories) {
+    const authorId = authorIdMap.get(story.authorEmail)!;
     const latestChapterAt = story.chapters.reduce(
       (current, chapter) =>
         chapter.publishedAt.getTime() > current.getTime()
@@ -313,6 +403,7 @@ async function seedCatalog() {
     const storyRecord = await prisma.story.upsert({
       where: { slug: story.slug },
       update: {
+        authorId,
         authorName: story.authorName,
         averageRating: story.averageRating,
         featured: story.featured,
@@ -331,6 +422,7 @@ async function seedCatalog() {
         totalReads: story.totalReads,
       },
       create: {
+        authorId,
         authorName: story.authorName,
         averageRating: story.averageRating,
         featured: story.featured,
