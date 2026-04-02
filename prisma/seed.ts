@@ -10,6 +10,12 @@ import {
   buildDefaultCoinPackages,
 } from "../src/monetization/monetization-catalog";
 import { STORY_GENRES } from "../src/catalog/story-genres";
+import { DEFAULT_ADMIN_ROLES } from "../src/admin/admin-role-seeds";
+import {
+  defaultAdminSettings,
+  supportHelpCenterCategories,
+  supportHelpCenterArticles,
+} from "../src/admin/admin-constants";
 
 const prisma = new PrismaClient();
 
@@ -118,12 +124,9 @@ const stories = [
   {
     assets: {
       accentColor: "#f59e0b",
-      bannerImageUrl:
-        "https://lh3.googleusercontent.com/aida-public/AB6AXuDnalVe9uggXR9tQEZ4roIax46fhC0Dv5DTA0TjhOAbZpfk8ncXGur7CFdmakRJsKaG5086GBl_7tXUyII6ImkzbxTP8UlGqdi98U0EvInIHv48fIC1tdEbCYVyCAp5GI-EPXkdIE16f2YOHbSg12pNcsenD_PdonRCEcWzZc3SvpjaGCCdhi8TuBZidM8AK2stmhFjkc2y_IusZTaGhmFQIZBr7hF3scRQ1l5KNnj-4cK8VwRxxLQqmzOZznFyuPWqIoslGVMc6EI",
-      cardImageUrl:
-        "https://lh3.googleusercontent.com/aida-public/AB6AXuCZlq_xmsMUKyy23pPY0MLEhA9DBAibewCgSaVJ6PFkQJUQwMpU7zY-KIk14WS7_ZbZAiJCXgF-bVs9TN_CVFk5Lic8yaFnDsW25kLi4bB2MIW25Cm0UCO7D1O7dYbXhqsZlugDNn5EpMKbSoZg86JqAJH2Z_ar6BcZPBzzzugateEKXrQ87egp0xcO-uzqs66tsQ03HuN18ZGDmIc569hJf7o6-t5zsmP8h3fpojuKBrpy-P1yjE68MnXSQNq1cB8HS-2MvLtfhUE",
-      coverImageUrl:
-        "https://lh3.googleusercontent.com/aida-public/AB6AXuCZlq_xmsMUKyy23pPY0MLEhA9DBAibewCgSaVJ6PFkQJUQwMpU7zY-KIk14WS7_ZbZAiJCXgF-bVs9TN_CVFk5Lic8yaFnDsW25kLi4bB2MIW25Cm0UCO7D1O7dYbXhqsZlugDNn5EpMKbSoZg86JqAJH2Z_ar6BcZPBzzzugateEKXrQ87egp0xcO-uzqs66tsQ03HuN18ZGDmIc569hJf7o6-t5zsmP8h3fpojuKBrpy-P1yjE68MnXSQNq1cB8HS-2MvLtfhUE",
+      bannerImageUrl: "https://picsum.photos/seed/wolvex-banner/1200/400",
+      cardImageUrl: "https://picsum.photos/seed/wolvex-card/400/300",
+      coverImageUrl: "https://picsum.photos/seed/wolvex-cover/400/600",
     },
     authorName: "Vesper Thorne",
     averageRating: 4.8,
@@ -146,12 +149,9 @@ const stories = [
   {
     assets: {
       accentColor: "#f97316",
-      bannerImageUrl:
-        "https://lh3.googleusercontent.com/aida-public/AB6AXuCxZEtZADGvArJI-bOfr-yF249WWlN3m_X7rHmbgg5M9lIHm2-RgYeH32rkES32oMqBfau_9Ch-F1IlX-euCYurQp21ls7W2Sn_CojoKVrbeq2Ehmj6rP9QGyp_E4_pthM9KvdcYUJhwIw4vEsWieUTEbLZK-qQNc9fIJ5tq9iFRirlJbN8TSrEePrkAsz9gxkVqU7onlZyI9H3tzWgENb9L8iSB5J1hhNha3B6IrrYtL3lJP3k2w2XRc5uU2H4fIu_pBtDhR1K5f0",
-      cardImageUrl:
-        "https://lh3.googleusercontent.com/aida-public/AB6AXuCxZEtZADGvArJI-bOfr-yF249WWlN3m_X7rHmbgg5M9lIHm2-RgYeH32rkES32oMqBfau_9Ch-F1IlX-euCYurQp21ls7W2Sn_CojoKVrbeq2Ehmj6rP9QGyp_E4_pthM9KvdcYUJhwIw4vEsWieUTEbLZK-qQNc9fIJ5tq9iFRirlJbN8TSrEePrkAsz9gxkVqU7onlZyI9H3tzWgENb9L8iSB5J1hhNha3B6IrrYtL3lJP3k2w2XRc5uU2H4fIu_pBtDhR1K5f0",
-      coverImageUrl:
-        "https://lh3.googleusercontent.com/aida-public/AB6AXuCxZEtZADGvArJI-bOfr-yF249WWlN3m_X7rHmbgg5M9lIHm2-RgYeH32rkES32oMqBfau_9Ch-F1IlX-euCYurQp21ls7W2Sn_CojoKVrbeq2Ehmj6rP9QGyp_E4_pthM9KvdcYUJhwIw4vEsWieUTEbLZK-qQNc9fIJ5tq9iFRirlJbN8TSrEePrkAsz9gxkVqU7onlZyI9H3tzWgENb9L8J1hhNha3B6IrrYtL3lJP3k2w2XRc5uU2H4fIu_pBtDhR1K5f0",
+      bannerImageUrl: "https://picsum.photos/seed/gilded-mage-banner/1200/400",
+      cardImageUrl: "https://picsum.photos/seed/gilded-mage-card/400/300",
+      coverImageUrl: "https://picsum.photos/seed/gilded-mage-cover/400/600",
     },
     authorName: "Evelyn Vance",
     averageRating: 4.9,
@@ -184,12 +184,9 @@ const stories = [
   {
     assets: {
       accentColor: "#0f172a",
-      bannerImageUrl:
-        "https://lh3.googleusercontent.com/aida-public/AB6AXuBDkui4Hew1g0I8vtakp7rEn_YfQSfHlJRlVdwtuVxT09FRKAkg3Zwl-GzXCim5QeSdcqc_Cka9C9wQzEcQnq-Ev-zs00QR3Qi3sY-8ShatUik9dqWXTSOOywZlkmdnJw8E_TjlJVZMsE10ehGw9xmBeb0bsR92lXnSo7KlQLCfOqyQnXgWecwG5zFNddvbMqnpK5Ly5hsx55qN5AEbm9Z5IR2K2tKjPoAVMp8RRe7_vCqkEhPYJrMP1PWv_K6rHyKxw8XLKH2sQUc",
-      cardImageUrl:
-        "https://lh3.googleusercontent.com/aida-public/AB6AXuBDkui4Hew1g0I8vtakp7rEn_YfQSfHlJRlVdwtuVxT09FRKAkg3Zwl-GzXCim5QeSdcqc_Cka9C9wQzEcQnq-Ev-zs00QR3Qi3sY-8ShatUik9dqWXTSOOywZlkmdnJw8E_TjlJVZMsE10ehGw9xmBeb0bsR92lXnSo7KlQLCfOqyQnXgWecwG5zFNddvbMqnpK5Ly5hsx55qN5AEbm9Z5IR2K2tKjPoAVMp8RRe7_vCqkEhPYJrMP1PWv_K6rHyKxw8XLKH2sQUc",
-      coverImageUrl:
-        "https://lh3.googleusercontent.com/aida-public/AB6AXuBDkui4Hew1g0I8vtakp7rEn_YfQSfHlJRlVdwtuVxT09FRKAkg3Zwl-GzXCim5QeSdcqc_Cka9C9wQzEcQnq-Ev-zs00QR3Qi3sY-8ShatUik9dqWXTSOOywZlkmdnJw8E_TjlJVZMsE10ehGw9xmBeb0bsR92lXnSo7KlQLCfOqyQnXgWecwG5zFNddvbMqnpK5Ly5hsx55qN5AEbm9Z5IR2K2tKjPoAVMp8RRe7_vCqkEhPYJrMP1PWv_K6rHyKxw8XLKH2sQUc",
+      bannerImageUrl: "https://picsum.photos/seed/whisper-shadow-banner/1200/400",
+      cardImageUrl: "https://picsum.photos/seed/whisper-shadow-card/400/300",
+      coverImageUrl: "https://picsum.photos/seed/whisper-shadow-cover/400/600",
     },
     authorName: "Kaelen Storm",
     averageRating: 4.9,
@@ -221,12 +218,9 @@ const stories = [
   {
     assets: {
       accentColor: "#22c55e",
-      bannerImageUrl:
-        "https://lh3.googleusercontent.com/aida-public/AB6AXuCCYW0y-x4ynHbueBL_GVj0rmx8YZb9bS3-OhHF5PK8lJ1fL8LD70Df9FdG0iHv213Y3bU03qhha_6G7zV4QhEgZtTDJlYW_uqLaDdI2brsH13sAMk0rbvMoqNSmVUQ3KcZNydVIp5aIwiZgqjsQggwb7aIekblpAOwfhNbs3tdWzgyASewwW_9vPUgs0Nagmka0hyNN3Gb-mFcRM8WDo8x2NoIJ2BLZ8T7N0EBKn1yDQskyqL4fv24_6GB-fOJSgjo4EHtOZmUlvw",
-      cardImageUrl:
-        "https://lh3.googleusercontent.com/aida-public/AB6AXuCCYW0y-x4ynHbueBL_GVj0rmx8YZb9bS3-OhHF5PK8lJ1fL8LD70Df9FdG0iHv213Y3bU03qhha_6G7zV4QhEgZtTDJlYW_uqLaDdI2brsH13sAMk0rbvMoqNSmVUQ3KcZNydVIp5aIwiZgqjsQggwb7aIekblpAOwfhNbs3tdWzgyASewwW_9vPUgs0Nagmka0hyNN3Gb-mFcRM8WDo8x2NoIJ2BLZ8T7N0EBKn1yDQskyqL4fv24_6GB-fOJSgjo4EHtOZmUlvw",
-      coverImageUrl:
-        "https://lh3.googleusercontent.com/aida-public/AB6AXuCCYW0y-x4ynHbueBL_GVj0rmx8YZb9bS3-OhHF5PK8lJ1fL8LD70Df9FdG0iHv213Y3bU03qhha_6G7zV4QhEgZtTDJlYW_uqLaDdI2brsH13sAMk0rbvMoqNSmVUQ3KcZNydVIp5aIwiZgqjsQggwb7aIekblpAOwfhNbs3tdWzgyASewwW_9vPUgs0Nagmka0hyNN3Gb-mFcRM8WDo8x2NoIJ2BLZ8T7N0EBKn1yDQskyqL4fv24_6GB-fOJSgjo4EHtOZmUlvw",
+      bannerImageUrl: "https://picsum.photos/seed/starlight-arch-banner/1200/400",
+      cardImageUrl: "https://picsum.photos/seed/starlight-arch-card/400/300",
+      coverImageUrl: "https://picsum.photos/seed/starlight-arch-cover/400/600",
     },
     authorName: "Iris Vale",
     averageRating: 4.7,
@@ -636,6 +630,323 @@ const poolMissions = [
   },
 ];
 
+async function seedAdminRoles() {
+  for (const role of DEFAULT_ADMIN_ROLES) {
+    await prisma.adminRole.upsert({
+      where: { name: role.name },
+      update: {
+        label: role.label,
+        permissions: role.permissions,
+        isSystem: role.isSystem,
+      },
+      create: {
+        name: role.name,
+        label: role.label,
+        permissions: role.permissions,
+        isSystem: role.isSystem,
+      },
+    });
+  }
+}
+
+async function seedAdminSettings() {
+  for (const setting of defaultAdminSettings) {
+    await prisma.adminSetting.upsert({
+      where: { key: setting.key },
+      update: {
+        description: setting.description,
+        enabled: setting.enabled,
+        group: setting.group,
+        kind: setting.kind,
+        title: setting.title,
+        valueCents: setting.valueCents,
+      },
+      create: setting,
+    });
+  }
+}
+
+async function seedHelpCenter() {
+  for (const cat of supportHelpCenterCategories) {
+    await prisma.helpCenterCategory.upsert({
+      where: { id: cat.id },
+      update: {
+        title: cat.title,
+        description: cat.description,
+        icon: cat.icon,
+      },
+      create: {
+        id: cat.id,
+        title: cat.title,
+        description: cat.description,
+        icon: cat.icon,
+      },
+    });
+  }
+
+  for (const article of supportHelpCenterArticles) {
+    await prisma.helpCenterArticle.upsert({
+      where: { id: article.id },
+      update: {
+        categoryId: article.categoryId,
+        title: article.title,
+        excerpt: article.excerpt,
+        tag: article.tag,
+        body: article.body,
+      },
+      create: {
+        id: article.id,
+        categoryId: article.categoryId,
+        title: article.title,
+        excerpt: article.excerpt,
+        tag: article.tag,
+        body: article.body,
+      },
+    });
+  }
+}
+
+const badgeDefinitions = [
+  { key: "first-chapter", title: "First Chapter", description: "Read your first chapter", category: "reading", rarity: "COMMON" as const, requirementType: "chapters_read", requirementValue: 1, rewardPoints: 25, sortOrder: 1 },
+  { key: "avid-reader", title: "Avid Reader", description: "Read 50 chapters", category: "reading", rarity: "UNCOMMON" as const, requirementType: "chapters_read", requirementValue: 50, rewardPoints: 100, sortOrder: 2 },
+  { key: "bookworm", title: "Bookworm", description: "Read 100 chapters", category: "reading", rarity: "RARE" as const, requirementType: "chapters_read", requirementValue: 100, rewardPoints: 200, sortOrder: 3 },
+  { key: "speed-reader", title: "Speed Reader", description: "Read 5 chapters in one day", category: "reading", rarity: "UNCOMMON" as const, requirementType: "chapters_read_daily", requirementValue: 5, rewardPoints: 80, sortOrder: 4 },
+  { key: "streak-7", title: "Week Warrior", description: "Maintain a 7-day streak", category: "streak", rarity: "COMMON" as const, requirementType: "streak_days", requirementValue: 7, rewardPoints: 50, sortOrder: 10 },
+  { key: "streak-14", title: "Fortnight Fighter", description: "Maintain a 14-day streak", category: "streak", rarity: "UNCOMMON" as const, requirementType: "streak_days", requirementValue: 14, rewardPoints: 100, sortOrder: 11 },
+  { key: "streak-30", title: "Monthly Master", description: "Maintain a 30-day streak", category: "streak", rarity: "RARE" as const, requirementType: "streak_days", requirementValue: 30, rewardPoints: 200, sortOrder: 12 },
+  { key: "streak-60", title: "Dedicated Reader", description: "Maintain a 60-day streak", category: "streak", rarity: "EPIC" as const, requirementType: "streak_days", requirementValue: 60, rewardPoints: 400, sortOrder: 13 },
+  { key: "streak-90", title: "Legendary Streak", description: "Maintain a 90-day streak", category: "streak", rarity: "LEGENDARY" as const, requirementType: "streak_days", requirementValue: 90, rewardPoints: 800, sortOrder: 14 },
+  { key: "first-comment", title: "First Comment", description: "Leave your first comment", category: "social", rarity: "COMMON" as const, requirementType: "comments_count", requirementValue: 1, rewardPoints: 20, sortOrder: 20 },
+  { key: "conversationalist", title: "Conversationalist", description: "Leave 25 comments", category: "social", rarity: "UNCOMMON" as const, requirementType: "comments_count", requirementValue: 25, rewardPoints: 80, sortOrder: 21 },
+  { key: "critic", title: "Critic", description: "Write 5 reviews", category: "social", rarity: "UNCOMMON" as const, requirementType: "reviews_count", requirementValue: 5, rewardPoints: 100, sortOrder: 22 },
+  { key: "first-bookmark", title: "First Bookmark", description: "Create your first bookmark", category: "collection", rarity: "COMMON" as const, requirementType: "bookmarks_count", requirementValue: 1, rewardPoints: 15, sortOrder: 30 },
+  { key: "curator", title: "Curator", description: "Create 50 bookmarks", category: "collection", rarity: "RARE" as const, requirementType: "bookmarks_count", requirementValue: 50, rewardPoints: 150, sortOrder: 31 },
+  { key: "list-maker", title: "List Maker", description: "Create 5 reading lists", category: "collection", rarity: "UNCOMMON" as const, requirementType: "reading_lists_count", requirementValue: 5, rewardPoints: 60, sortOrder: 32 },
+  { key: "first-publish", title: "First Publish", description: "Publish your first chapter", category: "creator", rarity: "COMMON" as const, requirementType: "chapters_published", requirementValue: 1, rewardPoints: 50, sortOrder: 40 },
+  { key: "prolific", title: "Prolific Writer", description: "Publish 50 chapters", category: "creator", rarity: "RARE" as const, requirementType: "chapters_published", requirementValue: 50, rewardPoints: 300, sortOrder: 41 },
+  { key: "centurion", title: "Centurion", description: "Publish 100 chapters", category: "creator", rarity: "EPIC" as const, requirementType: "chapters_published", requirementValue: 100, rewardPoints: 500, sortOrder: 42 },
+];
+
+async function seedBadgeDefinitions() {
+  for (const badge of badgeDefinitions) {
+    await prisma.badgeDefinition.upsert({
+      where: { key: badge.key },
+      update: {
+        title: badge.title,
+        description: badge.description,
+        category: badge.category,
+        rarity: badge.rarity,
+        requirementType: badge.requirementType,
+        requirementValue: badge.requirementValue,
+        rewardPoints: badge.rewardPoints,
+        sortOrder: badge.sortOrder,
+      },
+      create: {
+        ...badge,
+        isActive: true,
+      },
+    });
+  }
+}
+
+const pointShopItems = [
+  { key: "golden-frame", title: "Golden Frame", description: "A gilded avatar frame for top contributors.", category: "AVATAR_FRAME" as const, cost: 500, durationType: "PERMANENT" as const, sortOrder: 1 },
+  { key: "shadow-frame", title: "Shadow Frame", description: "A dark, sleek avatar frame for mystery lovers.", category: "AVATAR_FRAME" as const, cost: 500, durationType: "PERMANENT" as const, sortOrder: 2 },
+  { key: "badge-early-supporter", title: "Early Supporter", description: "Show everyone you believed in TaleStead from the start.", category: "PROFILE_BADGE" as const, cost: 300, durationType: "PERMANENT" as const, sortOrder: 10 },
+  { key: "badge-story-champion", title: "Story Champion", description: "For readers who champion their favorite stories.", category: "PROFILE_BADGE" as const, cost: 400, durationType: "PERMANENT" as const, sortOrder: 11 },
+  { key: "theme-midnight", title: "Midnight Theme", description: "An ultra-dark reading theme for night sessions.", category: "THEME" as const, cost: 200, durationType: "PERMANENT" as const, sortOrder: 20 },
+  { key: "theme-sepia", title: "Sepia Classic", description: "A warm sepia tone for a vintage reading feel.", category: "THEME" as const, cost: 200, durationType: "PERMANENT" as const, sortOrder: 21 },
+  { key: "effect-sparkle", title: "Sparkle Trail", description: "Sparkles follow your reading progress for 7 days.", category: "READING_EFFECT" as const, cost: 150, durationType: "TIMED" as const, durationDays: 7, sortOrder: 30 },
+  { key: "effect-fire", title: "Fire Trail", description: "Flames follow your reading progress for 7 days.", category: "READING_EFFECT" as const, cost: 150, durationType: "TIMED" as const, durationDays: 7, sortOrder: 31 },
+  { key: "title-legend", title: "Legend", description: "Display the 'Legend' title on your profile.", category: "TITLE" as const, cost: 800, durationType: "PERMANENT" as const, sortOrder: 40 },
+  { key: "title-arcane-scholar", title: "Arcane Scholar", description: "Display the 'Arcane Scholar' title on your profile.", category: "TITLE" as const, cost: 600, durationType: "PERMANENT" as const, sortOrder: 41 },
+  { key: "streak-shield", title: "Streak Shield", description: "Protect your streak for one missed day.", category: "READING_EFFECT" as const, cost: 100, durationType: "SINGLE_USE" as const, sortOrder: 50 },
+];
+
+async function seedPointShopItems() {
+  for (const item of pointShopItems) {
+    await prisma.pointShopItem.upsert({
+      where: { key: item.key },
+      update: {
+        title: item.title,
+        description: item.description,
+        category: item.category,
+        cost: item.cost,
+        durationType: item.durationType,
+        durationDays: (item as any).durationDays ?? null,
+        sortOrder: item.sortOrder,
+      },
+      create: {
+        ...item,
+        isActive: true,
+      },
+    });
+  }
+}
+
+const readingChallenges = [
+  {
+    title: "Spring Reading Marathon",
+    description: "Read 20 chapters this week to earn bonus points and unlock the Spring Reader badge.",
+    type: "WEEKLY" as const,
+    targetValue: 20,
+    targetMetric: "CHAPTERS_READ" as const,
+    rewardPoints: 300,
+    startsAt: new Date("2026-03-31T00:00:00Z"),
+    endsAt: new Date("2026-04-07T23:59:59Z"),
+  },
+  {
+    title: "Review Rush",
+    description: "Write 3 reviews this week to help fellow readers discover great stories.",
+    type: "WEEKLY" as const,
+    targetValue: 3,
+    targetMetric: "REVIEWS_WRITTEN" as const,
+    rewardPoints: 200,
+    startsAt: new Date("2026-03-31T00:00:00Z"),
+    endsAt: new Date("2026-04-07T23:59:59Z"),
+  },
+  {
+    title: "April Readathon",
+    description: "Complete 5 stories during April and earn the Readathon Champion badge.",
+    type: "SEASONAL" as const,
+    targetValue: 5,
+    targetMetric: "STORIES_COMPLETED" as const,
+    rewardPoints: 500,
+    startsAt: new Date("2026-04-01T00:00:00Z"),
+    endsAt: new Date("2026-04-30T23:59:59Z"),
+  },
+  {
+    title: "Streak of Steel",
+    description: "Maintain a 14-day reading streak to prove your dedication.",
+    type: "SPECIAL" as const,
+    targetValue: 14,
+    targetMetric: "DAYS_STREAK" as const,
+    rewardPoints: 400,
+    startsAt: new Date("2026-04-01T00:00:00Z"),
+    endsAt: new Date("2026-04-30T23:59:59Z"),
+  },
+];
+
+async function seedReadingChallenges() {
+  for (const challenge of readingChallenges) {
+    const existing = await prisma.readingChallenge.findFirst({
+      where: { title: challenge.title },
+    });
+
+    if (existing) {
+      await prisma.readingChallenge.update({
+        where: { id: existing.id },
+        data: challenge,
+      });
+    } else {
+      await prisma.readingChallenge.create({
+        data: {
+          ...challenge,
+          isActive: true,
+        },
+      });
+    }
+  }
+}
+
+const communityAnnouncements = [
+  {
+    title: "Welcome to TaleStead!",
+    body: "We're thrilled to have you here. TaleStead is a community of readers and writers who love immersive stories. Check in daily to earn points, complete missions, and climb the leaderboard. Happy reading!",
+    type: "ANNOUNCEMENT" as const,
+  },
+  {
+    title: "April Readathon is Live!",
+    body: "Our biggest reading event of the spring is here. Complete 5 stories during April to earn the Readathon Champion badge and 500 bonus points. Track your progress in the Challenges tab.",
+    type: "ANNOUNCEMENT" as const,
+  },
+  {
+    title: "New Point Shop Items Available",
+    body: "We just added new avatar frames, profile badges, and reading effects to the Point Shop. Spend your hard-earned points on cosmetic upgrades that show off your dedication. Check them out!",
+    type: "ANNOUNCEMENT" as const,
+  },
+];
+
+const communityPolls = [
+  {
+    title: "What genre should our next featured collection be?",
+    body: "We're curating a new featured collection and want your input. Vote for the genre you'd love to see highlighted on the home page this month.",
+    type: "POLL" as const,
+    options: ["Fantasy", "Romance", "Sci-Fi", "Horror", "Mystery"],
+  },
+  {
+    title: "How do you prefer to read?",
+    body: "Help us improve the reading experience. Tell us about your reading habits so we can prioritize the right features.",
+    type: "POLL" as const,
+    options: ["Short daily sessions", "Long weekend binges", "On my commute", "Before bed"],
+  },
+];
+
+async function seedCommunityPosts() {
+  const adminUser = await prisma.user.findFirst({
+    where: { role: "ADMIN" },
+    select: { id: true },
+  });
+
+  if (!adminUser) {
+    const anyUser = await prisma.user.findFirst({ select: { id: true } });
+    if (!anyUser) {
+      console.log("[seed] Skipping community posts — no users in the database yet.");
+      return;
+    }
+    console.log("[seed] No admin user found, using first available user for community posts.");
+    return seedCommunityPostsForUser(anyUser.id);
+  }
+
+  return seedCommunityPostsForUser(adminUser.id);
+}
+
+async function seedCommunityPostsForUser(userId: string) {
+  for (const post of communityAnnouncements) {
+    const existing = await prisma.communityPost.findFirst({
+      where: { title: post.title, creatorUserId: userId },
+    });
+    if (!existing) {
+      await prisma.communityPost.create({
+        data: {
+          creatorUserId: userId,
+          type: post.type,
+          title: post.title,
+          body: post.body,
+          status: "LIVE",
+        },
+      });
+    }
+  }
+
+  for (const poll of communityPolls) {
+    const existing = await prisma.communityPost.findFirst({
+      where: { title: poll.title, creatorUserId: userId },
+    });
+    if (!existing) {
+      const created = await prisma.communityPost.create({
+        data: {
+          creatorUserId: userId,
+          type: poll.type,
+          title: poll.title,
+          body: poll.body,
+          status: "LIVE",
+        },
+      });
+
+      for (let i = 0; i < poll.options.length; i++) {
+        await prisma.pollOption.create({
+          data: {
+            communityPostId: created.id,
+            label: poll.options[i],
+            sortOrder: i,
+          },
+        });
+      }
+    }
+  }
+}
+
 async function seedMissions() {
   for (const mission of poolMissions) {
     await prisma.missionDefinition.upsert({
@@ -663,8 +974,34 @@ async function seedMissions() {
 }
 
 async function main() {
+  console.log("[seed] Seeding catalog (genres, tags, plans, stories)...");
   await seedCatalog();
+
+  console.log("[seed] Seeding missions...");
   await seedMissions();
+
+  console.log("[seed] Seeding admin roles...");
+  await seedAdminRoles();
+
+  console.log("[seed] Seeding admin settings...");
+  await seedAdminSettings();
+
+  console.log("[seed] Seeding help center...");
+  await seedHelpCenter();
+
+  console.log("[seed] Seeding badge definitions...");
+  await seedBadgeDefinitions();
+
+  console.log("[seed] Seeding point shop items...");
+  await seedPointShopItems();
+
+  console.log("[seed] Seeding reading challenges...");
+  await seedReadingChallenges();
+
+  console.log("[seed] Seeding community posts & polls...");
+  await seedCommunityPosts();
+
+  console.log("[seed] Done.");
 }
 
 main()
