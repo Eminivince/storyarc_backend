@@ -28,7 +28,10 @@ export class MeController {
 
   @UseGuards(AccessTokenGuard)
   @Get("users/:userId/profile")
-  async getPublicProfile(@Param("userId") userId: string) {
-    return this.authService.getPublicProfile(userId);
+  async getPublicProfile(
+    @Param("userId") userId: string,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.authService.getPublicProfile(userId, request.auth!.userId);
   }
 }

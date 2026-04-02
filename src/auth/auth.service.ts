@@ -9,6 +9,7 @@ import {
 import { JwtService } from "@nestjs/jwt";
 import { compare, hash } from "bcryptjs";
 import { createHash, randomBytes, randomInt, timingSafeEqual } from "crypto";
+import * as jose from "jose";
 import { env } from "../config/env";
 import { PrismaService } from "../database/prisma.service";
 import { RedisService } from "../redis/redis.service";
@@ -23,7 +24,9 @@ import {
   OnboardingStep,
   GuestUpgradeInput,
   PendingRegistrationPayload,
+  PendingFacebookAuthPayload,
   PendingGoogleAuthPayload,
+  PendingTwitterAuthPayload,
   RefreshInput,
   RegisterInput,
   RequestMeta,
@@ -51,7 +54,20 @@ const GOOGLE_OAUTH_STATE_TTL_SECONDS = 10 * 60;
 const GOOGLE_AUTHORIZATION_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo";
+const FACEBOOK_OAUTH_STATE_TTL_SECONDS = 10 * 60;
+const FACEBOOK_GRAPH_VERSION = "v21.0";
+const FACEBOOK_AUTHORIZATION_URL = `https://www.facebook.com/${FACEBOOK_GRAPH_VERSION}/dialog/oauth`;
+const FACEBOOK_TOKEN_URL = `https://graph.facebook.com/${FACEBOOK_GRAPH_VERSION}/oauth/access_token`;
+const FACEBOOK_ME_URL = `https://graph.facebook.com/${FACEBOOK_GRAPH_VERSION}/me`;
+const TWITTER_OAUTH_STATE_TTL_SECONDS = 10 * 60;
+const TWITTER_AUTHORIZE_URL = "https://x.com/i/oauth2/authorize";
+const TWITTER_TOKEN_URL = "https://api.twitter.com/2/oauth2/token";
+const TWITTER_USERINFO_URL =
+  "https://api.twitter.com/2/users/me?user.fields=profile_image_url,username,name";
+const APPLE_ISSUER = "https://appleid.apple.com";
 const REFRESH_TOKEN_HASH_PREFIX = "sha256:";
+
+const appleJwks = jose.createRemoteJWKSet(new URL("https://appleid.apple.com/auth/keys"));
 
 type AuthUserSnapshot = {
   id: string;
@@ -71,6 +87,26 @@ type GoogleUserInfo = {
   name?: string;
   picture?: string;
   sub?: string;
+};
+
+type TwitterUserInfo = {
+  data?: {
+    id?: string;
+    name?: string;
+    username?: string;
+    profile_image_url?: string;
+  };
+};
+
+type FacebookUserInfo = {
+  id?: string;
+  name?: string;
+  email?: string;
+  picture?: {
+    data?: {
+      url?: string;
+    };
+  };
 };
 
 @Injectable()
@@ -211,6 +247,303 @@ export class AuthService {
         url: this.buildGoogleCallbackErrorUrl(
           callbackBaseUrl,
           this.getGoogleCallbackErrorCode(error),
+        ),
+      };
+    }
+  }
+
+  async startFacebookAuth(input: GoogleAuthStartInput) {
+    const callbackBaseUrl = this.resolveFacebookOauthCallbackBaseUrl(input);
+
+    if (!this.isFacebookAuthConfigured()) {
+      return {
+        url: this.buildGoogleCallbackErrorUrl(
+          callbackBaseUrl,
+          "facebook_not_configured",
+        ),
+      };
+    }
+
+    const state = this.generateOpaqueToken();
+
+    await this.redis.setJson(
+      this.getFacebookAuthStateKey(state),
+      {
+        nextPath: input.nextPath,
+        callbackBaseUrl,
+      } satisfies PendingFacebookAuthPayload,
+      FACEBOOK_OAUTH_STATE_TTL_SECONDS,
+    );
+
+    const params = new URLSearchParams({
+      client_id: env.facebookAppId!,
+      redirect_uri: env.facebookRedirectUri!,
+      response_type: "code",
+      scope: "email,public_profile",
+      state,
+    });
+
+    return {
+      url: `${FACEBOOK_AUTHORIZATION_URL}?${params.toString()}`,
+    };
+  }
+
+  async handleFacebookCallback(
+    input: GoogleAuthCallbackInput,
+    requestMeta: RequestMeta,
+  ) {
+    const fallbackBase = this.getFacebookFrontendCallbackBaseUrl();
+
+    if (!this.isFacebookAuthConfigured()) {
+      return {
+        url: this.buildGoogleCallbackErrorUrl(
+          fallbackBase,
+          "facebook_not_configured",
+        ),
+      };
+    }
+
+    const redisKey = input.state
+      ? this.getFacebookAuthStateKey(input.state)
+      : null;
+    const pendingPeek = redisKey
+      ? await this.redis.getJson<PendingFacebookAuthPayload>(redisKey)
+      : null;
+
+    if (input.error) {
+      if (redisKey && pendingPeek) {
+        await this.redis.delete(redisKey);
+      }
+
+      const base = pendingPeek?.callbackBaseUrl ?? fallbackBase;
+
+      return {
+        url: this.buildGoogleCallbackErrorUrl(
+          base,
+          input.error === "access_denied"
+            ? "facebook_access_denied"
+            : "facebook_auth_failed",
+        ),
+      };
+    }
+
+    if (!input.code || !input.state) {
+      if (redisKey && pendingPeek) {
+        await this.redis.delete(redisKey);
+      }
+
+      const base = pendingPeek?.callbackBaseUrl ?? fallbackBase;
+
+      return {
+        url: this.buildGoogleCallbackErrorUrl(base, "facebook_auth_failed"),
+      };
+    }
+
+    const redisKeyResolved = this.getFacebookAuthStateKey(input.state);
+    const pendingFacebook =
+      await this.redis.getJson<PendingFacebookAuthPayload>(redisKeyResolved);
+
+    await this.redis.delete(redisKeyResolved);
+
+    if (!pendingFacebook) {
+      return {
+        url: this.buildGoogleCallbackErrorUrl(
+          fallbackBase,
+          "facebook_state_invalid",
+        ),
+      };
+    }
+
+    const callbackBaseUrl = pendingFacebook.callbackBaseUrl;
+
+    try {
+      const accessToken = await this.exchangeFacebookCodeForTokens(input.code);
+      const facebookProfile = await this.fetchFacebookUserInfo(accessToken);
+      const authResponse = await this.completeFacebookAuth(
+        facebookProfile,
+        requestMeta,
+      );
+
+      return {
+        url: this.buildGoogleCallbackSuccessUrl(callbackBaseUrl, {
+          nextPath: pendingFacebook.nextPath,
+          tokens: authResponse.tokens,
+        }),
+      };
+    } catch (error) {
+      return {
+        url: this.buildGoogleCallbackErrorUrl(
+          callbackBaseUrl,
+          this.getFacebookCallbackErrorCode(error),
+        ),
+      };
+    }
+  }
+
+  async signInWithAppleNative(
+    identityToken: string,
+    requestMeta: RequestMeta,
+  ) {
+    if (!this.isAppleAuthConfigured()) {
+      throw new BadRequestException(
+        "Apple sign-in is not configured on the server.",
+      );
+    }
+
+    const claims = await this.verifyAppleIdentityToken(identityToken);
+    const providerUserId =
+      typeof claims.sub === "string" ? claims.sub.trim() : "";
+
+    if (!providerUserId) {
+      throw new UnauthorizedException("Invalid Apple sign-in token.");
+    }
+
+    const emailRaw =
+      typeof claims.email === "string" ? claims.email.trim() : null;
+    const email = emailRaw ? this.normalizeEmail(emailRaw) : null;
+    const emailVerified =
+      claims.email_verified === true || claims.email_verified === "true";
+
+    return this.completeAppleAuth(
+      {
+        email,
+        emailVerified,
+        providerUserId,
+      },
+      requestMeta,
+    );
+  }
+
+  async startTwitterAuth(input: GoogleAuthStartInput) {
+    const callbackBaseUrl = this.resolveTwitterOauthCallbackBaseUrl(input);
+
+    if (!this.isTwitterAuthConfigured()) {
+      return {
+        url: this.buildGoogleCallbackErrorUrl(
+          callbackBaseUrl,
+          "twitter_not_configured",
+        ),
+      };
+    }
+
+    const state = this.generateOpaqueToken();
+    const pkce = this.generatePkcePair();
+
+    await this.redis.setJson(
+      this.getTwitterAuthStateKey(state),
+      {
+        callbackBaseUrl,
+        codeVerifier: pkce.verifier,
+        nextPath: input.nextPath,
+      } satisfies PendingTwitterAuthPayload,
+      TWITTER_OAUTH_STATE_TTL_SECONDS,
+    );
+
+    const params = new URLSearchParams({
+      client_id: env.twitterClientId!,
+      code_challenge: pkce.challenge,
+      code_challenge_method: "S256",
+      redirect_uri: env.twitterRedirectUri!,
+      response_type: "code",
+      scope: "users.read tweet.read offline.access",
+      state,
+    });
+
+    return {
+      url: `${TWITTER_AUTHORIZE_URL}?${params.toString()}`,
+    };
+  }
+
+  async handleTwitterCallback(
+    input: GoogleAuthCallbackInput,
+    requestMeta: RequestMeta,
+  ) {
+    const fallbackBase = this.getGoogleFrontendCallbackBaseUrl();
+
+    if (!this.isTwitterAuthConfigured()) {
+      return {
+        url: this.buildGoogleCallbackErrorUrl(
+          fallbackBase,
+          "twitter_not_configured",
+        ),
+      };
+    }
+
+    const redisKey = input.state
+      ? this.getTwitterAuthStateKey(input.state)
+      : null;
+    const pendingPeek = redisKey
+      ? await this.redis.getJson<PendingTwitterAuthPayload>(redisKey)
+      : null;
+
+    if (input.error) {
+      if (redisKey && pendingPeek) {
+        await this.redis.delete(redisKey);
+      }
+
+      const base = pendingPeek?.callbackBaseUrl ?? fallbackBase;
+
+      return {
+        url: this.buildGoogleCallbackErrorUrl(
+          base,
+          input.error === "access_denied"
+            ? "twitter_access_denied"
+            : "twitter_auth_failed",
+        ),
+      };
+    }
+
+    if (!input.code || !input.state) {
+      if (redisKey && pendingPeek) {
+        await this.redis.delete(redisKey);
+      }
+
+      const base = pendingPeek?.callbackBaseUrl ?? fallbackBase;
+
+      return {
+        url: this.buildGoogleCallbackErrorUrl(base, "twitter_auth_failed"),
+      };
+    }
+
+    const redisKeyResolved = this.getTwitterAuthStateKey(input.state);
+    const pendingTwitter =
+      await this.redis.getJson<PendingTwitterAuthPayload>(redisKeyResolved);
+
+    await this.redis.delete(redisKeyResolved);
+
+    if (!pendingTwitter) {
+      return {
+        url: this.buildGoogleCallbackErrorUrl(
+          fallbackBase,
+          "twitter_state_invalid",
+        ),
+      };
+    }
+
+    const callbackBaseUrl = pendingTwitter.callbackBaseUrl;
+
+    try {
+      const accessToken = await this.exchangeTwitterCodeForTokens(
+        input.code,
+        pendingTwitter.codeVerifier,
+      );
+      const twitterProfile = await this.fetchTwitterUserInfo(accessToken);
+      const authResponse = await this.completeTwitterAuth(
+        twitterProfile,
+        requestMeta,
+      );
+
+      return {
+        url: this.buildGoogleCallbackSuccessUrl(callbackBaseUrl, {
+          nextPath: pendingTwitter.nextPath,
+          tokens: authResponse.tokens,
+        }),
+      };
+    } catch (error) {
+      return {
+        url: this.buildGoogleCallbackErrorUrl(
+          callbackBaseUrl,
+          this.getTwitterCallbackErrorCode(error),
         ),
       };
     }
@@ -1398,7 +1731,7 @@ export class AuthService {
     };
   }
 
-  async getPublicProfile(userId: string) {
+  async getPublicProfile(userId: string, viewerUserId?: string) {
     const user = await this.prisma.user.findUnique({
       where: { id: userId, status: "ACTIVE" },
       include: {
@@ -1411,8 +1744,9 @@ export class AuthService {
     }
 
     const isPrivateLibrary = user.profile?.privateLibrary ?? true;
+    const isAuthor = user.role === "CREATOR";
 
-    const [readingLists, badges, reviews, readingProgress] = await Promise.all([
+    const [readingLists, badges, reviews, readingProgress, authorStories, followRecord] = await Promise.all([
       isPrivateLibrary
         ? Promise.resolve([])
         : this.prisma.readingList.findMany({
@@ -1443,6 +1777,22 @@ export class AuthService {
         orderBy: { createdAt: "desc" },
       }),
       this.prisma.readingProgress.count({ where: { userId } }),
+      isAuthor
+        ? this.prisma.story.findMany({
+            where: { authorId: userId, isLive: true, deletedAt: null },
+            include: {
+              assets: { select: { coverImageUrl: true } },
+            },
+            take: 12,
+            orderBy: { totalReads: "desc" },
+          })
+        : Promise.resolve([]),
+      viewerUserId
+        ? this.prisma.follow.findFirst({
+            where: { userId: viewerUserId, subjectKey: `author:${userId}` },
+            select: { id: true },
+          })
+        : Promise.resolve(null),
     ]);
 
     return {
@@ -1482,6 +1832,19 @@ export class AuthService {
         name: rl.name,
         description: rl.description,
         storyCount: rl._count.items,
+      })),
+      isAuthor,
+      isFollowing: Boolean(followRecord),
+      authorStories: authorStories.map((s) => ({
+        id: s.id,
+        slug: s.slug,
+        title: s.title,
+        shortSynopsis: s.shortSynopsis,
+        genreLabel: s.genreSlugs?.[0] ?? "Fiction",
+        totalReads: s.totalReads,
+        averageRating: s.averageRating,
+        reviewCount: s.reviewCount,
+        coverImageUrl: s.assets?.coverImageUrl ?? null,
       })),
     };
   }
@@ -1711,6 +2074,45 @@ export class AuthService {
     return payload;
   }
 
+  private async exchangeFacebookCodeForTokens(code: string) {
+    const tokenUrl = new URL(FACEBOOK_TOKEN_URL);
+    tokenUrl.searchParams.set("client_id", env.facebookAppId!);
+    tokenUrl.searchParams.set("client_secret", env.facebookAppSecret!);
+    tokenUrl.searchParams.set("redirect_uri", env.facebookRedirectUri!);
+    tokenUrl.searchParams.set("code", code);
+
+    const response = await fetch(tokenUrl.toString(), { method: "GET" });
+    const payload = (await response.json().catch(() => null)) as {
+      access_token?: string;
+    } | null;
+
+    if (!response.ok || typeof payload?.access_token !== "string") {
+      throw new BadRequestException("Facebook token exchange failed.");
+    }
+
+    return payload.access_token;
+  }
+
+  private async fetchFacebookUserInfo(accessToken: string) {
+    const meUrl = new URL(FACEBOOK_ME_URL);
+    meUrl.searchParams.set(
+      "fields",
+      "id,name,email,picture.type(large){url,is_silhouette}",
+    );
+    meUrl.searchParams.set("access_token", accessToken);
+
+    const response = await fetch(meUrl.toString(), { method: "GET" });
+    const payload = (await response
+      .json()
+      .catch(() => null)) as FacebookUserInfo | null;
+
+    if (!response.ok || !payload) {
+      throw new BadRequestException("Facebook profile lookup failed.");
+    }
+
+    return payload;
+  }
+
   private async completeGoogleAuth(
     googleProfile: GoogleUserInfo,
     requestMeta: RequestMeta,
@@ -1935,6 +2337,728 @@ export class AuthService {
     );
   }
 
+  private async completeFacebookAuth(
+    facebookProfile: FacebookUserInfo,
+    requestMeta: RequestMeta,
+  ) {
+    const providerUserId = facebookProfile.id?.trim() ?? "";
+    const emailRaw =
+      typeof facebookProfile.email === "string"
+        ? facebookProfile.email.trim()
+        : "";
+    const email = emailRaw ? this.normalizeEmail(emailRaw) : null;
+    const pictureUrl = facebookProfile.picture?.data?.url?.trim() ?? null;
+
+    if (!providerUserId || !email) {
+      throw new UnauthorizedException(
+        "Facebook did not provide an email address. Allow email access to sign in.",
+      );
+    }
+
+    const [existingIdentity, existingUserByEmail] = await Promise.all([
+      this.prisma.authIdentity.findUnique({
+        where: {
+          provider_providerUserId: {
+            provider: "FACEBOOK",
+            providerUserId,
+          },
+        },
+        select: {
+          id: true,
+          userId: true,
+        },
+      }),
+      this.prisma.user.findUnique({
+        where: { email },
+        include: {
+          creatorApplication: {
+            select: {
+              reviewNotes: true,
+              revenueShareContractApproved: true,
+              reviewedAt: true,
+              status: true,
+              submittedAt: true,
+            },
+          },
+          profile: true,
+          totpCredential: {
+            select: { verified: true },
+          },
+        },
+      }),
+    ]);
+    const existingUserByIdentity = existingIdentity
+      ? await this.prisma.user.findUnique({
+          where: { id: existingIdentity.userId },
+          include: {
+            creatorApplication: {
+              select: {
+                reviewNotes: true,
+                revenueShareContractApproved: true,
+                reviewedAt: true,
+                status: true,
+                submittedAt: true,
+              },
+            },
+            profile: true,
+            totpCredential: {
+              select: { verified: true },
+            },
+          },
+        })
+      : null;
+
+    if (existingIdentity && !existingUserByIdentity) {
+      throw new ConflictException(
+        "This Facebook account is already linked to a different TaleStead user.",
+      );
+    }
+
+    if (
+      existingUserByIdentity &&
+      existingUserByEmail &&
+      existingUserByIdentity.id !== existingUserByEmail.id
+    ) {
+      throw new ConflictException(
+        "This Facebook account is already linked to a different TaleStead user.",
+      );
+    }
+
+    const existingUser = existingUserByIdentity ?? existingUserByEmail;
+
+    if (existingUser && existingUser.status !== "ACTIVE") {
+      throw new UnauthorizedException("This account is currently unavailable.");
+    }
+
+    const displayName = this.getFacebookDisplayName(facebookProfile, email);
+    const now = new Date();
+
+    if (!existingUser) {
+      const createdUser = await this.prisma.user.create({
+        data: {
+          email,
+          emailVerifiedAt: now,
+          role: "READER",
+          authIdentities: {
+            create: {
+              provider: "FACEBOOK",
+              providerEmail: email,
+              providerUserId,
+            },
+          },
+          profile: {
+            create: {
+              avatarUrl: pictureUrl,
+              displayName,
+            },
+          },
+        },
+        include: {
+          creatorApplication: {
+            select: {
+              reviewNotes: true,
+              revenueShareContractApproved: true,
+              reviewedAt: true,
+              status: true,
+              submittedAt: true,
+            },
+          },
+          profile: true,
+          totpCredential: {
+            select: { verified: true },
+          },
+        },
+      });
+
+      await this.redis.delete(this.getPendingRegistrationKey(email));
+
+      return this.createSessionResponse(
+        {
+          id: createdUser.id,
+          creatorApplication: createdUser.creatorApplication,
+          email: createdUser.email,
+          isGuest: createdUser.isGuest,
+          role: createdUser.role,
+          status: createdUser.status,
+          profile: createdUser.profile,
+          totpCredential: createdUser.totpCredential,
+        },
+        requestMeta,
+      );
+    }
+
+    const profileUpdate = {
+      ...(!existingUser.profile?.avatarUrl && pictureUrl
+        ? { avatarUrl: pictureUrl }
+        : {}),
+      ...(!existingUser.profile?.displayName ? { displayName } : {}),
+    };
+    const shouldSyncProfile =
+      !existingUser.profile || Object.keys(profileUpdate).length > 0;
+    const shouldVerifyEmail = !existingUser.emailVerifiedAt;
+    const shouldLinkIdentity = !existingIdentity;
+
+    const syncedUser =
+      shouldSyncProfile || shouldVerifyEmail || shouldLinkIdentity
+        ? await this.prisma.user.update({
+            where: { id: existingUser.id },
+            data: {
+              ...(shouldVerifyEmail ? { emailVerifiedAt: now } : {}),
+              ...(shouldLinkIdentity
+                ? {
+                    authIdentities: {
+                      create: {
+                        provider: "FACEBOOK",
+                        providerEmail: email,
+                        providerUserId,
+                      },
+                    },
+                  }
+                : {}),
+              ...(shouldSyncProfile
+                ? {
+                    profile: {
+                      upsert: {
+                        create: {
+                          avatarUrl: pictureUrl,
+                          displayName,
+                        },
+                        update: profileUpdate,
+                      },
+                    },
+                  }
+                : {}),
+            },
+            include: {
+              creatorApplication: {
+                select: {
+                  reviewNotes: true,
+                  revenueShareContractApproved: true,
+                  reviewedAt: true,
+                  status: true,
+                  submittedAt: true,
+                },
+              },
+              profile: true,
+              totpCredential: {
+                select: { verified: true },
+              },
+            },
+          })
+        : existingUser;
+
+    await this.redis.delete(this.getPendingRegistrationKey(email));
+
+    return this.createSessionResponse(
+      {
+        id: syncedUser.id,
+        creatorApplication: syncedUser.creatorApplication,
+        email: syncedUser.email,
+        isGuest: syncedUser.isGuest,
+        role: syncedUser.role,
+        status: syncedUser.status,
+        profile: syncedUser.profile,
+        totpCredential: syncedUser.totpCredential,
+      },
+      requestMeta,
+    );
+  }
+
+  private async verifyAppleIdentityToken(identityToken: string) {
+    const { payload } = await jose.jwtVerify(identityToken, appleJwks, {
+      issuer: APPLE_ISSUER,
+      audience: env.appleClientId!,
+    });
+
+    return payload;
+  }
+
+  private isAppleAuthConfigured() {
+    return Boolean(env.appleClientId?.trim());
+  }
+
+  private async completeAppleAuth(
+    input: {
+      email: string | null;
+      emailVerified: boolean;
+      providerUserId: string;
+    },
+    requestMeta: RequestMeta,
+  ) {
+    const { email, emailVerified, providerUserId } = input;
+
+    const [existingIdentity, existingUserByEmail] = await Promise.all([
+      this.prisma.authIdentity.findUnique({
+        where: {
+          provider_providerUserId: {
+            provider: "APPLE",
+            providerUserId,
+          },
+        },
+        select: {
+          id: true,
+          userId: true,
+        },
+      }),
+      email
+        ? this.prisma.user.findUnique({
+            where: { email },
+            include: {
+              creatorApplication: {
+                select: {
+                  reviewNotes: true,
+                  revenueShareContractApproved: true,
+                  reviewedAt: true,
+                  status: true,
+                  submittedAt: true,
+                },
+              },
+              profile: true,
+              totpCredential: {
+                select: { verified: true },
+              },
+            },
+          })
+        : Promise.resolve(null),
+    ]);
+
+    const existingUserByIdentity = existingIdentity
+      ? await this.prisma.user.findUnique({
+          where: { id: existingIdentity.userId },
+          include: {
+            creatorApplication: {
+              select: {
+                reviewNotes: true,
+                revenueShareContractApproved: true,
+                reviewedAt: true,
+                status: true,
+                submittedAt: true,
+              },
+            },
+            profile: true,
+            totpCredential: {
+              select: { verified: true },
+            },
+          },
+        })
+      : null;
+
+    if (existingIdentity && !existingUserByIdentity) {
+      throw new ConflictException(
+        "This Apple account is already linked to a different TaleStead user.",
+      );
+    }
+
+    if (
+      existingUserByIdentity &&
+      existingUserByEmail &&
+      existingUserByIdentity.id !== existingUserByEmail.id
+    ) {
+      throw new ConflictException(
+        "This Apple account is already linked to a different TaleStead user.",
+      );
+    }
+
+    const existingUser = existingUserByIdentity ?? existingUserByEmail;
+
+    if (existingUser && existingUser.status !== "ACTIVE") {
+      throw new UnauthorizedException("This account is currently unavailable.");
+    }
+
+    if (!existingUser && (!email || !emailVerified)) {
+      throw new UnauthorizedException(
+        "Apple did not provide a verified email for this sign-in. Try again or use another method.",
+      );
+    }
+
+    const displayName = email
+      ? this.getDerivedUsername(email)
+      : `Reader ${providerUserId.slice(-6)}`;
+    const now = new Date();
+
+    if (!existingUser) {
+      const createdUser = await this.prisma.user.create({
+        data: {
+          email: email!,
+          emailVerifiedAt: now,
+          role: "READER",
+          authIdentities: {
+            create: {
+              provider: "APPLE",
+              providerEmail: email!,
+              providerUserId,
+            },
+          },
+          profile: {
+            create: {
+              avatarUrl: null,
+              displayName,
+            },
+          },
+        },
+        include: {
+          creatorApplication: {
+            select: {
+              reviewNotes: true,
+              revenueShareContractApproved: true,
+              reviewedAt: true,
+              status: true,
+              submittedAt: true,
+            },
+          },
+          profile: true,
+          totpCredential: {
+            select: { verified: true },
+          },
+        },
+      });
+
+      if (email) {
+        await this.redis.delete(this.getPendingRegistrationKey(email));
+      }
+
+      return this.createSessionResponse(
+        {
+          id: createdUser.id,
+          creatorApplication: createdUser.creatorApplication,
+          email: createdUser.email,
+          isGuest: createdUser.isGuest,
+          role: createdUser.role,
+          status: createdUser.status,
+          profile: createdUser.profile,
+          totpCredential: createdUser.totpCredential,
+        },
+        requestMeta,
+      );
+    }
+
+    const shouldVerifyEmail =
+      Boolean(email) && !existingUser.emailVerifiedAt && emailVerified;
+    const shouldLinkIdentity = !existingIdentity;
+
+    const syncedUser =
+      shouldVerifyEmail || shouldLinkIdentity
+        ? await this.prisma.user.update({
+            where: { id: existingUser.id },
+            data: {
+              ...(shouldVerifyEmail ? { emailVerifiedAt: now } : {}),
+              ...(shouldLinkIdentity
+                ? {
+                    authIdentities: {
+                      create: {
+                        provider: "APPLE",
+                        providerEmail: email,
+                        providerUserId,
+                      },
+                    },
+                  }
+                : {}),
+            },
+            include: {
+              creatorApplication: {
+                select: {
+                  reviewNotes: true,
+                  revenueShareContractApproved: true,
+                  reviewedAt: true,
+                  status: true,
+                  submittedAt: true,
+                },
+              },
+              profile: true,
+              totpCredential: {
+                select: { verified: true },
+              },
+            },
+          })
+        : existingUser;
+
+    if (email) {
+      await this.redis.delete(this.getPendingRegistrationKey(email));
+    }
+
+    return this.createSessionResponse(
+      {
+        id: syncedUser.id,
+        creatorApplication: syncedUser.creatorApplication,
+        email: syncedUser.email,
+        isGuest: syncedUser.isGuest,
+        role: syncedUser.role,
+        status: syncedUser.status,
+        profile: syncedUser.profile,
+        totpCredential: syncedUser.totpCredential,
+      },
+      requestMeta,
+    );
+  }
+
+  private generatePkcePair() {
+    const verifier = randomBytes(32).toString("base64url");
+    const challenge = createHash("sha256")
+      .update(verifier)
+      .digest("base64url");
+
+    return { challenge, verifier };
+  }
+
+  private getTwitterAuthStateKey(state: string) {
+    return `auth:twitter:state:${state}`;
+  }
+
+  private isTwitterAuthConfigured() {
+    return Boolean(
+      env.twitterClientId?.trim() && env.twitterRedirectUri?.trim(),
+    );
+  }
+
+  private resolveTwitterOauthCallbackBaseUrl(input: GoogleAuthStartInput) {
+    if (input.client !== "mobile") {
+      throw new BadRequestException("X sign-in is only supported from the app.");
+    }
+
+    const uri = input.mobileRedirectUri ?? env.mobileOAuthCallbackUrl;
+
+    if (!uri?.trim()) {
+      throw new BadRequestException(
+        "Mobile X sign-in requires the mobile_redirect query parameter (or MOBILE_OAUTH_CALLBACK_URL on the server).",
+      );
+    }
+
+    this.assertSafeMobileOAuthRedirectUri(uri);
+
+    return uri.trim();
+  }
+
+  private async exchangeTwitterCodeForTokens(
+    code: string,
+    codeVerifier: string,
+  ) {
+    const body = new URLSearchParams({
+      client_id: env.twitterClientId!,
+      code,
+      code_verifier: codeVerifier,
+      grant_type: "authorization_code",
+      redirect_uri: env.twitterRedirectUri!,
+    });
+
+    if (env.twitterClientSecret?.trim()) {
+      body.set("client_secret", env.twitterClientSecret.trim());
+    }
+
+    const response = await fetch(TWITTER_TOKEN_URL, {
+      body: body.toString(),
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      method: "POST",
+    });
+
+    const payload = (await response
+      .json()
+      .catch(() => null)) as { access_token?: string } | null;
+
+    if (!response.ok || typeof payload?.access_token !== "string") {
+      throw new BadRequestException("X token exchange failed.");
+    }
+
+    return payload.access_token;
+  }
+
+  private async fetchTwitterUserInfo(accessToken: string) {
+    const response = await fetch(TWITTER_USERINFO_URL, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+      method: "GET",
+    });
+    const payload = (await response
+      .json()
+      .catch(() => null)) as TwitterUserInfo | null;
+
+    if (!response.ok || !payload?.data?.id) {
+      throw new BadRequestException("X profile lookup failed.");
+    }
+
+    return payload;
+  }
+
+  private async completeTwitterAuth(
+    profile: TwitterUserInfo,
+    requestMeta: RequestMeta,
+  ) {
+    const providerUserId = profile.data!.id!.trim();
+    const username = profile.data?.username?.trim() ?? "reader";
+    const name = profile.data?.name?.trim();
+    const avatarUrl = profile.data?.profile_image_url?.trim() ?? null;
+    const displayName = name || username;
+
+    const existingIdentity = await this.prisma.authIdentity.findUnique({
+      where: {
+        provider_providerUserId: {
+          provider: "TWITTER",
+          providerUserId,
+        },
+      },
+      select: {
+        id: true,
+        userId: true,
+      },
+    });
+
+    const userById = existingIdentity
+      ? await this.prisma.user.findUnique({
+          where: { id: existingIdentity.userId },
+          include: {
+            creatorApplication: {
+              select: {
+                reviewNotes: true,
+                revenueShareContractApproved: true,
+                reviewedAt: true,
+                status: true,
+                submittedAt: true,
+              },
+            },
+            profile: true,
+            totpCredential: {
+              select: { verified: true },
+            },
+          },
+        })
+      : null;
+
+    if (existingIdentity && !userById) {
+      throw new ConflictException(
+        "This X account is already linked to a different TaleStead user.",
+      );
+    }
+
+    if (userById && userById.status !== "ACTIVE") {
+      throw new UnauthorizedException("This account is currently unavailable.");
+    }
+
+    const now = new Date();
+
+    if (!userById) {
+      const createdUser = await this.prisma.user.create({
+        data: {
+          email: null,
+          emailVerifiedAt: null,
+          role: "READER",
+          authIdentities: {
+            create: {
+              provider: "TWITTER",
+              providerEmail: null,
+              providerUserId,
+            },
+          },
+          profile: {
+            create: {
+              avatarUrl,
+              displayName,
+            },
+          },
+        },
+        include: {
+          creatorApplication: {
+            select: {
+              reviewNotes: true,
+              revenueShareContractApproved: true,
+              reviewedAt: true,
+              status: true,
+              submittedAt: true,
+            },
+          },
+          profile: true,
+          totpCredential: {
+            select: { verified: true },
+          },
+        },
+      });
+
+      return this.createSessionResponse(
+        {
+          id: createdUser.id,
+          creatorApplication: createdUser.creatorApplication,
+          email: createdUser.email,
+          isGuest: createdUser.isGuest,
+          role: createdUser.role,
+          status: createdUser.status,
+          profile: createdUser.profile,
+          totpCredential: createdUser.totpCredential,
+        },
+        requestMeta,
+      );
+    }
+
+    const profileUpdate = {
+      ...(!userById.profile?.avatarUrl && avatarUrl ? { avatarUrl } : {}),
+      ...(!userById.profile?.displayName ? { displayName } : {}),
+    };
+    const shouldSyncProfile =
+      !userById.profile || Object.keys(profileUpdate).length > 0;
+
+    const syncedUser = shouldSyncProfile
+      ? await this.prisma.user.update({
+          where: { id: userById.id },
+          data: {
+            profile: {
+              update: profileUpdate,
+            },
+          },
+          include: {
+            creatorApplication: {
+              select: {
+                reviewNotes: true,
+                revenueShareContractApproved: true,
+                reviewedAt: true,
+                status: true,
+                submittedAt: true,
+              },
+            },
+            profile: true,
+            totpCredential: {
+              select: { verified: true },
+            },
+          },
+        })
+      : userById;
+
+    return this.createSessionResponse(
+      {
+        id: syncedUser.id,
+        creatorApplication: syncedUser.creatorApplication,
+        email: syncedUser.email,
+        isGuest: syncedUser.isGuest,
+        role: syncedUser.role,
+        status: syncedUser.status,
+        profile: syncedUser.profile,
+        totpCredential: syncedUser.totpCredential,
+      },
+      requestMeta,
+    );
+  }
+
+  private getTwitterCallbackErrorCode(error: unknown) {
+    if (error instanceof ConflictException) {
+      return "twitter_account_conflict";
+    }
+
+    if (error instanceof UnauthorizedException) {
+      return "twitter_account_unavailable";
+    }
+
+    if (error instanceof BadRequestException) {
+      if (error.message.includes("token exchange")) {
+        return "twitter_token_exchange_failed";
+      }
+
+      if (error.message.includes("profile lookup")) {
+        return "twitter_profile_fetch_failed";
+      }
+    }
+
+    return "twitter_auth_failed";
+  }
+
   private getGoogleCallbackErrorCode(error: unknown) {
     if (error instanceof ConflictException) {
       return "google_account_conflict";
@@ -1963,6 +3087,34 @@ export class AuthService {
     return "google_auth_failed";
   }
 
+  private getFacebookCallbackErrorCode(error: unknown) {
+    if (error instanceof ConflictException) {
+      return "facebook_account_conflict";
+    }
+
+    if (error instanceof UnauthorizedException) {
+      if (error.message.includes("email")) {
+        return "facebook_email_missing";
+      }
+
+      if (error.message.includes("unavailable")) {
+        return "facebook_account_unavailable";
+      }
+    }
+
+    if (error instanceof BadRequestException) {
+      if (error.message.includes("token exchange")) {
+        return "facebook_token_exchange_failed";
+      }
+
+      if (error.message.includes("profile lookup")) {
+        return "facebook_profile_fetch_failed";
+      }
+    }
+
+    return "facebook_auth_failed";
+  }
+
   private isGoogleAuthConfigured() {
     return Boolean(
       env.googleClientId && env.googleClientSecret && env.googleRedirectUri,
@@ -1981,6 +3133,57 @@ export class AuthService {
 
   private getGoogleAuthStateKey(state: string) {
     return `auth:google:state:${state}`;
+  }
+
+  private getFacebookAuthStateKey(state: string) {
+    return `auth:facebook:state:${state}`;
+  }
+
+  private getFacebookFrontendCallbackBaseUrl() {
+    const frontendBase = env.frontendAppUrl?.replace(/\/+$/, "") ?? "";
+
+    return `${frontendBase}/auth/facebook/callback`;
+  }
+
+  private resolveFacebookOauthCallbackBaseUrl(
+    input: GoogleAuthStartInput,
+  ): string {
+    if (input.client === "mobile") {
+      const uri = input.mobileRedirectUri ?? env.mobileOAuthCallbackUrl;
+
+      if (!uri?.trim()) {
+        throw new BadRequestException(
+          "Mobile Facebook sign-in requires the mobile_redirect query parameter (or MOBILE_OAUTH_CALLBACK_URL on the server).",
+        );
+      }
+
+      this.assertSafeMobileOAuthRedirectUri(uri);
+
+      return uri.trim();
+    }
+
+    return this.getFacebookFrontendCallbackBaseUrl();
+  }
+
+  private isFacebookAuthConfigured() {
+    return Boolean(
+      env.facebookAppId?.trim() &&
+        env.facebookAppSecret?.trim() &&
+        env.facebookRedirectUri?.trim(),
+    );
+  }
+
+  private getFacebookDisplayName(
+    facebookProfile: FacebookUserInfo,
+    email: string,
+  ) {
+    const displayName = facebookProfile.name?.trim();
+
+    if (displayName) {
+      return displayName;
+    }
+
+    return this.getDerivedUsername(email);
   }
 
   private getGoogleFrontendCallbackBaseUrl() {
@@ -2024,10 +3227,30 @@ export class AuthService {
       );
     }
 
-    if (!trimmed.includes("auth/google/callback")) {
-      throw new BadRequestException(
-        "mobile_redirect must target the auth/google/callback path.",
-      );
+    const allowsOAuthCallback =
+      trimmed.includes("auth/google/callback") ||
+      trimmed.includes("auth/x/callback") ||
+      trimmed.includes("auth/facebook/callback");
+
+    if (!allowsOAuthCallback) {
+      try {
+        const parsed = new URL(trimmed);
+        const p = parsed.pathname.replace(/\/+/g, "/");
+        if (
+          !p.includes("/auth/google/callback") &&
+          !p.includes("/auth/x/callback") &&
+          !p.includes("/auth/facebook/callback")
+        ) {
+          throw new BadRequestException(
+            "mobile_redirect must target auth/google/callback, auth/facebook/callback, or auth/x/callback.",
+          );
+        }
+      } catch (error) {
+        if (error instanceof BadRequestException) {
+          throw error;
+        }
+        throw new BadRequestException("mobile_redirect must be a valid URL.");
+      }
     }
 
     try {
