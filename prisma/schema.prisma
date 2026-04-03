@@ -221,6 +221,7 @@ enum BadgeRarity {
 enum ReportTargetType {
   CHAPTER
   STORY
+  COMMENT
 }
 
 enum ReportStatus {
@@ -317,6 +318,9 @@ enum AdminSettingKind {
 
 enum AuthIdentityProvider {
   GOOGLE
+  APPLE
+  TWITTER
+  FACEBOOK
 }
 
 model User {
@@ -677,8 +681,10 @@ model Story {
   analyticsDaily        StoryAnalyticsDaily[]
   chapterAnalyticsDaily ChapterAnalyticsDaily[]
   activityFeedEvents    ActivityFeedEvent[]
+  limitedOffers         LimitedOffer[]
 
   @@index([authorId])
+  @@index([authorId, status, deletedAt])
   @@index([featured, status])
   @@index([editorPick, status])
   @@index([genreSlugs], type: Gin)
@@ -890,6 +896,7 @@ model Bookmark {
 
   @@unique([userId, publishedChapterId])
   @@index([userId, createdAt])
+  @@index([storyId, userId])
   @@map("bookmarks")
 }
 
@@ -1213,6 +1220,7 @@ model ChapterEntitlement {
 
   @@unique([userId, publishedChapterId])
   @@index([userId, createdAt])
+  @@index([publishedChapterId, userId, expiresAt])
   @@map("chapter_entitlements")
 }
 
@@ -1606,6 +1614,7 @@ model Comment {
   parent                 Comment?         @relation("CommentReplies", fields: [parentCommentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   replies                Comment[]        @relation("CommentReplies")
   moderatedByAdminUser   User?            @relation("CommentModerator", fields: [moderatedByAdminUserId], references: [id])
+  contentReports         ContentReport[]
 
   @@index([publishedChapterId, status, createdAt])
   @@index([parentCommentId, createdAt])
@@ -1655,6 +1664,7 @@ model ContentReport {
   publishedChapterId String?
   storySlug          String?
   chapterSlug        String?
+  commentId          String?
   title              String
   reason             String
   details            String?
@@ -1667,9 +1677,11 @@ model ContentReport {
   assignedAdmin      User?             @relation("ReportAssignee", fields: [assignedAdminId], references: [id])
   story              Story?            @relation(fields: [storyId], references: [id])
   chapter            PublishedChapter? @relation(fields: [publishedChapterId], references: [id])
+  comment            Comment?          @relation(fields: [commentId], references: [id], onDelete: SetNull)
 
   @@index([status, createdAt])
   @@index([reporterUserId, createdAt])
+  @@index([commentId])
   @@map("content_reports")
 }
 
@@ -1739,6 +1751,43 @@ model AdminSetting {
 
   @@index([group])
   @@map("admin_settings")
+}
+
+model PromoSlide {
+  id              String   @id @default(cuid())
+  imageUrl        String
+  title           String
+  subtitle        String?
+  badgeText       String?
+  badgeType       String?
+  cardCtaText     String?
+  linkType        String
+  linkTarget      String
+  readChapterSlug String?
+  sortOrder       Int      @default(0)
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([isActive, sortOrder])
+  @@map("promo_slides")
+}
+
+model LimitedOffer {
+  id            String   @id @default(cuid())
+  storyId       String
+  discountLabel String
+  startsAt      DateTime
+  endsAt        DateTime
+  sortOrder     Int      @default(0)
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  story Story @relation(fields: [storyId], references: [id])
+
+  @@index([isActive, startsAt, endsAt])
+  @@map("limited_offers")
 }
 
 model AdminAuditLog {
