@@ -39,6 +39,11 @@ export class ReaderController {
     return this.readerService.getDashboard(request.auth!.userId);
   }
 
+  @Get("popup-promos")
+  async getPopupPromos() {
+    return this.readerService.getActivePopupPromos();
+  }
+
   @Get("dashboard/personalization")
   async getDashboardPersonalization(@Req() request: AuthenticatedRequest) {
     return this.readerService.getDashboardPersonalization(request.auth!.userId);

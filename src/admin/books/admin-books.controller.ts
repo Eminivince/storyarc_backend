@@ -135,4 +135,52 @@ export class AdminBooksController {
   async deleteLimitedOffer(@Param("id") id: string) {
     return this.service.deleteLimitedOffer(id);
   }
+
+  // ---------------------------------------------------------------------------
+  // Popup Promos
+  // ---------------------------------------------------------------------------
+
+  @Throttle(throttleAdminRead)
+  @RequirePermission("content:featured:read")
+  @Get("popup-promos")
+  async getPopupPromos() {
+    return this.service.getPopupPromos();
+  }
+
+  @RequirePermission("content:featured:write")
+  @Post("popup-promos")
+  async createPopupPromo(@Body() body: unknown) {
+    const record = body as Record<string, unknown>;
+    const storyId = typeof record?.storyId === "string" ? record.storyId : null;
+    const imageUrl = typeof record?.imageUrl === "string" ? record.imageUrl : null;
+    const title = typeof record?.title === "string" ? record.title : null;
+    const subtitle = typeof record?.subtitle === "string" ? record.subtitle : null;
+    const linkType = typeof record?.linkType === "string" ? record.linkType : "story";
+    const linkTarget = typeof record?.linkTarget === "string" ? record.linkTarget : null;
+    const triggerTiming = record?.triggerTiming === "AFTER_DELAY" ? "AFTER_DELAY" : "IMMEDIATE";
+    const delaySeconds = typeof record?.delaySeconds === "number" ? record.delaySeconds : 0;
+    const priority = typeof record?.priority === "number" ? record.priority : 0;
+
+    if (!storyId || !imageUrl || !title || !linkTarget) {
+      throw new BadRequestException("storyId, imageUrl, title, and linkTarget are required.");
+    }
+
+    return this.service.createPopupPromo({
+      storyId, imageUrl, title, subtitle, linkType, linkTarget,
+      triggerTiming: triggerTiming as "IMMEDIATE" | "AFTER_DELAY",
+      delaySeconds, priority,
+    });
+  }
+
+  @RequirePermission("content:featured:write")
+  @Patch("popup-promos/:id")
+  async updatePopupPromo(@Param("id") id: string, @Body() body: unknown) {
+    return this.service.updatePopupPromo(id, body as Record<string, unknown>);
+  }
+
+  @RequirePermission("content:featured:write")
+  @Delete("popup-promos/:id")
+  async deletePopupPromo(@Param("id") id: string) {
+    return this.service.deletePopupPromo(id);
+  }
 }

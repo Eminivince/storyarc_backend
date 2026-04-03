@@ -333,6 +333,8 @@ const PUBLISHED_STORY_METADATA_CACHE_TTL_SECONDS = 60 * 60;
 
 /** Matches dashboard row preview size (dedupeStoryCards default). */
 const DASHBOARD_PREVIEW_ROW_LIMIT = 6;
+/** Matches admin cap on `LimitedOffer` rows; reader returns at most this many active window offers. */
+const DASHBOARD_LIMITED_OFFERS_MAX = 6;
 
 const homeCreatorBenefits = [
   {
@@ -399,26 +401,81 @@ export class ReaderService {
   }
 
   /**
+   * Active limited-time offers for the reader dashboard (admin-configured, max {@link DASHBOARD_LIMITED_OFFERS_MAX}).
+   */
+  private async getActiveLimitedOffersForDashboard() {
+    const now = new Date();
+    const offerRows = await this.prisma.limitedOffer.findMany({
+      where: {
+        isActive: true,
+        startsAt: { lte: now },
+        endsAt: { gte: now },
+      },
+      orderBy: { sortOrder: "asc" },
+      take: DASHBOARD_LIMITED_OFFERS_MAX,
+      select: {
+        id: true,
+        discountLabel: true,
+        storyId: true,
+      },
+    });
+
+    if (offerRows.length === 0) {
+      return [];
+    }
+
+    const storyIds = offerRows.map((row) => row.storyId);
+    const stories = await this.prisma.story.findMany({
+      where: {
+        ...this.buildPublishedStoryWhere({}),
+        id: { in: storyIds },
+      },
+      select: publishedStoryCatalogSelect,
+    });
+    const storyById = new Map(stories.map((story) => [story.id, story] as const));
+    const cards: Array<
+      { discountLabel: string; offerId: string } & ReturnType<ReaderService["mapStoryCard"]>
+    > = [];
+
+    for (const row of offerRows) {
+      const record = storyById.get(row.storyId);
+      if (!record || !isStoryLive(record)) {
+        continue;
+      }
+      const source = this.publishedCatalogRecordToStoryCardSource(record);
+      cards.push({
+        discountLabel: row.discountLabel,
+        offerId: row.id,
+        ...this.mapStoryCard(source),
+      });
+    }
+
+    return cards;
+  }
+
+  /**
    * Fast first paint: small DB slices + continue reading + featured.
    * Client should call {@link getDashboardPersonalization} after load for "for you" + genres.
    */
   async getDashboard(userId: string) {
     const catalogWhere = this.buildPublishedStoryWhere({});
 
-    const [continueReading, trendingPack, freshPack, featuredStory] = await Promise.all([
-      this.getContinueReading(userId),
-      this.queryPublishedStories({
-        limit: DASHBOARD_PREVIEW_ROW_LIMIT,
-        offset: 0,
-        orderMode: "trending",
-      }),
-      this.queryPublishedStories({
-        limit: DASHBOARD_PREVIEW_ROW_LIMIT,
-        offset: 0,
-        orderMode: "fresh",
-      }),
-      this.getDashboardFeaturedStoryRecord(catalogWhere),
-    ]);
+    const [continueReading, trendingPack, freshPack, featuredStory, limitedOffers] =
+      await Promise.all([
+        this.getContinueReading(userId),
+        this.queryPublishedStories({
+          limit: DASHBOARD_PREVIEW_ROW_LIMIT,
+          offset: 0,
+          orderMode: "trending",
+        }),
+        this.queryPublishedStories({
+          limit: DASHBOARD_PREVIEW_ROW_LIMIT,
+          offset: 0,
+          orderMode: "fresh",
+        }),
+        this.getDashboardFeaturedStoryRecord(catalogWhere),
+        this.getActiveLimitedOffersForDashboard(),
+      ]);
 
     const trendingStories = trendingPack.stories;
     const freshStories = freshPack.stories;
@@ -442,12 +499,14 @@ export class ReaderService {
       !featuredStory &&
       trendingStories.length === 0 &&
       freshStories.length === 0 &&
-      promoCarousel.length === 0
+      promoCarousel.length === 0 &&
+      limitedOffers.length === 0
     ) {
       return {
         availableGenres: [],
         continueReading,
         featured: null,
+        limitedOffers: [],
         personalizationPending: true,
         promoCarousel: [],
         floatingPromos,
@@ -459,6 +518,7 @@ export class ReaderService {
       availableGenres: [],
       continueReading,
       featured: featuredMapped,
+      limitedOffers,
       personalizationPending: true,
       promoCarousel,
       floatingPromos,
@@ -4178,6 +4238,38 @@ export class ReaderService {
     }
   }
 
+  async getActivePopupPromos() {
+    const promos = await this.prisma.popupPromo.findMany({
+      where: { isActive: true },
+      orderBy: { priority: "desc" },
+      select: {
+        id: true,
+        imageUrl: true,
+        title: true,
+        subtitle: true,
+        linkType: true,
+        linkTarget: true,
+        triggerTiming: true,
+        delaySeconds: true,
+        story: { select: { slug: true } },
+      },
+    });
+
+    return {
+      promos: promos.map((p) => ({
+        id: p.id,
+        imageUrl: p.imageUrl,
+        title: p.title,
+        subtitle: p.subtitle,
+        linkType: p.linkType,
+        linkTarget: p.linkTarget,
+        triggerTiming: p.triggerTiming,
+        delaySeconds: p.delaySeconds,
+        storySlug: p.story.slug,
+      })),
+    };
+  }
+
   private buildPublishedStoryWhere(input: {
     editorPick?: boolean;
     genre?: string;
@@ -4590,6 +4682,45 @@ export class ReaderService {
 
   private getPublishedChapterCount(story: StoryCardSource) {
     return story._count?.publishedChapters ?? story.publishedChapters.length;
+  }
+
+  private publishedCatalogRecordToStoryCardSource(
+    story: PublishedStoryCatalogRecord,
+  ): StoryCardSource {
+    return {
+      adminControl: story.adminControl
+        ? {
+            visibilityState: getStoryVisibilityState(story),
+          }
+        : null,
+      assets: story.assets,
+      authorId: story.authorId,
+      authorName: story.authorName,
+      averageRating: story.averageRating,
+      createdAt: story.createdAt,
+      featured: story.featured ?? undefined,
+      genreSlugs: story.genreSlugs,
+      id: story.id,
+      isLive: story.isLive,
+      latestChapterAt: story.latestChapterAt,
+      liveAt: story.liveAt,
+      publishedAt: story.publishedAt,
+      publishedChapters: story.publishedChapters.map((chapter) => ({
+        chapterNumber: chapter.chapterNumber,
+        publishedAt: chapter.publishedAt ?? undefined,
+        slug: chapter.slug,
+        title: chapter.title ?? undefined,
+      })),
+      reviewCount: story.reviewCount,
+      shortSynopsis: story.shortSynopsis,
+      slug: story.slug,
+      status: story.status,
+      synopsis: story.synopsis,
+      tagSlugs: story.tagSlugs,
+      title: story.title,
+      totalReads: story.totalReads,
+      _count: story._count,
+    };
   }
 
   private toStoryCardSource(story: StoryWithReaderRelations): StoryCardSource {

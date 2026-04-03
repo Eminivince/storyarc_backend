@@ -611,6 +611,156 @@ export class AdminBooksService {
   }
 
   // ---------------------------------------------------------------------------
+  // Popup Promos
+  // ---------------------------------------------------------------------------
+
+  private static readonly POPUP_PROMOS_MAX = 10;
+
+  async getPopupPromos() {
+    const promos = await this.prisma.popupPromo.findMany({
+      orderBy: { priority: "desc" },
+      include: {
+        story: {
+          select: {
+            title: true,
+            slug: true,
+            assets: { select: { coverImageUrl: true } },
+            authorName: true,
+          },
+        },
+      },
+    });
+
+    return {
+      promos: promos.map((p) => ({
+        id: p.id,
+        storyId: p.storyId,
+        imageUrl: p.imageUrl,
+        title: p.title,
+        subtitle: p.subtitle,
+        linkType: p.linkType,
+        linkTarget: p.linkTarget,
+        triggerTiming: p.triggerTiming,
+        delaySeconds: p.delaySeconds,
+        isActive: p.isActive,
+        priority: p.priority,
+        createdAt: p.createdAt,
+        story: {
+          title: p.story.title,
+          slug: p.story.slug,
+          coverImageUrl: p.story.assets?.coverImageUrl ?? null,
+          authorName: p.story.authorName,
+        },
+      })),
+    };
+  }
+
+  async createPopupPromo(input: {
+    storyId: string;
+    imageUrl: string;
+    title: string;
+    subtitle: string | null;
+    linkType: string;
+    linkTarget: string;
+    triggerTiming: "IMMEDIATE" | "AFTER_DELAY";
+    delaySeconds: number;
+    priority: number;
+  }) {
+    const existingCount = await this.prisma.popupPromo.count();
+    if (existingCount >= AdminBooksService.POPUP_PROMOS_MAX) {
+      throw new BadRequestException(
+        `Maximum of ${AdminBooksService.POPUP_PROMOS_MAX} popup promos. Delete one before adding another.`,
+      );
+    }
+
+    const story = await this.prisma.story.findUnique({ where: { id: input.storyId } });
+    if (!story) throw new NotFoundException("Story not found.");
+
+    const promo = await this.prisma.popupPromo.create({
+      data: {
+        storyId: input.storyId,
+        imageUrl: input.imageUrl,
+        title: input.title,
+        subtitle: input.subtitle,
+        linkType: input.linkType,
+        linkTarget: input.linkTarget,
+        triggerTiming: input.triggerTiming,
+        delaySeconds: input.delaySeconds,
+        priority: input.priority,
+      },
+    });
+
+    this.logger.log({ event: "POPUP_PROMO_CREATED", promoId: promo.id, storyId: input.storyId });
+    return { message: "Popup promo created.", promo };
+  }
+
+  async updatePopupPromo(promoId: string, input: Record<string, unknown>) {
+    const existing = await this.prisma.popupPromo.findUnique({ where: { id: promoId } });
+    if (!existing) throw new NotFoundException("Popup promo not found.");
+
+    const data: Record<string, unknown> = {};
+    if (typeof input.imageUrl === "string") data.imageUrl = input.imageUrl;
+    if (typeof input.title === "string") data.title = input.title;
+    if (typeof input.subtitle === "string" || input.subtitle === null) data.subtitle = input.subtitle;
+    if (typeof input.linkType === "string") data.linkType = input.linkType;
+    if (typeof input.linkTarget === "string") data.linkTarget = input.linkTarget;
+    if (input.triggerTiming === "IMMEDIATE" || input.triggerTiming === "AFTER_DELAY") data.triggerTiming = input.triggerTiming;
+    if (typeof input.delaySeconds === "number") data.delaySeconds = input.delaySeconds;
+    if (typeof input.isActive === "boolean") data.isActive = input.isActive;
+    if (typeof input.priority === "number") data.priority = input.priority;
+
+    const promo = await this.prisma.popupPromo.update({ where: { id: promoId }, data });
+
+    this.logger.log({ event: "POPUP_PROMO_UPDATED", promoId });
+    return { message: "Popup promo updated.", promo };
+  }
+
+  async deletePopupPromo(promoId: string) {
+    await this.prisma.popupPromo.delete({ where: { id: promoId } }).catch(() => {
+      throw new NotFoundException("Popup promo not found.");
+    });
+
+    this.logger.log({ event: "POPUP_PROMO_DELETED", promoId });
+    return { message: "Popup promo deleted." };
+  }
+
+  async getActivePopupPromos() {
+    const promos = await this.prisma.popupPromo.findMany({
+      where: { isActive: true },
+      orderBy: { priority: "desc" },
+      select: {
+        id: true,
+        imageUrl: true,
+        title: true,
+        subtitle: true,
+        linkType: true,
+        linkTarget: true,
+        triggerTiming: true,
+        delaySeconds: true,
+        story: {
+          select: {
+            slug: true,
+          },
+        },
+      },
+    });
+
+    return {
+      promos: promos.map((p) => ({
+        id: p.id,
+        imageUrl: p.imageUrl,
+        title: p.title,
+        subtitle: p.subtitle,
+        linkType: p.linkType,
+        linkTarget: p.linkTarget,
+        triggerTiming: p.triggerTiming,
+        delaySeconds: p.delaySeconds,
+        storySlug: p.story.slug,
+      })),
+    };
+  }
+
+  // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
 

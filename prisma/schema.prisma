@@ -682,6 +682,7 @@ model Story {
   chapterAnalyticsDaily ChapterAnalyticsDaily[]
   activityFeedEvents    ActivityFeedEvent[]
   limitedOffers         LimitedOffer[]
+  popupPromos           PopupPromo[]
 
   @@index([authorId])
   @@index([authorId, status, deletedAt])
@@ -1788,6 +1789,32 @@ model LimitedOffer {
 
   @@index([isActive, startsAt, endsAt])
   @@map("limited_offers")
+}
+
+enum PopupPromoTiming {
+  IMMEDIATE
+  AFTER_DELAY
+}
+
+model PopupPromo {
+  id            String           @id @default(cuid())
+  storyId       String
+  imageUrl      String
+  title         String
+  subtitle      String?
+  linkType      String
+  linkTarget    String
+  triggerTiming PopupPromoTiming @default(IMMEDIATE)
+  delaySeconds  Int              @default(0)
+  isActive      Boolean          @default(true)
+  priority      Int              @default(0)
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  story Story @relation(fields: [storyId], references: [id])
+
+  @@index([isActive, priority])
+  @@map("popup_promos")
 }
 
 model AdminAuditLog {
