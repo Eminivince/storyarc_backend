@@ -47,6 +47,32 @@ export class ActivityFeedService {
     } catch {
       // Socket emit is best-effort
     }
+
+    // Notify all followers of this user
+    try {
+      const followers = await this.prisma.follow.findMany({
+        where: { targetUserId: userId, targetType: "AUTHOR" },
+        select: { userId: true },
+      });
+
+      const payload = {
+        id: event.id,
+        eventType,
+        metadata: metadata ?? null,
+        createdAt: event.createdAt.toISOString(),
+        actorUserId: userId,
+      };
+
+      for (const follower of followers) {
+        this.websocketService.emitToUser(
+          follower.userId,
+          "activity:follower-new",
+          payload,
+        );
+      }
+    } catch {
+      // Follower fan-out is best-effort
+    }
   }
 
   async getActivityFeed(
@@ -138,6 +164,12 @@ export class ActivityFeedService {
         ...(cursor ? { createdAt: { lt: new Date(cursor) } } : {}),
       },
       include: {
+        user: {
+          select: {
+            id: true,
+            profile: { select: { displayName: true, avatarUrl: true } },
+          },
+        },
         story: {
           select: {
             id: true,
@@ -163,6 +195,11 @@ export class ActivityFeedService {
         eventType: e.eventType,
         metadata: e.metadata,
         createdAt: e.createdAt.toISOString(),
+        user: {
+          id: e.user.id,
+          displayName: e.user.profile?.displayName ?? "Reader",
+          avatarUrl: e.user.profile?.avatarUrl ?? null,
+        },
         story: e.story
           ? {
               id: e.story.id,

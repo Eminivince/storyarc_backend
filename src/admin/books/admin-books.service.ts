@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ForbiddenException,
   Injectable,
   Logger,
@@ -36,6 +37,7 @@ import {
   normalizeConfiguredPremiumWindowHours,
   resolveEffectiveChapterAccess,
 } from "../../utils/book-admin";
+import { WebsocketService } from "../../websocket/websocket.service";
 
 @Injectable()
 export class AdminBooksService {
@@ -44,6 +46,7 @@ export class AdminBooksService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AdminAuditService,
+    private readonly websocketService: WebsocketService,
   ) {}
 
   private async getAdminUser(userId: string) {
@@ -451,6 +454,7 @@ export class AdminBooksService {
       slugCount: slugs.length,
     });
 
+    this.websocketService.broadcast("featured:updated", {});
     return { message: `${slugs.length} stories set as weekly featured.` };
   }
 
@@ -471,6 +475,7 @@ export class AdminBooksService {
       storySlug,
     });
 
+    this.websocketService.broadcast("featured:updated", {});
     return { message: "Story removed from weekly featured." };
   }
 
@@ -522,12 +527,15 @@ export class AdminBooksService {
     });
 
     this.logger.log({ event: "PROMO_CAROUSEL_REPLACED", slideCount: slides.length });
+    this.websocketService.broadcast("promo:updated", {});
     return { message: `${slides.length} promo slides saved.` };
   }
 
   // ---------------------------------------------------------------------------
   // Limited Offers
   // ---------------------------------------------------------------------------
+
+  private static readonly LIMITED_OFFERS_MAX = 6;
 
   async getLimitedOffers() {
     const offers = await this.prisma.limitedOffer.findMany({
@@ -568,6 +576,13 @@ export class AdminBooksService {
     startsAt: Date;
     endsAt: Date;
   }) {
+    const existingCount = await this.prisma.limitedOffer.count();
+    if (existingCount >= AdminBooksService.LIMITED_OFFERS_MAX) {
+      throw new BadRequestException(
+        `Maximum of ${AdminBooksService.LIMITED_OFFERS_MAX} limited offers. Delete one before adding another.`,
+      );
+    }
+
     const story = await this.prisma.story.findUnique({ where: { id: input.storyId } });
     if (!story) throw new NotFoundException("Story not found.");
 
@@ -581,6 +596,7 @@ export class AdminBooksService {
     });
 
     this.logger.log({ event: "LIMITED_OFFER_CREATED", offerId: offer.id, storyId: input.storyId });
+    this.websocketService.broadcast("offers:updated", {});
     return { message: "Limited offer created.", offer };
   }
 
@@ -590,6 +606,7 @@ export class AdminBooksService {
     });
 
     this.logger.log({ event: "LIMITED_OFFER_DELETED", offerId });
+    this.websocketService.broadcast("offers:updated", {});
     return { message: "Limited offer deleted." };
   }
 
