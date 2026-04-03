@@ -2756,6 +2756,8 @@ export class EngagementService {
       bookmarks,
       authoredStories,
       currentReadingEntry,
+      followingCount,
+      readingTimeLedger,
     ] = await Promise.all([
       this.prisma.readingProgress.count({
         where: {
@@ -2805,6 +2807,13 @@ export class EngagementService {
           lastReadAt: "desc",
         },
       }),
+      this.prisma.follow.count({
+        where: { userId: user.id },
+      }),
+      this.prisma.rewardLedgerEntry.findMany({
+        where: { userId: user.id, reason: "READING_TIME" },
+        select: { note: true },
+      }),
     ]);
 
     const visibleBookmarks = bookmarks.filter((bookmark) => isStoryLive(bookmark.story));
@@ -2815,6 +2824,15 @@ export class EngagementService {
       (sum, story) => sum + story.totalReads,
       0,
     );
+
+    let totalReadingMinutes = 0;
+    for (const entry of readingTimeLedger) {
+      const match = entry.note?.match(/Reading time:\s*(\d+)\s*min/);
+      if (match) {
+        totalReadingMinutes += parseInt(match[1]!, 10);
+      }
+    }
+
     const readingList = [];
     const seenStoryIds = new Set<string>();
 
@@ -2863,6 +2881,17 @@ export class EngagementService {
           : null,
       profile: this.mapAccountProfile(user),
       profileStats: [
+        {
+          label: "Following",
+          value: this.formatCompactNumber(followingCount),
+        },
+        {
+          label: "Reading Time",
+          value:
+            totalReadingMinutes >= 60
+              ? `${Math.floor(totalReadingMinutes / 60)}h ${totalReadingMinutes % 60}m`
+              : `${totalReadingMinutes}m`,
+        },
         {
           label: "Stories Started",
           value: this.formatCompactNumber(readingProgressCount),
