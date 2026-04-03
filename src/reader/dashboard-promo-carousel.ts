@@ -153,6 +153,39 @@ export type FeaturedStoryPromoInput = {
   title: string;
 };
 
+/**
+ * Load active promo slides from the database, ordered by sortOrder.
+ * Falls back to an empty array if the table has no active rows.
+ */
+export async function loadPromoSlidesFromDb(
+  prisma: import("@prisma/client").PrismaClient,
+): Promise<ReaderDashboardPromoSlide[]> {
+  const rows = await prisma.promoSlide.findMany({
+    where: { isActive: true },
+    orderBy: { sortOrder: "asc" },
+  });
+
+  const slides: ReaderDashboardPromoSlide[] = [];
+  for (const row of rows) {
+    const slide = normalizeSlide({
+      id: row.id,
+      imageUrl: row.imageUrl,
+      title: row.title,
+      subtitle: row.subtitle,
+      badgeText: row.badgeText,
+      badgeType: row.badgeType,
+      cardCtaText: row.cardCtaText,
+      linkType: row.linkType,
+      linkTarget: row.linkTarget,
+      readChapterSlug: row.readChapterSlug,
+    });
+    if (slide) {
+      slides.push(slide);
+    }
+  }
+  return slides;
+}
+
 export function buildDashboardPromoCarousel(
   fromEnv: ReaderDashboardPromoSlide[],
   featured: FeaturedStoryPromoInput | null,

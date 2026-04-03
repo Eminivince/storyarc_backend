@@ -1,4 +1,4 @@
-import { Controller, Get, Req, UseGuards } from "@nestjs/common";
+import { Controller, Get, Query, Req, UseGuards } from "@nestjs/common";
 import { Throttle } from "@nestjs/throttler";
 import { AccessTokenGuard } from "../../common/guards/access-token.guard";
 import { throttleAdminRead } from "../../common/throttler/throttler.constants";
@@ -17,5 +17,11 @@ export class AdminDashboardController {
   @Get("dashboard")
   async getAdminOverview(@Req() request: AuthenticatedRequest) {
     return this.service.getAdminOverview(request.auth!.userId);
+  }
+
+  @Throttle(throttleAdminRead)
+  @Get("search")
+  async globalSearch(@Query("q") q: string | undefined) {
+    return this.service.globalSearch(q?.trim() ?? "");
   }
 }

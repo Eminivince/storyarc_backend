@@ -475,6 +475,125 @@ export class AdminBooksService {
   }
 
   // ---------------------------------------------------------------------------
+  // Promo Carousel
+  // ---------------------------------------------------------------------------
+
+  async getPromoCarouselSlides() {
+    const slides = await this.prisma.promoSlide.findMany({
+      orderBy: { sortOrder: "asc" },
+    });
+    return { slides };
+  }
+
+  async replacePromoCarouselSlides(
+    slides: Array<{
+      imageUrl: string;
+      title: string;
+      subtitle?: string | null;
+      badgeText?: string | null;
+      badgeType?: string | null;
+      cardCtaText?: string | null;
+      linkType: string;
+      linkTarget: string;
+      readChapterSlug?: string | null;
+      sortOrder?: number;
+      isActive?: boolean;
+    }>,
+  ) {
+    await this.prisma.$transaction(async (tx) => {
+      await tx.promoSlide.deleteMany({});
+      if (slides.length > 0) {
+        await tx.promoSlide.createMany({
+          data: slides.map((slide, index) => ({
+            imageUrl: slide.imageUrl,
+            title: slide.title,
+            subtitle: slide.subtitle ?? null,
+            badgeText: slide.badgeText ?? null,
+            badgeType: slide.badgeType ?? null,
+            cardCtaText: slide.cardCtaText ?? null,
+            linkType: slide.linkType,
+            linkTarget: slide.linkTarget,
+            readChapterSlug: slide.readChapterSlug ?? null,
+            sortOrder: slide.sortOrder ?? index,
+            isActive: slide.isActive ?? true,
+          })),
+        });
+      }
+    });
+
+    this.logger.log({ event: "PROMO_CAROUSEL_REPLACED", slideCount: slides.length });
+    return { message: `${slides.length} promo slides saved.` };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Limited Offers
+  // ---------------------------------------------------------------------------
+
+  async getLimitedOffers() {
+    const offers = await this.prisma.limitedOffer.findMany({
+      orderBy: { sortOrder: "asc" },
+      include: {
+        story: {
+          select: {
+            title: true,
+            slug: true,
+            assets: { select: { coverImageUrl: true } },
+          },
+        },
+      },
+    });
+
+    return {
+      offers: offers.map((offer) => ({
+        id: offer.id,
+        storyId: offer.storyId,
+        discountLabel: offer.discountLabel,
+        startsAt: offer.startsAt,
+        endsAt: offer.endsAt,
+        sortOrder: offer.sortOrder,
+        isActive: offer.isActive,
+        createdAt: offer.createdAt,
+        story: {
+          title: offer.story.title,
+          slug: offer.story.slug,
+          coverImageUrl: offer.story.assets?.coverImageUrl ?? null,
+        },
+      })),
+    };
+  }
+
+  async createLimitedOffer(input: {
+    storyId: string;
+    discountLabel: string;
+    startsAt: Date;
+    endsAt: Date;
+  }) {
+    const story = await this.prisma.story.findUnique({ where: { id: input.storyId } });
+    if (!story) throw new NotFoundException("Story not found.");
+
+    const offer = await this.prisma.limitedOffer.create({
+      data: {
+        storyId: input.storyId,
+        discountLabel: input.discountLabel,
+        startsAt: input.startsAt,
+        endsAt: input.endsAt,
+      },
+    });
+
+    this.logger.log({ event: "LIMITED_OFFER_CREATED", offerId: offer.id, storyId: input.storyId });
+    return { message: "Limited offer created.", offer };
+  }
+
+  async deleteLimitedOffer(offerId: string) {
+    await this.prisma.limitedOffer.delete({ where: { id: offerId } }).catch(() => {
+      throw new NotFoundException("Limited offer not found.");
+    });
+
+    this.logger.log({ event: "LIMITED_OFFER_DELETED", offerId });
+    return { message: "Limited offer deleted." };
+  }
+
+  // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
 

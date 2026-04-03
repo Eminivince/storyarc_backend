@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, Req, UseGuards } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Put, Query, Req, UseGuards } from "@nestjs/common";
 import { Throttle } from "@nestjs/throttler";
 import { AccessTokenGuard } from "../../common/guards/access-token.guard";
 import { throttleAdminRead, throttleAdminWrite } from "../../common/throttler/throttler.constants";
@@ -81,5 +81,58 @@ export class AdminBooksController {
   @Delete("featured/weekly/:storySlug")
   async removeWeeklyFeatured(@Param("storySlug") storySlug: string, @Req() request: AuthenticatedRequest) {
     return this.service.removeWeeklyFeaturedStory(request.auth!.userId, storySlug);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Promo Carousel
+  // ---------------------------------------------------------------------------
+
+  @Throttle(throttleAdminRead)
+  @RequirePermission("content:featured:read")
+  @Get("promo-carousel")
+  async getPromoCarousel() {
+    return this.service.getPromoCarouselSlides();
+  }
+
+  @RequirePermission("content:featured:write")
+  @Put("promo-carousel")
+  async replacePromoCarousel(@Body() body: unknown) {
+    if (!body || !Array.isArray((body as any)?.slides)) {
+      throw new BadRequestException("Body must contain a `slides` array.");
+    }
+    return this.service.replacePromoCarouselSlides((body as any).slides);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Limited Offers
+  // ---------------------------------------------------------------------------
+
+  @Throttle(throttleAdminRead)
+  @RequirePermission("content:featured:read")
+  @Get("limited-offers")
+  async getLimitedOffers() {
+    return this.service.getLimitedOffers();
+  }
+
+  @RequirePermission("content:featured:write")
+  @Post("limited-offers")
+  async createLimitedOffer(@Body() body: unknown) {
+    const record = body as Record<string, unknown>;
+    const storyId = typeof record?.storyId === "string" ? record.storyId : null;
+    const discountLabel = typeof record?.discountLabel === "string" ? record.discountLabel : null;
+    const startsAt = record?.startsAt ? new Date(record.startsAt as string) : null;
+    const endsAt = record?.endsAt ? new Date(record.endsAt as string) : null;
+
+    if (!storyId || !discountLabel || !startsAt || !endsAt) {
+      throw new BadRequestException("storyId, discountLabel, startsAt, and endsAt are required.");
+    }
+
+    return this.service.createLimitedOffer({ storyId, discountLabel, startsAt, endsAt });
+  }
+
+  @RequirePermission("content:featured:write")
+  @Delete("limited-offers/:id")
+  async deleteLimitedOffer(@Param("id") id: string) {
+    return this.service.deleteLimitedOffer(id);
   }
 }

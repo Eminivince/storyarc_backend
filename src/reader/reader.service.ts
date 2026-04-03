@@ -34,6 +34,7 @@ import {
 } from "../catalog/story-genres";
 import {
   buildDashboardPromoCarousel,
+  loadPromoSlidesFromDb,
   parsePromoCarouselFromEnv,
 } from "./dashboard-promo-carousel";
 import { parseFloatingPromosFromEnv } from "./reader-floating-promo";
@@ -60,17 +61,48 @@ import {
   UpdateReadingProgressInput,
 } from "./reader.types";
 
+/**
+ * Story + chapters for reader APIs. Omits `PublishedChapter.bodyParagraphs` and `Chapter.bodyDraft`
+ * so story detail / access checks stay fast for long books (those fields are loaded in `getChapter`).
+ */
+const readableStoryForReaderInclude = {
+  adminControl: true,
+  assets: true,
+  volumes: {
+    orderBy: { sortOrder: "asc" as const },
+    select: {
+      id: true,
+      number: true,
+      title: true,
+    },
+  },
+  publishedChapters: {
+    orderBy: { chapterNumber: "asc" as const },
+    select: {
+      id: true,
+      storyId: true,
+      chapterId: true,
+      slug: true,
+      title: true,
+      chapterNumber: true,
+      premium: true,
+      coinUnlockPrice: true,
+      publishedAt: true,
+      adminOverride: true,
+      chapter: {
+        select: {
+          coinUnlockPrice: true,
+          premiumEnabled: true,
+          volumeId: true,
+          wordCount: true,
+        },
+      },
+    },
+  },
+} satisfies Prisma.StoryInclude;
+
 type StoryWithReaderRelations = Prisma.StoryGetPayload<{
-  include: {
-    adminControl: true;
-    assets: true;
-    publishedChapters: {
-      include: {
-        adminOverride: true;
-        chapter: true;
-      };
-    };
-  };
+  include: typeof readableStoryForReaderInclude;
 }>;
 
 const publishedStoryCatalogSelect = {
@@ -390,7 +422,8 @@ export class ReaderService {
 
     const trendingStories = trendingPack.stories;
     const freshStories = freshPack.stories;
-    const envPromoSlides = parsePromoCarouselFromEnv();
+    const dbPromoSlides = await loadPromoSlidesFromDb(this.prisma);
+    const envPromoSlides = dbPromoSlides.length > 0 ? dbPromoSlides : parsePromoCarouselFromEnv();
     const featuredMapped = featuredStory ? this.mapFeaturedStory(featuredStory) : null;
     const promoCarousel = buildDashboardPromoCarousel(
       envPromoSlides,
@@ -936,6 +969,8 @@ export class ReaderService {
       },
     });
 
+    this.redisService.delete(`story:agg:${story.id}`).catch(() => undefined);
+
     return {
       following: true,
       message: `Following ${story.title}.`,
@@ -952,6 +987,8 @@ export class ReaderService {
         userId,
       },
     });
+
+    this.redisService.delete(`story:agg:${story.id}`).catch(() => undefined);
 
     return {
       following: false,
@@ -1184,10 +1221,7 @@ export class ReaderService {
       { chapterAccessMap, progress },
       bookmarks,
       storyRating,
-      writtenReviewCount,
-      storyFollowerCount,
-      authorFollowerCount,
-      authorStoryCount,
+      aggregates,
       follows,
     ] =
       await Promise.all([
@@ -1213,41 +1247,7 @@ export class ReaderService {
             rating: true,
           },
         }),
-        this.prisma.review.count({
-          where: {
-            storyId: story.id,
-            status: ReviewStatus.VISIBLE,
-          },
-        }),
-        this.prisma.follow.count({
-          where: {
-            storyId: story.id,
-            targetType: FollowTargetType.STORY,
-          },
-        }),
-        story.authorId
-          ? this.prisma.follow.count({
-              where: {
-                targetType: FollowTargetType.AUTHOR,
-                targetUserId: story.authorId,
-              },
-            })
-          : Promise.resolve(0),
-        story.authorId
-          ? this.prisma.story.count({
-              where: {
-                authorId: story.authorId,
-                status: {
-                  in: [StoryStatus.PUBLISHED, StoryStatus.COMPLETED, StoryStatus.HIATUS],
-                },
-                deletedAt: null,
-                OR: [
-                  { adminControl: { is: { visibilityState: AdminBookVisibilityState.LIVE } } },
-                  { adminControl: { is: null }, isLive: true },
-                ],
-              },
-            })
-          : Promise.resolve(0),
+        this.getStoryAggregates(story.id, story.authorId),
         this.prisma.follow.findMany({
           where: {
             userId,
@@ -1271,6 +1271,11 @@ export class ReaderService {
           },
         }),
       ]);
+    const { writtenReviewCount, storyFollowerCount, authorFollowerCount, authorStoryCount } = aggregates;
+    const totalWordCount = story.publishedChapters.reduce(
+      (sum, pc) => sum + (pc.chapter?.wordCount ?? 0),
+      0,
+    );
     const recommendations = await this.getRecommendedStoryCards({
       excludeSeenStories: true,
       excludeStoryIds: [story.id],
@@ -1287,10 +1292,15 @@ export class ReaderService {
     );
     const firstChapter = story.publishedChapters[0] ?? null;
     const storyControl = this.getStoryControl(story);
-    const ratingEligibility = this.getStoryRatingEligibility({
+    const writtenReviewEligibility = this.getStoryWrittenReviewEligibility({
       chapterAccessMap,
       chapters: story.publishedChapters,
       progress,
+    });
+    const starRatingEligibility = this.getStoryStarRatingEligibility({
+      authorId: story.authorId ?? null,
+      publishedChapterCount: story.publishedChapters.length,
+      userId,
     });
 
     return {
@@ -1336,20 +1346,20 @@ export class ReaderService {
           story.assets?.cardImageUrl ??
           story.assets?.bannerImageUrl ??
           "",
-        canRate: ratingEligibility.canRate,
+        canRate: starRatingEligibility.canRate,
         firstChapterSlug: firstChapter?.slug ?? null,
         genres: story.genreSlugs.map((genreSlug) => this.slugToLabel(genreSlug)),
-        hasCompletedStory: ratingEligibility.hasCompletedStory,
-        hasUnlockedAllChapters: ratingEligibility.hasUnlockedAllChapters,
+        hasCompletedStory: writtenReviewEligibility.hasCompletedStory,
+        hasUnlockedAllChapters: writtenReviewEligibility.hasUnlockedAllChapters,
         isFollowingAuthor: follows.some(
-          (follow) => follow.targetType === FollowTargetType.AUTHOR,
+          (follow: { targetType: FollowTargetType }) => follow.targetType === FollowTargetType.AUTHOR,
         ),
         isFollowingStory: follows.some(
-          (follow) => follow.targetType === FollowTargetType.STORY,
+          (follow: { targetType: FollowTargetType }) => follow.targetType === FollowTargetType.STORY,
         ),
         maturityRating: story.maturityRating,
         rating: Number(story.averageRating.toFixed(1)),
-        ratingEligibilityMessage: ratingEligibility.ratingEligibilityMessage,
+        ratingEligibilityMessage: starRatingEligibility.ratingEligibilityMessage,
         readsCount: story.totalReads,
         readsLabel: this.formatCompactNumber(story.totalReads),
         reviewCount: story.reviewCount,
@@ -1362,6 +1372,7 @@ export class ReaderService {
         synopsis: story.synopsis,
         tagLabels: story.tagSlugs.map((tagSlug) => this.slugToLabel(tagSlug)),
         title: story.title,
+        totalWordCount,
         userRating: storyRating?.rating ?? null,
         volumes: (story.volumes ?? []).map((volume) => ({
           id: volume.id,
@@ -1393,16 +1404,16 @@ export class ReaderService {
         },
       }),
     ]);
-    const ratingEligibility = this.getStoryRatingEligibility({
-      chapterAccessMap,
-      chapters: story.publishedChapters,
-      progress,
+    const starRatingEligibility = this.getStoryStarRatingEligibility({
+      authorId: story.authorId ?? null,
+      publishedChapterCount: story.publishedChapters.length,
+      userId,
     });
 
-    if (!ratingEligibility.canRate) {
+    if (!starRatingEligibility.canRate) {
       throw new ForbiddenException(
-        ratingEligibility.ratingEligibilityMessage ??
-          "Finish reading and unlock every published chapter before rating this book.",
+        starRatingEligibility.ratingEligibilityMessage ??
+          "You can't rate this book right now.",
       );
     }
 
@@ -1435,12 +1446,19 @@ export class ReaderService {
     }
 
     const summary = await this.recalculateStoryRatingSummary(story.id);
+    await this.redisService.delete(`story:agg:${story.id}`);
+
+    const writtenAfter = this.getStoryWrittenReviewEligibility({
+      chapterAccessMap,
+      chapters: story.publishedChapters,
+      progress,
+    });
 
     return {
       story: {
         canRate: true,
-        hasCompletedStory: ratingEligibility.hasCompletedStory,
-        hasUnlockedAllChapters: ratingEligibility.hasUnlockedAllChapters,
+        hasCompletedStory: writtenAfter.hasCompletedStory,
+        hasUnlockedAllChapters: writtenAfter.hasUnlockedAllChapters,
         rating: Number(summary.averageRating.toFixed(1)),
         ratingEligibilityMessage: null,
         reviewCount: summary.reviewCount,
@@ -1539,13 +1557,13 @@ export class ReaderService {
           },
         }),
       ]);
-    const ratingEligibility = this.getStoryRatingEligibility({
+    const writtenReviewEligibility = this.getStoryWrittenReviewEligibility({
       chapterAccessMap,
       chapters: story.publishedChapters,
       progress,
     });
     const canReview =
-      ratingEligibility.canRate ||
+      writtenReviewEligibility.canRate ||
       currentUserReview?.status === ReviewStatus.VISIBLE ||
       (currentUserReview?.status === ReviewStatus.DELETED &&
         !currentUserReview.moderatedByAdminUserId);
@@ -1557,7 +1575,7 @@ export class ReaderService {
             includeStatus: true,
           })
         : null,
-      reviewEligibilityMessage: ratingEligibility.ratingEligibilityMessage,
+      reviewEligibilityMessage: writtenReviewEligibility.ratingEligibilityMessage,
       reviews: reviews.map((review) => this.mapStoryReview(review, userId)),
       sort: input.sort,
       summary: {
@@ -1586,7 +1604,7 @@ export class ReaderService {
         },
       }),
     ]);
-    const ratingEligibility = this.getStoryRatingEligibility({
+    const writtenReviewEligibility = this.getStoryWrittenReviewEligibility({
       chapterAccessMap,
       chapters: story.publishedChapters,
       progress,
@@ -1595,9 +1613,9 @@ export class ReaderService {
       existingReview?.status === ReviewStatus.DELETED &&
       !existingReview.moderatedByAdminUserId;
 
-    if (!existingReview && !ratingEligibility.canRate) {
+    if (!existingReview && !writtenReviewEligibility.canRate) {
       throw new ForbiddenException(
-        ratingEligibility.ratingEligibilityMessage ??
+        writtenReviewEligibility.ratingEligibilityMessage ??
           "Finish reading and unlock every published chapter before reviewing this book.",
       );
     }
@@ -1676,6 +1694,7 @@ export class ReaderService {
         });
 
     await this.recalculateStoryRatingSummary(story.id);
+    await this.redisService.delete(`story:agg:${story.id}`);
 
     if (!existingReview) {
       this.challengeService
@@ -1732,6 +1751,7 @@ export class ReaderService {
     ]);
 
     await this.recalculateStoryRatingSummary(story.id);
+    await this.redisService.delete(`story:agg:${story.id}`);
 
     return {
       message: "Review deleted.",
@@ -4069,34 +4089,93 @@ export class ReaderService {
   }
 
   private async getReadableStoryBySlug(storySlug: string) {
+    const cacheKey = `story:detail:v2:${storySlug}`;
+    const cached = await this.redisService.getJson<StoryWithReaderRelations>(cacheKey);
+
+    if (cached) {
+      return cached;
+    }
+
     const story = await this.prisma.story.findUnique({
       where: { slug: storySlug },
-      include: {
-        adminControl: true,
-        assets: true,
-        publishedChapters: {
-          include: {
-            adminOverride: true,
-            chapter: true,
-          },
-          orderBy: { chapterNumber: "asc" },
-        },
-        volumes: {
-          orderBy: { sortOrder: "asc" },
-          select: {
-            id: true,
-            number: true,
-            title: true,
-          },
-        },
-      },
+      include: readableStoryForReaderInclude,
     });
 
     if (!story || story.deletedAt || !this.isReadableStatus(story.status) || !isStoryLive(story)) {
       throw new NotFoundException("Story not found.");
     }
 
+    await this.redisService.setJson(cacheKey, story, 600);
     return story;
+  }
+
+  private async getStoryAggregates(
+    storyId: string,
+    authorId: string | null | undefined,
+  ) {
+    const cacheKey = `story:agg:${storyId}`;
+    const cached = await this.redisService.getJson<{
+      authorFollowerCount: number;
+      authorStoryCount: number;
+      storyFollowerCount: number;
+      writtenReviewCount: number;
+    }>(cacheKey);
+
+    if (cached) {
+      return cached;
+    }
+
+    const [writtenReviewCount, storyFollowerCount, authorFollowerCount, authorStoryCount] =
+      await Promise.all([
+        this.prisma.review.count({
+          where: {
+            storyId,
+            status: ReviewStatus.VISIBLE,
+          },
+        }),
+        this.prisma.follow.count({
+          where: {
+            storyId,
+            targetType: FollowTargetType.STORY,
+          },
+        }),
+        authorId
+          ? this.prisma.follow.count({
+              where: {
+                targetType: FollowTargetType.AUTHOR,
+                targetUserId: authorId,
+              },
+            })
+          : Promise.resolve(0),
+        authorId
+          ? this.prisma.story.count({
+              where: {
+                authorId,
+                status: {
+                  in: [StoryStatus.PUBLISHED, StoryStatus.COMPLETED, StoryStatus.HIATUS],
+                },
+                deletedAt: null,
+                OR: [
+                  { adminControl: { is: { visibilityState: AdminBookVisibilityState.LIVE } } },
+                  { adminControl: { is: null }, isLive: true },
+                ],
+              },
+            })
+          : Promise.resolve(0),
+      ]);
+
+    const result = { authorFollowerCount, authorStoryCount, storyFollowerCount, writtenReviewCount };
+    await this.redisService.setJson(cacheKey, result, 900);
+    return result;
+  }
+
+  async invalidateStoryCache(storySlug: string, storyId?: string) {
+    await this.redisService.delete(`story:detail:${storySlug}`);
+    await this.redisService.delete(`story:detail:v2:${storySlug}`);
+    if (storyId) {
+      await this.redisService.delete(`story:agg:${storyId}`);
+      await this.redisService.delete(`reader:rec-candidates:${storyId}`);
+    }
   }
 
   private buildPublishedStoryWhere(input: {
@@ -4387,7 +4466,36 @@ export class ReaderService {
     };
   }
 
-  private getStoryRatingEligibility(input: {
+  /**
+   * Star ratings (1–5): any signed-in reader may rate, except the author and empty books.
+   * Written reviews still use {@link getStoryWrittenReviewEligibility}.
+   */
+  private getStoryStarRatingEligibility(input: {
+    authorId: string | null;
+    publishedChapterCount: number;
+    userId: string;
+  }): Pick<StoryRatingEligibility, "canRate" | "ratingEligibilityMessage"> {
+    if (input.publishedChapterCount === 0) {
+      return {
+        canRate: false,
+        ratingEligibilityMessage:
+          "This book has no published chapters available for rating yet.",
+      };
+    }
+    if (input.authorId && input.authorId === input.userId) {
+      return {
+        canRate: false,
+        ratingEligibilityMessage: "You can't rate your own book.",
+      };
+    }
+    return {
+      canRate: true,
+      ratingEligibilityMessage: null,
+    };
+  }
+
+  /** Full written review: requires unlocking all chapters and finishing the story. */
+  private getStoryWrittenReviewEligibility(input: {
     chapterAccessMap: Map<
       string,
       {
@@ -5195,8 +5303,15 @@ export class ReaderService {
     }).format(value);
   }
 
-  private formatRelativeDate(value: Date) {
-    const diffInMs = Date.now() - value.getTime();
+  private formatRelativeDate(value: Date | string | null | undefined) {
+    if (value == null) {
+      return "Recently updated";
+    }
+    const d = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(d.getTime())) {
+      return "Recently updated";
+    }
+    const diffInMs = Date.now() - d.getTime();
     const diffInDays = Math.max(1, Math.floor(diffInMs / (24 * 60 * 60 * 1000)));
 
     if (diffInDays === 1) {

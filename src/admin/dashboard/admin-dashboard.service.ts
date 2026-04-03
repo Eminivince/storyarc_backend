@@ -320,6 +320,53 @@ export class AdminDashboardService {
     };
   }
 
+  async globalSearch(term: string) {
+    if (!term || term.length < 1) {
+      return { users: [], stories: [] };
+    }
+
+    const [users, stories] = await Promise.all([
+      this.prisma.user.findMany({
+        where: {
+          OR: [
+            { email: { contains: term, mode: "insensitive" } },
+            { profile: { displayName: { contains: term, mode: "insensitive" } } },
+          ],
+        },
+        include: { profile: true },
+        take: 10,
+      }),
+      this.prisma.story.findMany({
+        where: {
+          OR: [
+            { title: { contains: term, mode: "insensitive" } },
+            { slug: { contains: term, mode: "insensitive" } },
+            { authorName: { contains: term, mode: "insensitive" } },
+          ],
+        },
+        include: { assets: true },
+        take: 10,
+      }),
+    ]);
+
+    return {
+      users: users.map((u) => ({
+        id: u.id,
+        email: u.email,
+        displayName: getDisplayName(u),
+        role: u.role,
+        avatarUrl: getAvatarUrl(u),
+      })),
+      stories: stories.map((s) => ({
+        id: s.id,
+        slug: s.slug,
+        title: s.title,
+        authorName: s.authorName,
+        coverImageUrl: s.assets?.coverImageUrl ?? null,
+      })),
+    };
+  }
+
   private async ensureAdminDefaults() {
     for (const setting of defaultAdminSettings) {
       await this.prisma.adminSetting.upsert({
