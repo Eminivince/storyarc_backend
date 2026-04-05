@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from "@nestjs/common";
 import {
@@ -351,6 +352,8 @@ const contractTemplateCountInclude = {
 
 @Injectable()
 export class OperationsService {
+  private readonly logger = new Logger(OperationsService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly authService: AuthService,
@@ -362,6 +365,7 @@ export class OperationsService {
     userId: string,
     input: {
       chapterSlug: string | null;
+      commentId: string | null;
       details: string | null;
       reason: string;
       storySlug: string;
@@ -369,6 +373,58 @@ export class OperationsService {
     },
   ) {
     const user = await this.requireActiveUser(userId);
+
+    if (input.commentId) {
+      const comment = await this.prisma.comment.findUnique({
+        where: {
+          id: input.commentId,
+        },
+        include: {
+          chapter: true,
+          story: true,
+        },
+      });
+
+      if (!comment || comment.status !== CommentStatus.VISIBLE) {
+        throw new NotFoundException("Comment not found.");
+      }
+
+      if (comment.userId === userId) {
+        throw new ForbiddenException("You can't report your own comment.");
+      }
+
+      if (comment.story.slug !== input.storySlug) {
+        throw new BadRequestException("Comment does not match this story.");
+      }
+
+      const chapterSlugFromInput = input.chapterSlug?.trim() || null;
+      if (chapterSlugFromInput && comment.chapter.slug !== chapterSlugFromInput) {
+        throw new BadRequestException("Comment does not match this chapter.");
+      }
+
+      const report = await this.prisma.contentReport.create({
+        data: {
+          chapterSlug: comment.chapter.slug,
+          commentId: comment.id,
+          details: input.details,
+          publishedChapterId: comment.publishedChapterId,
+          reason: input.reason,
+          reporterUserId: userId,
+          storyId: comment.storyId,
+          storySlug: comment.story.slug,
+          targetType: "COMMENT",
+          title:
+            input.title ??
+            `${comment.story.title} · Ch. ${comment.chapter.chapterNumber} — comment`,
+        },
+      });
+
+      return {
+        message: "Report submitted. Our moderation team has been notified.",
+        report: this.mapReport(report, comment.story, comment.chapter, user),
+      };
+    }
+
     const story = await this.prisma.story.findUnique({
       where: {
         slug: input.storySlug,
@@ -568,288 +624,6 @@ export class OperationsService {
         subject: ticket.subject,
         updatedAt: this.formatRelativeDate(ticket.updatedAt),
       },
-    };
-  }
-
-  async getAdminOverview(adminUserId: string) {
-    await this.requireAdmin(adminUserId);
-    await this.ensureAdminDefaults();
-    const todayRange = this.getDayRange();
-    const yesterdayRange = this.getDayRange(
-      new Date(todayRange.start.getTime() - 24 * 60 * 60 * 1000),
-    );
-    const monthRange = this.getMonthRange();
-
-    const [
-      activeUsers,
-      activeUserBaseline,
-      dailySignups,
-      yesterdaySignups,
-      dailyPurchaseRevenue,
-      yesterdayPurchaseRevenue,
-      monthlyPurchases,
-      dailyAdUnlockCount,
-      yesterdayAdUnlockCount,
-      monthlyAdUnlockCount,
-      publishedChapters,
-      publishedChaptersToday,
-      openReports,
-      recentUsers,
-      monthlyTargetSetting,
-    ] = await Promise.all([
-      this.prisma.user.count({
-        where: {
-          status: "ACTIVE",
-        },
-      }),
-      this.prisma.user.count({
-        where: {
-          createdAt: {
-            lt: todayRange.start,
-          },
-          status: "ACTIVE",
-        },
-      }),
-      this.prisma.user.count({
-        where: {
-          createdAt: {
-            gte: todayRange.start,
-            lt: todayRange.end,
-          },
-        },
-      }),
-      this.prisma.user.count({
-        where: {
-          createdAt: {
-            gte: yesterdayRange.start,
-            lt: yesterdayRange.end,
-          },
-        },
-      }),
-      this.prisma.purchase.aggregate({
-        _sum: {
-          amountCents: true,
-        },
-        where: {
-          completedAt: {
-            gte: todayRange.start,
-            lt: todayRange.end,
-          },
-          status: "COMPLETED",
-        },
-      }),
-      this.prisma.purchase.aggregate({
-        _sum: {
-          amountCents: true,
-        },
-        where: {
-          completedAt: {
-            gte: yesterdayRange.start,
-            lt: yesterdayRange.end,
-          },
-          status: "COMPLETED",
-        },
-      }),
-      this.prisma.purchase.findMany({
-        where: {
-          completedAt: {
-            gte: monthRange.start,
-            lt: monthRange.end,
-          },
-          status: "COMPLETED",
-        },
-        select: {
-          amountCents: true,
-          kind: true,
-        },
-      }),
-      this.prisma.adUnlockRecord.count({
-        where: {
-          createdAt: {
-            gte: todayRange.start,
-            lt: todayRange.end,
-          },
-        },
-      }),
-      this.prisma.adUnlockRecord.count({
-        where: {
-          createdAt: {
-            gte: yesterdayRange.start,
-            lt: yesterdayRange.end,
-          },
-        },
-      }),
-      this.prisma.adUnlockRecord.count({
-        where: {
-          createdAt: {
-            gte: monthRange.start,
-            lt: monthRange.end,
-          },
-        },
-      }),
-      this.prisma.publishedChapter.count(),
-      this.prisma.publishedChapter.count({
-        where: {
-          publishedAt: {
-            gte: todayRange.start,
-            lt: todayRange.end,
-          },
-        },
-      }),
-      this.prisma.contentReport.findMany({
-        where: {
-          status: {
-            in: ["OPEN", "IN_REVIEW"],
-          },
-        },
-        orderBy: {
-          createdAt: "desc",
-        },
-        take: 3,
-        include: {
-          reporter: {
-            include: {
-              profile: true,
-            },
-          },
-          story: true,
-          chapter: true,
-        },
-      }),
-      this.prisma.user.findMany({
-        where: {
-          status: {
-            in: ["ACTIVE", "SUSPENDED"],
-          },
-        },
-        include: {
-          profile: true,
-        },
-        orderBy: {
-          createdAt: "desc",
-        },
-        take: 4,
-      }),
-      this.prisma.adminSetting.findUnique({
-        where: {
-          key: dashboardMonthlyRevenueTargetSettingKey,
-        },
-      }),
-    ]);
-
-    const dailyRevenueCents =
-      (dailyPurchaseRevenue._sum.amountCents ?? 0) +
-      dailyAdUnlockCount * AD_UNLOCK_REVENUE_CENTS;
-    const yesterdayRevenueCents =
-      (yesterdayPurchaseRevenue._sum.amountCents ?? 0) +
-      yesterdayAdUnlockCount * AD_UNLOCK_REVENUE_CENTS;
-    const monthlySubscriptionRevenueCents = monthlyPurchases
-      .filter((purchase) => purchase.kind === "SUBSCRIPTION")
-      .reduce((sum, purchase) => sum + purchase.amountCents, 0);
-    const monthlyCoinRevenueCents = monthlyPurchases
-      .filter((purchase) => purchase.kind === "COINS")
-      .reduce((sum, purchase) => sum + purchase.amountCents, 0);
-    const monthlyAdRevenueCents =
-      monthlyAdUnlockCount * AD_UNLOCK_REVENUE_CENTS;
-    const monthlyRevenueCents =
-      monthlySubscriptionRevenueCents +
-      monthlyCoinRevenueCents +
-      monthlyAdRevenueCents;
-    const monthlyTargetCents =
-      monthlyTargetSetting?.valueCents ??
-      defaultAdminSettings.find(
-        (setting) => setting.key === dashboardMonthlyRevenueTargetSettingKey,
-      )?.valueCents ??
-      5_000_000;
-    const achievedRatio =
-      monthlyTargetCents > 0
-        ? (monthlyRevenueCents / monthlyTargetCents) * 100
-        : 0;
-    const clampedAchievedRatio = Math.max(0, Math.min(achievedRatio, 100));
-
-    return {
-      financialHealth: {
-        achieved: `${Math.max(0, achievedRatio).toFixed(1)}%`,
-        breakdown: [
-          {
-            id: "subscriptions",
-            label: "Subscriptions",
-            value: this.formatCurrency(monthlySubscriptionRevenueCents),
-          },
-          {
-            id: "coins",
-            label: "Coin Store",
-            value: this.formatCurrency(monthlyCoinRevenueCents),
-          },
-          {
-            id: "ads",
-            label: "Ad Unlocks",
-            value: this.formatCurrency(monthlyAdRevenueCents),
-          },
-        ],
-        monthlyTarget: this.formatCurrency(monthlyTargetCents),
-        width: `${clampedAchievedRatio.toFixed(1)}%`,
-      },
-      overviewStats: [
-        {
-          delta: this.formatCountDelta(
-            activeUsers,
-            activeUserBaseline,
-            "today",
-          ),
-          icon: "group",
-          id: "active-users",
-          label: "Total Active Users",
-          mobileLabel: "Active Users",
-          mobileValue: this.formatCompactNumber(activeUsers),
-          tone: "emerald",
-          value: this.formatNumber(activeUsers),
-        },
-        {
-          delta: this.formatCountDelta(
-            dailySignups,
-            yesterdaySignups,
-            "vs yday",
-          ),
-          icon: "person_add",
-          id: "signups",
-          label: "New Signups (Daily)",
-          mobileLabel: "New Signups",
-          mobileValue: this.formatCompactNumber(dailySignups),
-          tone: "emerald",
-          value: this.formatNumber(dailySignups),
-        },
-        {
-          delta: this.formatCurrencyDelta(
-            dailyRevenueCents,
-            yesterdayRevenueCents,
-            "vs yday",
-          ),
-          icon: "payments",
-          id: "revenue",
-          label: "Daily Revenue (Net)",
-          mobileLabel: "Revenue",
-          mobileValue: this.formatCompactCurrency(dailyRevenueCents),
-          tone: "primary",
-          value: this.formatCurrency(dailyRevenueCents),
-        },
-        {
-          delta: `+${this.formatNumber(publishedChaptersToday)} today`,
-          icon: "menu_book",
-          id: "chapters",
-          label: "Chapters Published",
-          mobileLabel: "Chapters",
-          mobileValue: this.formatCompactNumber(publishedChapters),
-          tone: "emerald",
-          value: this.formatNumber(publishedChapters),
-        },
-      ],
-      recentReports: openReports.map((report) =>
-        this.mapReport(report, report.story, report.chapter, report.reporter),
-      ),
-      recentUsers: await Promise.all(
-        recentUsers.map((user) => this.mapAdminUserSummary(user)),
-      ),
     };
   }
 
@@ -3907,7 +3681,12 @@ export class OperationsService {
           id: report.id,
           reason: report.reason,
           status: this.mapReportStatusLabel(report.status),
-          type: report.targetType === "CHAPTER" ? "Content Report" : "Story Report",
+          type:
+            report.targetType === "CHAPTER"
+              ? "Content Report"
+              : report.targetType === "COMMENT"
+                ? "Comment Report"
+                : "Story Report",
         })),
         ...auditLogs.map((log) => ({
           admin: "Admin",
@@ -3987,7 +3766,12 @@ export class OperationsService {
       title:
         report.title ??
         (chapter ? `${story?.title ?? report.storySlug} - ${chapter.title}` : story?.title ?? report.storySlug),
-      type: report.targetType === "CHAPTER" ? "Flagged Content" : "Story Report",
+      type:
+        report.targetType === "CHAPTER"
+          ? "Flagged Content"
+          : report.targetType === "COMMENT"
+            ? "Comment Report"
+            : "Story Report",
     };
   }
 

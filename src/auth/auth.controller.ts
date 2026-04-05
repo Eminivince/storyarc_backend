@@ -20,6 +20,7 @@ import {
   parseChangePasswordBody,
   parseDeleteAccountBody,
   parseForgotPasswordBody,
+  parseAppleNativeBody,
   parseGoogleAuthCallbackQuery,
   parseGoogleAuthStartQuery,
   parseGuestUpgradeBody,
@@ -83,6 +84,55 @@ export class AuthController {
     @Req() request: AuthenticatedRequest,
   ) {
     return this.authService.handleGoogleCallback(
+      parseGoogleAuthCallbackQuery(query),
+      getRequestMeta(request),
+    );
+  }
+
+  @Get("facebook/start")
+  @Redirect()
+  async startFacebookAuth(@Query() query: unknown) {
+    return this.authService.startFacebookAuth(parseGoogleAuthStartQuery(query));
+  }
+
+  @Get("facebook/callback")
+  @Redirect()
+  async handleFacebookCallback(
+    @Query() query: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.authService.handleFacebookCallback(
+      parseGoogleAuthCallbackQuery(query),
+      getRequestMeta(request),
+    );
+  }
+
+  /** Native Sign in with Apple (identity token from `expo-apple-authentication`). */
+  @Post("apple")
+  async signInWithApple(
+    @Body() body: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    const { identityToken } = parseAppleNativeBody(body);
+    return this.authService.signInWithAppleNative(
+      identityToken,
+      getRequestMeta(request),
+    );
+  }
+
+  @Get("x/start")
+  @Redirect()
+  async startTwitterAuth(@Query() query: unknown) {
+    return this.authService.startTwitterAuth(parseGoogleAuthStartQuery(query));
+  }
+
+  @Get("x/callback")
+  @Redirect()
+  async handleTwitterCallback(
+    @Query() query: unknown,
+    @Req() request: AuthenticatedRequest,
+  ) {
+    return this.authService.handleTwitterCallback(
       parseGoogleAuthCallbackQuery(query),
       getRequestMeta(request),
     );

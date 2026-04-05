@@ -13,6 +13,7 @@ import {
 } from "@prisma/client";
 import { labelFromGenreOrTagSlug } from "../catalog/story-genres";
 import { PrismaService } from "../database/prisma.service";
+import { RedisService } from "../redis/redis.service";
 import { EngagementService } from "../engagement/engagement.service";
 import {
   defaultBookPlatformPolicy,
@@ -92,6 +93,7 @@ export class StudioService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly engagementService: EngagementService,
+    private readonly redisService: RedisService,
   ) {}
 
   async autoPublishDueChapters(
@@ -390,6 +392,8 @@ export class StudioService {
       },
     });
 
+    await this.invalidateStoryCache(storySlug, story.id);
+
     return {
       story: this.mapStudioStory(updatedStory),
     };
@@ -635,6 +639,7 @@ export class StudioService {
     }
 
     await this.publishLoadedChapter(chapter);
+    await this.invalidateStoryCache(chapter.story.slug, chapter.story.id);
 
     const refreshedStory = await this.getStoryRecord(userId, chapter.story.slug);
 
@@ -1262,6 +1267,8 @@ export class StudioService {
       data: { deletedAt: new Date() },
     });
 
+    await this.invalidateStoryCache(storySlug, story.id);
+
     return {
       message: `"${story.title}" has been deleted.`,
     };
@@ -1466,6 +1473,15 @@ export class StudioService {
 
   private normalizeId(value: string | null) {
     return value && value.trim() ? value.trim() : null;
+  }
+
+  private async invalidateStoryCache(storySlug: string, storyId: string) {
+    await Promise.all([
+      this.redisService.delete(`story:detail:${storySlug}`),
+      this.redisService.delete(`story:detail:v2:${storySlug}`),
+      this.redisService.delete(`story:agg:${storyId}`),
+      this.redisService.delete(`reader:rec-candidates:${storyId}`),
+    ]);
   }
 
   private toSlug(value: string) {

@@ -1746,7 +1746,15 @@ export class AuthService {
     const isPrivateLibrary = user.profile?.privateLibrary ?? true;
     const isAuthor = user.role === "CREATOR";
 
-    const [readingLists, badges, reviews, readingProgress, authorStories, followRecord] = await Promise.all([
+    const [
+      readingLists,
+      badges,
+      reviews,
+      readingProgress,
+      authorStories,
+      followRecord,
+      authorFollowerCount,
+    ] = await Promise.all([
       isPrivateLibrary
         ? Promise.resolve([])
         : this.prisma.readingList.findMany({
@@ -1793,6 +1801,11 @@ export class AuthService {
             select: { id: true },
           })
         : Promise.resolve(null),
+      isAuthor
+        ? this.prisma.follow.count({
+            where: { subjectKey: `author:${userId}` },
+          })
+        : Promise.resolve(0),
     ]);
 
     return {
@@ -1809,6 +1822,7 @@ export class AuthService {
       },
       stats: {
         storiesRead: readingProgress,
+        followers: authorFollowerCount,
         badges: badges.length,
         reviews: reviews.length,
       },

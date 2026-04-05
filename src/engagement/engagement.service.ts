@@ -1517,13 +1517,13 @@ export class EngagementService {
     };
   }
 
-  async toggleBadgeFeatured(userId: string, badgeId: string) {
+  async toggleBadgeFeatured(userId: string, badgeDefinitionId: string) {
     const userBadge = await this.prisma.userBadge.findFirst({
-      where: { id: badgeId, userId },
+      where: { userId, badgeDefinitionId },
     });
 
     if (!userBadge) {
-      throw new NotFoundException("Badge not found.");
+      throw new NotFoundException("Badge not found or not earned yet.");
     }
 
     if (!userBadge.featured) {
@@ -1538,7 +1538,7 @@ export class EngagementService {
     }
 
     const updated = await this.prisma.userBadge.update({
-      where: { id: badgeId },
+      where: { id: userBadge.id },
       data: { featured: !userBadge.featured },
     });
 

@@ -23,11 +23,24 @@ type EffectiveChapterAccessInput = {
   authorCoinUnlockPrice: number;
   authorPremiumEnabled: boolean;
   globalCoinCap: number;
-  lockConfiguredAt?: Date | null;
+  lockConfiguredAt?: Date | string | null;
   premiumWindowHours: number;
-  publishedAt: Date;
-  storyLiveAt?: Date | null;
+  publishedAt: Date | string;
+  storyLiveAt?: Date | string | null;
 };
+
+/** Prisma usually returns Date; strings appear after JSON/cache or some drivers. */
+function coerceToDate(value: Date | string | number | null | undefined): Date | null {
+  if (value == null) return null;
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? null : value;
+  }
+  if (typeof value === "string" || typeof value === "number") {
+    const d = new Date(value);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+  return null;
+}
 
 export function getStoryVisibilityState(input?: {
   adminControl?: Record<string, unknown> | null;
@@ -135,6 +148,11 @@ export function resolveEffectiveChapterAccess(
   input: EffectiveChapterAccessInput,
   now = new Date(),
 ) {
+  const publishedAt =
+    coerceToDate(input.publishedAt) ?? new Date(0);
+  const storyLiveAt = coerceToDate(input.storyLiveAt);
+  const lockConfiguredAt = coerceToDate(input.lockConfiguredAt);
+
   const normalizedCap = Math.max(0, input.globalCoinCap || 0);
   const authorPrice = input.authorPremiumEnabled
     ? Math.max(0, input.authorCoinUnlockPrice || 0)
@@ -183,17 +201,17 @@ export function resolveEffectiveChapterAccess(
     effectiveLocked = false;
   }
 
-  let releaseStartsAt = input.publishedAt;
+  let releaseStartsAt = publishedAt;
 
-  if (input.storyLiveAt && input.storyLiveAt.getTime() > releaseStartsAt.getTime()) {
-    releaseStartsAt = input.storyLiveAt;
+  if (storyLiveAt && storyLiveAt.getTime() > releaseStartsAt.getTime()) {
+    releaseStartsAt = storyLiveAt;
   }
 
   if (
-    input.lockConfiguredAt &&
-    input.lockConfiguredAt.getTime() > releaseStartsAt.getTime()
+    lockConfiguredAt &&
+    lockConfiguredAt.getTime() > releaseStartsAt.getTime()
   ) {
-    releaseStartsAt = input.lockConfiguredAt;
+    releaseStartsAt = lockConfiguredAt;
   }
   const unlocksAt =
     effectiveLocked &&

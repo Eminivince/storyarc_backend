@@ -208,6 +208,7 @@ export function parseCreateContentReportBody(body: unknown) {
 
   return {
     chapterSlug: getOptionalStringValue(record, "chapterSlug", 120),
+    commentId: getOptionalStringValue(record, "commentId", 64),
     details: getOptionalStringValue(record, "details", 4_000),
     reason: getStringValue(record, "reason", {
       maxLength: 140,

@@ -304,6 +304,17 @@ export function parseGoogleAuthCallbackQuery(
   };
 }
 
+export function parseAppleNativeBody(body: unknown): { identityToken: string } {
+  const record = getObjectBody(body);
+
+  return {
+    identityToken: getTrimmedString(record, "identityToken", {
+      minLength: 20,
+      maxLength: 12000,
+    }),
+  };
+}
+
 export function parseRefreshBody(body: unknown): RefreshInput {
   const record = getObjectBody(body);
 

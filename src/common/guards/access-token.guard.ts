@@ -29,13 +29,13 @@ export class AccessTokenGuard implements CanActivate {
     const authorizationHeader = request.headers.authorization;
 
     if (!authorizationHeader || Array.isArray(authorizationHeader)) {
-      throw new UnauthorizedException("Missing bearer token.");
+      throw new UnauthorizedException("Unauthorized.");
     }
 
     const [scheme, token] = authorizationHeader.split(" ");
 
     if (scheme !== "Bearer" || !token) {
-      throw new UnauthorizedException("Invalid authorization header.");
+      throw new UnauthorizedException("Unauthorized.");
     }
 
     let payload: TokenPayload;

@@ -13,6 +13,7 @@ const EDGE_CONTENT_ROUTE_PATTERNS = [
   /^\/reader\/public-reading-lists$/,
   /^\/reader\/reading-lists\/shared\/[^/]+$/,
   /^\/reader\/rankings$/,
+  /^\/reader\/rankings\/genre-spotlights$/,
   /^\/reader\/stories$/,
   /^\/reader\/search$/,
 ];

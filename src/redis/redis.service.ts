@@ -216,6 +216,34 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
+  async deleteByPrefix(prefix: string) {
+    await this.withRedisClient(
+      async (client) => {
+        let cursor = "0";
+        do {
+          const [nextCursor, keys] = await client.scan(
+            cursor,
+            "MATCH",
+            `${prefix}*`,
+            "COUNT",
+            100,
+          );
+          cursor = nextCursor;
+          if (keys.length > 0) {
+            await client.del(...keys);
+          }
+        } while (cursor !== "0");
+      },
+      async () => {
+        for (const key of this.fallbackStore.keys()) {
+          if (key.startsWith(prefix)) {
+            this.fallbackStore.delete(key);
+          }
+        }
+      },
+    );
+  }
+
   async releaseLock(key: string, token: string) {
     await this.withRedisClient(
       async (client) => {

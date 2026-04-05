@@ -1,3 +1,20 @@
+/**
+ * Demo writer + reader-load seed for TaleStead.
+ *
+ * What it does:
+ * - Creates or updates a seeded creator account with login credentials, profile data,
+ *   creator application state, and published demo stories/chapters.
+ * - Optionally generates many synthetic stories and load-test reader accounts, then seeds
+ *   engagement data such as follows, progress, bookmarks, ratings, reviews, comments,
+ *   reading lists, and activity events.
+ * - Clears and rebuilds activity for the seeded load-test readers before re-seeding it.
+ *
+ * How to use:
+ * - From `backend/`, run `npm run prisma:seed:writer`
+ * - The package script loads `backend/.env` via `node --env-file=.env`
+ * - Configure optional `WRITER_SEED_*` env vars in `.env` to control writer identity,
+ *   story count, reader count, concurrency, and generated load volume
+ */
 import { hash } from "bcryptjs";
 import {
   AdminBookReleaseMode,
@@ -1601,6 +1618,15 @@ async function clearLoadTestReaderActivity(readerIds: string[]) {
     },
   });
   const readingListIds = existingLists.map((list) => list.id);
+
+  await prisma.reviewVote.deleteMany({
+    where: {
+      OR: [
+        { userId: { in: readerIds } },
+        { review: { userId: { in: readerIds } } },
+      ],
+    },
+  });
 
   await Promise.all([
     prisma.userActivityEvent.deleteMany({

@@ -64,6 +64,16 @@ export type AppEnv = {
   googleRedirectUri: string | null;
   /** Fallback OAuth landing URL when the app omits `mobile_redirect` on `/auth/google/start`. */
   mobileOAuthCallbackUrl: string | null;
+  /** iOS Sign in with Apple — use the app bundle ID (e.g. com.talestead.app). */
+  appleClientId: string | null;
+  twitterClientId: string | null;
+  twitterClientSecret: string | null;
+  /** Server callback URL registered in the X developer portal (must match token exchange). */
+  twitterRedirectUri: string | null;
+  facebookAppId: string | null;
+  facebookAppSecret: string | null;
+  /** Valid OAuth redirect registered in Meta app (must match token exchange). */
+  facebookRedirectUri: string | null;
 };
 
 function getStringEnv(name: string, fallback?: string): string {
@@ -289,6 +299,13 @@ function parseEnv(): AppEnv {
     googleClientSecret: getOptionalStringEnv("GOOGLE_CLIENT_SECRET"),
     googleRedirectUri: getOptionalStringEnv("GOOGLE_REDIRECT_URI"),
     mobileOAuthCallbackUrl: getOptionalStringEnv("MOBILE_OAUTH_CALLBACK_URL"),
+    appleClientId: getOptionalStringEnv("APPLE_CLIENT_ID"),
+    twitterClientId: getOptionalStringEnv("TWITTER_CLIENT_ID"),
+    twitterClientSecret: getOptionalStringEnv("TWITTER_CLIENT_SECRET"),
+    twitterRedirectUri: getOptionalStringEnv("TWITTER_REDIRECT_URI"),
+    facebookAppId: getOptionalStringEnv("FACEBOOK_APP_ID"),
+    facebookAppSecret: getOptionalStringEnv("FACEBOOK_APP_SECRET"),
+    facebookRedirectUri: getOptionalStringEnv("FACEBOOK_REDIRECT_URI"),
   };
 }
 

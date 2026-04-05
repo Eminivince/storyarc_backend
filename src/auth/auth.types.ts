@@ -92,6 +92,13 @@ export type PendingGoogleAuthPayload = {
   callbackBaseUrl: string;
 };
 
+export type PendingTwitterAuthPayload = PendingGoogleAuthPayload & {
+  codeVerifier: string;
+};
+
+/** Same Redis payload shape as Google OAuth. */
+export type PendingFacebookAuthPayload = PendingGoogleAuthPayload;
+
 export type RefreshInput = {
   refreshToken: string;
 };

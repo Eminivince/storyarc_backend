@@ -17,6 +17,7 @@ import {
 import {
   labelFromGenreOrTagSlug,
   sortGenresForReaderDisplay,
+  STORY_GENRES,
 } from "../catalog/story-genres";
 import { PrismaService } from "../database/prisma.service";
 import { RedisService } from "../redis/redis.service";
@@ -316,6 +317,110 @@ export class StoryRankingsService implements OnModuleDestroy, OnModuleInit {
         label: tab.label,
         windowLabel: tab.windowLabel,
       })),
+    };
+
+    await this.redisService.setJson(
+      cacheKey,
+      response,
+      RANKING_RESPONSE_CACHE_TTL_SECONDS,
+    );
+
+    return response;
+  }
+
+  /**
+   * For each canonical genre, the highest-ranked story in the current snapshot that lists that genre.
+   * Used by Explore genre tiles as real cover art instead of placeholders.
+   */
+  async getGenreSpotlightCovers(input: { kind: StoryRankingKindInput }) {
+    const cacheKey = `reader:rankings:genre-spotlights:v1:${input.kind}`;
+    const cached = await this.redisService.getJson<{
+      kind: StoryRankingKindInput;
+      spotlights: Array<{
+        coverImage: string;
+        genreSlug: string;
+        storySlug: string | null;
+        title: string | null;
+      }>;
+    }>(cacheKey);
+
+    if (cached) {
+      return cached;
+    }
+
+    const config = this.getConfigByKey(input.kind);
+    await this.ensureSnapshotFresh(config.kind);
+    let snapshot = await this.getLatestSnapshot(config.kind);
+
+    if (!snapshot) {
+      await this.refreshSnapshots("missing-snapshot");
+      snapshot = await this.getLatestSnapshot(config.kind);
+    }
+
+    const pending = new Set(
+      STORY_GENRES.map((g) => this.normalizeTerm(g.slug)),
+    );
+    const byGenreNormalized = new Map<
+      string,
+      { coverImage: string; slug: string; title: string }
+    >();
+
+    for (const entry of snapshot?.entries ?? []) {
+      if (
+        !this.isReadableStatus(entry.story.status) ||
+        !isStoryLive(entry.story)
+      ) {
+        continue;
+      }
+
+      if (pending.size === 0) {
+        break;
+      }
+
+      const storyGenres = entry.story.genreSlugs;
+
+      for (const g of STORY_GENRES) {
+        const gn = this.normalizeTerm(g.slug);
+        if (!pending.has(gn)) {
+          continue;
+        }
+
+        const hit = storyGenres.some(
+          (s) =>
+            this.normalizeTerm(s) === gn ||
+            this.normalizeTerm(this.slugToLabel(s)) === gn,
+        );
+
+        if (hit) {
+          const coverImage =
+            entry.story.assets?.coverImageUrl ??
+            entry.story.assets?.cardImageUrl ??
+            entry.story.assets?.bannerImageUrl ??
+            "";
+          byGenreNormalized.set(gn, {
+            coverImage,
+            slug: entry.story.slug,
+            title: entry.story.title,
+          });
+          pending.delete(gn);
+        }
+      }
+    }
+
+    const spotlights = STORY_GENRES.map((g) => {
+      const gn = this.normalizeTerm(g.slug);
+      const hit = byGenreNormalized.get(gn);
+      return {
+        genreSlug: g.slug,
+        storySlug: hit?.slug ?? null,
+        coverImage: hit?.coverImage ?? "",
+        title: hit?.title ?? null,
+      };
+    });
+
+    const response = {
+      kind: config.key,
+      spotlights,
     };
 
     await this.redisService.setJson(

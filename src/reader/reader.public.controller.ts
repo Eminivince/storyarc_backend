@@ -20,6 +20,14 @@ export class ReaderPublicController {
     return this.readerService.getSharedReadingList(shareSlug);
   }
 
+  /** Per-genre #1 story cover for Explore tiles (must register before `rankings` if routes conflict). */
+  @Get("rankings/genre-spotlights")
+  async getGenreSpotlightCovers(@Query("kind") kind: string | undefined) {
+    return this.storyRankingsService.getGenreSpotlightCovers({
+      kind: parseStoryRankingKindQuery(kind),
+    });
+  }
+
   @Get("rankings")
   async getStoryRankings(
     @Query("genre") genre: string | undefined,
